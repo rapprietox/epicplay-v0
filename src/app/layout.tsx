@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { DM_Sans, Barlow_Condensed } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
+const dmSans = DM_Sans({ subsets: ["latin"], variable: "--font-sans" });
+const barlowCondensed = Barlow_Condensed({
+  subsets: ["latin"],
+  weight: ["600", "700"],
+  variable: "--font-heading",
+});
 
 export const metadata: Metadata = {
   title: "EpicPlay AI",
@@ -16,7 +21,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} font-sans antialiased`}>{children}</body>
+      <body className={`${dmSans.variable} ${barlowCondensed.variable} font-sans antialiased`}>
+        {children}
+      </body>
     </html>
   );
 }

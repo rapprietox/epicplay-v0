@@ -6,21 +6,28 @@
 
 For now (no DB password on hand), apply them by hand:
 
-1. Open the Supabase Dashboard for this project → **SQL Editor** → **New query**.
-2. Paste the contents of `manual_apply.sql` (all 8 migrations concatenated,
-   in the order they must run) and click **Run**.
-3. Confirm in **Table Editor** that `teams`, `profiles`, `players`, `games`,
-   `lineup`, `at_bats`, and `pitches` all exist, each with RLS enabled.
+- **Fresh project, nothing applied yet:** paste `manual_apply.sql` (every
+  migration concatenated, in order) into Supabase Dashboard → **SQL
+  Editor** → **New query** → **Run**.
+- **Sprint 1 already applied, only need Sprint 2:** paste
+  `manual_apply_sprint2.sql` instead (just the `2026090713*` migrations:
+  seasons, opponents, opponent_players, the games/at_bats column
+  additions, stolen_bases, and the two storage buckets).
 
-`manual_apply.sql` is a generated convenience copy -- if you change a
-migration, regenerate it by concatenating `migrations/*.sql` in filename
-order rather than editing it directly.
+Then confirm in **Table Editor** that `teams`, `profiles`, `players`,
+`games`, `lineup`, `at_bats`, `pitches`, `seasons`, `opponents`,
+`opponent_players`, and `stolen_bases` all exist with RLS enabled, and in
+**Storage** that `season-schedules` and `opponent-photos` buckets exist.
 
-## After running the migrations: create a team and onboard yourself
+Both `manual_apply*.sql` files are generated convenience copies -- if you
+change a migration, regenerate them by concatenating `migrations/*.sql` (or
+just the `2026090713*` subset) in filename order rather than editing them
+directly.
 
-There's no admin UI yet (Sprint 1 is auth + schema only), so the first team
-and the first coach/operator role assignment happen by hand in the SQL
-Editor:
+## After running the Sprint 1 migrations: create a team and onboard yourself
+
+There's no admin UI yet, so the first team and the first coach/operator
+role assignment happen by hand in the SQL Editor:
 
 ```sql
 -- 1. Create a team

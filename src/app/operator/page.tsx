@@ -2,7 +2,11 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
 
-export default async function OperatorPage() {
+export default async function OperatorPage({
+  searchParams,
+}: {
+  searchParams: { game?: string };
+}) {
   const supabase = createClient();
   const {
     data: { user },
@@ -34,7 +38,14 @@ export default async function OperatorPage() {
       </header>
       <p className="mt-6 text-sm text-foreground/60">
         Signed in as {profile?.full_name ?? profile?.email} (role: {profile?.role}).
-        Live game logging screens build on this route in Sprint 2.
+        Live game logging screens build on this route in Sprint 3.
+        {searchParams.game && (
+          <>
+            {" "}
+            Game <code className="text-white">{searchParams.game}</code> was just started and is
+            waiting for logging to begin.
+          </>
+        )}
       </p>
     </main>
   );

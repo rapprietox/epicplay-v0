@@ -1,6 +1,11 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
+import { RosterSection } from "./roster-section";
+import { SeasonImportSection } from "./season-import-section";
+import { NextGamePanel } from "./next-game-panel";
+import { LeadersBoard } from "./leaders-board";
+import { ScheduleTable } from "./schedule-table";
 
 export default async function CoachPage() {
   const supabase = createClient();
@@ -15,27 +20,58 @@ export default async function CoachPage() {
     .eq("id", user.id)
     .single();
 
-  const team = profile?.team_id
-    ? (await supabase.from("teams").select("name").eq("id", profile.team_id).single()).data
-    : null;
+  if (!profile?.team_id) redirect("/pending");
+
+  const teamId = profile.team_id;
+
+  const [{ data: team }, { data: players }, { data: games }, { data: opponents }] = await Promise.all([
+    supabase.from("teams").select("name").eq("id", teamId).single(),
+    supabase.from("players").select("*").eq("team_id", teamId).order("jersey_number", { ascending: true }),
+    supabase.from("games").select("*").eq("team_id", teamId),
+    supabase.from("opponents").select("name").eq("team_id", teamId).order("name"),
+  ]);
+
+  const allGames = games ?? [];
+  const gameIds = allGames.map((g) => g.id);
+  const [{ data: atBats }, { data: stolenBases }] = gameIds.length
+    ? await Promise.all([
+        supabase.from("at_bats").select("*").in("game_id", gameIds),
+        supabase.from("stolen_bases").select("*").in("game_id", gameIds),
+      ])
+    : [{ data: [] as never[] }, { data: [] as never[] }];
+  const today = new Date().toISOString().slice(0, 10);
+  const nextGame =
+    [...allGames]
+      .filter((g) => g.status !== "completed" && g.status !== "cancelled" && g.game_date >= today)
+      .sort((a, b) => a.game_date.localeCompare(b.game_date))[0] ?? null;
 
   return (
-    <main className="flex min-h-screen flex-col bg-background px-6 py-8">
+    <main className="min-h-screen bg-background px-6 py-8">
       <header className="flex items-center justify-between border-b border-border pb-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-blue">
-            Coach
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold text-white">
-            {team?.name ?? "Team"} &mdash; Team Overview
-          </h1>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-blue">Coach</p>
+          <h1 className="font-heading mt-1 text-3xl font-bold text-white">{team?.name ?? "Team"}</h1>
         </div>
-        <SignOutButton />
+        <div className="flex items-center gap-4">
+          <span className="text-xs text-foreground/50">
+            {profile.full_name ?? profile.email}
+          </span>
+          <SignOutButton />
+        </div>
       </header>
-      <p className="mt-6 text-sm text-foreground/60">
-        Signed in as {profile?.full_name ?? profile?.email} (role: {profile?.role}).
-        The full team stats table and per-player breakdowns build on this route in Sprint 2.
-      </p>
+
+      <div className="mx-auto mt-6 flex max-w-6xl flex-col gap-6">
+        <NextGamePanel nextGame={nextGame} allGames={allGames} atBats={atBats ?? []} players={players ?? []} />
+
+        <LeadersBoard players={players ?? []} atBats={atBats ?? []} stolenBases={stolenBases ?? []} games={allGames} />
+
+        <ScheduleTable games={allGames} opponentNames={(opponents ?? []).map((o) => o.name)} />
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <RosterSection players={players ?? []} />
+          <SeasonImportSection />
+        </div>
+      </div>
     </main>
   );
 }

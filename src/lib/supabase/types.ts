@@ -11,7 +11,7 @@ export type GameType =
   | "tournament"
   | "championship";
 export type HomeAway = "home" | "away";
-export type GameStatus = "setup" | "active" | "completed";
+export type GameStatus = "setup" | "active" | "completed" | "cancelled";
 export type InningHalf = "top" | "bottom";
 export type AtBatResult =
   | "single"
@@ -95,25 +95,35 @@ export interface Database {
         Row: {
           id: string;
           team_id: string;
+          season_id: string | null;
+          opponent_id: string | null;
           opponent_name: string;
           game_date: string;
+          game_time: string | null;
           game_type: GameType;
           home_away: HomeAway;
           our_score: number;
           opponent_score: number;
           status: GameStatus;
+          umpire_name: string | null;
+          winning_pitcher_id: string | null;
           created_at: string;
         };
         Insert: {
           id?: string;
           team_id: string;
+          season_id?: string | null;
+          opponent_id?: string | null;
           opponent_name: string;
           game_date: string;
+          game_time?: string | null;
           game_type: GameType;
           home_away: HomeAway;
           our_score?: number;
           opponent_score?: number;
           status?: GameStatus;
+          umpire_name?: string | null;
+          winning_pitcher_id?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["games"]["Insert"]>;
@@ -144,6 +154,7 @@ export interface Database {
           id: string;
           game_id: string;
           player_id: string;
+          pitcher_id: string | null;
           inning: number;
           inning_half: InningHalf;
           batting_order_position: number | null;
@@ -160,6 +171,7 @@ export interface Database {
           id?: string;
           game_id: string;
           player_id: string;
+          pitcher_id?: string | null;
           inning: number;
           inning_half: InningHalf;
           batting_order_position?: number | null;
@@ -197,6 +209,82 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["pitches"]["Insert"]>;
+        Relationships: [];
+      };
+      seasons: {
+        Row: {
+          id: string;
+          team_id: string;
+          name: string;
+          year: number;
+          start_date: string;
+          end_date: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          team_id: string;
+          name: string;
+          year: number;
+          start_date: string;
+          end_date: string;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["seasons"]["Insert"]>;
+        Relationships: [];
+      };
+      opponents: {
+        Row: {
+          id: string;
+          team_id: string;
+          name: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          team_id: string;
+          name: string;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["opponents"]["Insert"]>;
+        Relationships: [];
+      };
+      opponent_players: {
+        Row: {
+          id: string;
+          opponent_id: string;
+          name: string;
+          jersey_number: string;
+          position: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          opponent_id: string;
+          name: string;
+          jersey_number?: string;
+          position?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["opponent_players"]["Insert"]>;
+        Relationships: [];
+      };
+      stolen_bases: {
+        Row: {
+          id: string;
+          game_id: string;
+          player_id: string;
+          inning: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          player_id: string;
+          inning: number;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["stolen_bases"]["Insert"]>;
         Relationships: [];
       };
     };
