@@ -90,7 +90,7 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
       try {
         await editGame(game.id, {
           game_date: String(formData.get("game_date")),
-          game_time: String(formData.get("game_time") || "") || null,
+          game_time: String(formData.get("game_time") || "") || "TBD",
           home_away: formData.get("home_away") as "home" | "away",
           game_type: formData.get("game_type") as GameType,
         });
@@ -114,10 +114,10 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
             />
             <select
               name="game_time"
-              defaultValue={game.game_time ?? ""}
+              defaultValue={game.game_time ?? "TBD"}
               className="rounded border border-border bg-background px-2 py-1 text-sm text-white"
             >
-              <option value="">—</option>
+              <option value="TBD">TBD</option>
               {TIME_OPTIONS.map((t) => (
                 <option key={t} value={t}>
                   {t}
@@ -300,10 +300,10 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
         <select
           id="manual-time"
           name="game_time"
-          defaultValue=""
+          defaultValue="TBD"
           className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
         >
-          <option value="">—</option>
+          <option value="TBD">TBD</option>
           {TIME_OPTIONS.map((t) => (
             <option key={t} value={t}>
               {t}

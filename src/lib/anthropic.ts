@@ -7,15 +7,15 @@ const client = new Anthropic();
 
 const ScheduleGameSchema = z.object({
   date: z.string().describe("ISO 8601 date, YYYY-MM-DD"),
-  time: z.string().nullable().describe("Game time as printed on the schedule, or null if not shown"),
-  opponent_name: z.string(),
+  time: z.string().describe("Game time as printed on the schedule, or 'TBD' if not shown"),
+  opponent_name: z.string().describe("The other team in the game -- never our own team name"),
   home_away: z.enum(["home", "away"]),
   game_type: z.enum(["friendly", "preseason", "season", "playoff", "tournament", "championship"]),
 });
 const ScheduleSchema = z.object({ games: z.array(ScheduleGameSchema) });
 export type ExtractedGame = z.infer<typeof ScheduleGameSchema>;
 
-export async function extractSeasonSchedule(pdfBase64: string): Promise<ExtractedGame[]> {
+export async function extractSeasonSchedule(pdfBase64: string, teamName: string): Promise<ExtractedGame[]> {
   const response = await client.messages.parse({
     model: "claude-opus-5",
     max_tokens: 16000,
@@ -30,11 +30,16 @@ export async function extractSeasonSchedule(pdfBase64: string): Promise<Extracte
           {
             type: "text",
             text:
-              "This is a baseball season schedule. Extract every game listed: " +
-              "date (ISO 8601 YYYY-MM-DD), time (as printed, or null if not shown), " +
-              "opponent_name, home_away ('home' or 'away'), and game_type " +
-              "('season' as default unless clearly marked otherwise, e.g. scrimmage/" +
-              "friendly, preseason, playoff, tournament, or championship).",
+              `This is a baseball season schedule. Our team name is ${teamName}. ` +
+              "Extract only games involving our team. For each game set home_away to " +
+              "'home' if our team is the home team, 'away' if we are the away team. " +
+              "The opponent is always the other team in the game, not ours. Skip any " +
+              "game that is between two other teams and doesn't involve us. For each " +
+              "game we're in, also extract: date (ISO 8601 YYYY-MM-DD), time (as " +
+              "printed on the schedule; if no time is shown for a game, use 'TBD'), " +
+              "and game_type ('season' as default unless clearly marked otherwise, " +
+              "e.g. scrimmage/friendly, preseason, playoff, tournament, or " +
+              "championship).",
           },
         ],
       },

@@ -52,6 +52,9 @@ export async function extractSchedulePdf(formData: FormData): Promise<ExtractedG
   if (!(file instanceof File)) throw new Error("No PDF uploaded");
   if (file.type !== "application/pdf") throw new Error("File must be a PDF");
 
+  const { data: team } = await supabase.from("teams").select("name").eq("id", teamId).single();
+  if (!team?.name) throw new Error("Team has no name on file");
+
   const bytes = Buffer.from(await file.arrayBuffer());
 
   const path = `${teamId}/${Date.now()}-${file.name}`;
@@ -60,12 +63,12 @@ export async function extractSchedulePdf(formData: FormData): Promise<ExtractedG
     .upload(path, bytes, { contentType: "application/pdf" });
   if (uploadError) throw new Error(uploadError.message);
 
-  return extractSeasonSchedule(bytes.toString("base64"));
+  return extractSeasonSchedule(bytes.toString("base64"), team.name);
 }
 
 export interface ConfirmScheduleGame {
   date: string;
-  time: string | null;
+  time: string;
   opponent_name: string;
   home_away: "home" | "away";
   game_type: GameType;
@@ -151,7 +154,7 @@ export async function addManualGame(formData: FormData) {
 
   const opponent_name = String(formData.get("opponent_name") ?? "").trim();
   const game_date = String(formData.get("game_date") ?? "").trim();
-  const game_time = String(formData.get("game_time") ?? "").trim() || null;
+  const game_time = String(formData.get("game_time") ?? "").trim() || "TBD";
   const home_away = String(formData.get("home_away") ?? "") as "home" | "away";
   const game_type = String(formData.get("game_type") ?? "") as GameType;
 
@@ -187,7 +190,7 @@ export async function cancelGame(gameId: string) {
 
 export async function editGame(
   gameId: string,
-  input: { game_date: string; game_time: string | null; home_away: "home" | "away"; game_type: GameType }
+  input: { game_date: string; game_time: string; home_away: "home" | "away"; game_type: GameType }
 ) {
   const { supabase, teamId } = await requireCoachTeam();
   const { error } = await supabase

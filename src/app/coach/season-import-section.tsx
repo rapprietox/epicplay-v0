@@ -147,11 +147,11 @@ export function SeasonImportSection() {
                     </td>
                     <td className="py-1.5 pr-3">
                       <select
-                        value={g.time ?? ""}
-                        onChange={(e) => updateGame(i, { time: e.target.value || null })}
+                        value={g.time}
+                        onChange={(e) => updateGame(i, { time: e.target.value })}
                         className="rounded border border-border bg-background px-2 py-1 text-white"
                       >
-                        <option value="">—</option>
+                        <option value="TBD">TBD</option>
                         {TIME_OPTIONS.map((t) => (
                           <option key={t} value={t}>
                             {t}
