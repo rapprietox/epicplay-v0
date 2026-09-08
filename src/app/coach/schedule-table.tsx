@@ -186,6 +186,11 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
           <span className="rounded bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-400">
             Cancelled
           </span>
+        ) : game.status === "active" ? (
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-accent-green">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-green" />
+            Live {game.our_score}-{game.opponent_score}
+          </span>
         ) : result ? (
           <span
             className={`font-heading font-semibold ${
@@ -225,6 +230,11 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
               Cancel
             </button>
           </div>
+        )}
+        {game.status === "active" && (
+          <Link href={`/operator?game=${game.id}`} className="text-xs text-accent-green hover:underline">
+            Continue
+          </Link>
         )}
       </td>
     </>

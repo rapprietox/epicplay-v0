@@ -46,6 +46,13 @@ function emptyBattingLine(playerId: string): BattingLine {
 
 // OBP/SLG here don't distinguish sacrifice flies (not tracked in the
 // schema) -- a documented V0 simplification, not an oversight.
+//
+// Callers must pass only confirmed at-bats (confirmed_at is not null) --
+// draft rows created the moment a batter steps up (see
+// 20260908140001_at_bats_lifecycle.sql) have a null result and would
+// corrupt these counts. This also defensively skips any row with a null
+// player_id (pitching-mode at-bats, where the batter is an opponent) or
+// null result (a draft that slipped through un-filtered).
 export function computeBattingLines(
   atBats: Pick<AtBat, "player_id" | "result" | "rbi" | "runs_scored">[],
   stolenBases: Pick<StolenBase, "player_id">[]
@@ -62,6 +69,7 @@ export function computeBattingLines(
   };
 
   for (const ab of atBats) {
+    if (!ab.player_id || !ab.result) continue;
     const line = get(ab.player_id);
     line.rbi += ab.rbi;
     line.runsScored += ab.runs_scored;
@@ -128,11 +136,9 @@ function emptyPitchingLine(playerId: string): PitchingLine {
   };
 }
 
-// pitcher_id is unpopulated until the operator game-logging screen exists
-// (future sprint), so this returns an empty map for now -- callers should
-// render a blank/dash state for pitching stats rather than treat it as an
-// error. ERA treats every run allowed as earned (no earned/unearned
-// tracking) -- a documented V0 simplification.
+// Callers must pass only confirmed at-bats -- same reasoning as
+// computeBattingLines above. ERA treats every run allowed as earned (no
+// earned/unearned tracking) -- a documented V0 simplification.
 export function computePitchingLines(
   atBats: Pick<AtBat, "pitcher_id" | "result" | "is_out" | "runs_scored">[],
   games: Pick<Game, "winning_pitcher_id">[]
@@ -149,7 +155,7 @@ export function computePitchingLines(
   };
 
   for (const ab of atBats) {
-    if (!ab.pitcher_id) continue;
+    if (!ab.pitcher_id || !ab.result) continue;
     const line = get(ab.pitcher_id);
     if (ab.is_out) line.outs += 1;
     if (ab.result === "strikeout") line.k += 1;

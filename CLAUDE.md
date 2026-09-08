@@ -24,9 +24,22 @@ src/
     auth/callback/route.ts      OAuth code exchange -> redirect to /
     auth/auth-code-error/page.tsx
     pending/page.tsx             Signed in, no team/role assigned yet
-    operator/page.tsx            Placeholder -- Sprint 3 builds live game logging here
-    player/page.tsx              Placeholder -- Sprint 3 builds stats/heat maps here
+    player/page.tsx              Placeholder -- Sprint 4 builds stats/heat maps here
     page.tsx                      "/" -- middleware always redirects this away
+    operator/
+      page.tsx                    Finds the team's active game, hydrates OperatorConsole
+      actions.ts                  Server Actions: getOrCreateGameState, syncGameState,
+                                   startDraftAtBat, logPitch, confirmAtBat, undoAtBat,
+                                   logStolenBase, logGameEvent, saveSubstitution, endGame
+      operator-console.tsx        Client -- the whole tablet-first live logging screen
+      initial-state.ts            Builds OperatorState from server rows (game_state +
+                                   draft at_bats + its pitches) on first render
+      strike-zone-grid.tsx        3x3 tap grid
+      field-diagram.tsx           SVG field, tap-to-mark ball landing spot
+      baserunner-diamond.tsx      SVG diamond -- presentational; picker lives in the console
+      substitution-panel.tsx      Modal: player out/in + reason
+      pitch-count-modal.tsx       Full-screen, must-acknowledge warning at 100 pitches
+      post-game-summary.tsx       Shown after "End Game" confirm; Submit calls endGame
     coach/
       page.tsx                    Dashboard: Next Game, Team Leaders, Schedule,
                                    plus Roster + Create Season sections below
@@ -38,6 +51,9 @@ src/
       leaders-board.tsx           Client -- computes stat lines, all/season/playoff filter
       schedule-table.tsx          Client -- inline edit/cancel, manual add-game form
       players/[id]/page.tsx       Per-player batting/pitching breakdown
+      realtime-refresh.tsx        Client -- subscribes to games/at_bats changes,
+                                   debounced router.refresh() so the dashboard updates
+                                   live as the operator logs plays
       games/[id]/setup/
         page.tsx                   Pre-game setup: lineup + umpire + opponent roster
         actions.ts                  saveLineupAndUmpire, startGame, extractOpponentPhoto,
@@ -49,8 +65,15 @@ src/
   lib/
     anthropic.ts                  Server-only Anthropic client + the three AI calls
     stats.ts                      Pure functions: at_bats/stolen_bases -> batting/pitching lines
+                                   (callers must pass only confirmed_at is not null rows)
+    pitch-accuracy.ts             Expected-vs-logged-pitches heuristic (see below)
     dates.ts                      daysUntil / formatGameDate
     opponent-history.ts           W-L-T record vs a given opponent, from raw games rows
+    operator/
+      types.ts                    OperatorState shape + result/pitch-type/hit-type label maps
+      reducer.ts                  operatorReducer -- the whole client-side game state machine
+      local-storage.ts            5s localStorage snapshot + restore, keyed by game id
+      sync-queue.ts                In-memory retry queue for offline writes (see limits below)
     supabase/
       client.ts                   Browser client (Client Components)
       server.ts                   Server client (Server Components / Route Handlers)
@@ -61,7 +84,8 @@ supabase/
   migrations/*.sql                Canonical, ordered migrations
   manual_apply.sql                Convenience concat of every migration
   manual_apply_sprint2.sql        Convenience concat of just the Sprint 2 migrations
-                                   (regenerate both by hand if migrations change --
+  manual_apply_sprint3.sql        Convenience concat of just the Sprint 3 migrations
+                                   (regenerate all three by hand if migrations change --
                                    don't edit them directly)
   README.md                       How to apply migrations + onboard the first coach
 ```
@@ -112,6 +136,9 @@ General shape, table by table:
   an operator logs at-bats, pitches, and steals.
 - `seasons`, `opponents`, `opponent_players`: same team-scoped
   select-for-members / write-for-coach-or-operator shape as `players`/`games`.
+- `game_state`, `substitutions`, `game_events`: coach/operator only (no
+  player-select policy) -- these are operator-console scratch state and
+  logs, not something the player dashboard reads.
 - Storage buckets `season-schedules` and `opponent-photos` are private;
   objects are stored at `${team_id}/...` and a policy checks
   `(storage.foldername(name))[1] = my_team_id()::text`, restricted to
@@ -126,16 +153,18 @@ See `supabase/migrations/*.sql` for the authoritative definitions
 - `teams(id, name, created_at)`
 - `profiles(id, email, full_name, role, team_id, player_id, created_at)` -- not in the original spec, see above
 - `players(id, team_id, name, jersey_number, position, user_id, created_at)`
-- `games(id, team_id, season_id, opponent_id, opponent_name, game_date, game_time, game_type, home_away, our_score, opponent_score, status, umpire_name, winning_pitcher_id, created_at)`
+- `games(id, team_id, season_id, opponent_id, opponent_name, game_date, game_time, game_type, home_away, our_score, opponent_score, status, umpire_name, winning_pitcher_id, logging_accuracy_score, notes, created_at)`
   - `game_type`: friendly / preseason / season / playoff / tournament / championship
   - `status`: setup / active / completed / cancelled
   - `season_id`, `opponent_id`, `game_time`, `umpire_name`, `winning_pitcher_id` added in Sprint 2; `opponent_name` stays the display name even when `opponent_id` is set, and is the only opponent reference for free-text (unscheduled/friendly) games
+  - `logging_accuracy_score`, `notes` added in Sprint 3, set once by `endGame` when the operator submits the post-game summary
 - `lineup(id, game_id, player_id, batting_order, position, created_at)`
-- `at_bats(id, game_id, player_id, pitcher_id, inning, inning_half, batting_order_position, result, hit_type, field_x, field_y, rbi, runs_scored, is_out, created_at)`
+- `at_bats(id, game_id, player_id, pitcher_id, mode, inning, inning_half, batting_order_position, result, hit_type, field_x, field_y, rbi, runs_scored, is_out, confirmed_at, created_at)`
   - `result`: single/double/triple/hr/flyout/groundout/lineout/strikeout/walk/hbp/error/fc
   - `hit_type`: groundball/linedrive/flyball/bunt/popup/hr (nullable -- not every result has one)
   - `field_x`/`field_y`: 0-100 coordinates on the field diagram (nullable)
   - `pitcher_id` added in Sprint 2 (nullable, who was pitching this at-bat) -- see Pitching stats below
+  - `mode` (`hitting`/`pitching`) and `confirmed_at` added in Sprint 3; `player_id` and `result` became nullable -- see the draft/confirmed lifecycle below
 - `pitches(id, at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, created_at)`
   - `pitch_type`: fastball/curveball/changeup/slider/2seam/other (nullable)
   - `zone_x`/`zone_y`: 0-100 coordinates in the strike-zone grid (nullable)
@@ -161,11 +190,128 @@ dropped:
   earned/unearned distinction tracked) -- a documented simplification.
 - `stolen_bases` as its own table (see above).
 
-**Neither is populated yet.** `pitcher_id` and steal-logging both require
-the operator live-game-logging screen, which is Sprint 3 scope. Until
-then, `src/lib/stats.ts` returns an empty map for pitching lines and the
-Leaders Board renders a blank/dash state for those rows and for Stolen
-Bases -- this is expected, not a bug.
+Both are now populated by the Sprint 3 operator screen -- `pitcher_id` is
+set on every pitching-mode draft at-bat, and Stolen Base is a quick-action
+button that inserts into `stolen_bases`.
+
+## Sprint 3: at-bats draft/confirmed lifecycle, game_state, and the operator screen
+
+Three schema forks were confirmed with the user before building (see git
+history), because the live-logging requirements exposed real gaps the
+Sprint 1/2 schema couldn't support:
+
+**Opposing batter identity.** `at_bats.player_id` only ever references our
+own roster. During `mode = 'pitching'` at-bats (the opponent batting
+against our pitcher), the batter is an opposing player -- tracked for
+on-screen display only (typed/picked from `opponent_players`, held in
+`game_state.opponent_batter_name` and the operator's local React state),
+never persisted onto `at_bats`. `player_id` stays null for those rows.
+Nothing we compute (ERA/WHIP/K are all keyed off `pitcher_id`) needs the
+opposing batter's identity, so this avoided an unused column.
+
+**Draft/confirmed at-bat lifecycle.** The spec requires every pitch to hit
+the `pitches` table the instant its outcome is tapped, before the at-bat
+is confirmed -- but `pitches.at_bat_id` is a NOT NULL FK, so a pitches row
+can't exist without an `at_bats` row already there. Resolved by creating
+the `at_bats` row immediately when a new batter steps up (`result` and
+`player_id` nullable, new `confirmed_at` column, both null on a draft
+row), attaching pitches to it right away, and having "Confirm At-Bat" do
+an UPDATE that fills in the result and stamps `confirmed_at`. **Every
+query that computes stats (`computeBattingLines`, `computePitchingLines`,
+anything feeding the coach dashboard or a player breakdown page) must
+filter `confirmed_at is not null`** -- both stats functions also
+defensively skip null-result/null-player_id rows themselves, but the
+query-level filter is what keeps drafts from ever being fetched in the
+first place. This also gives free crash-recovery: the current ball/strike
+count for an in-progress at-bat is just "pitches attached to the
+still-unconfirmed `at_bats` row" -- no separate counter needed.
+
+**Live game state.** Runner positions are operator-adjustable at any
+moment (tap a base on the diamond to assign/clear a runner), which means
+they aren't purely derivable from `at_bats`/`pitches` history once manual
+override is allowed. `game_state` (one row per game, upserted
+continuously) holds this: current inning/half/outs, mode, whose turn at
+bat, the current pitcher and their pitch count, runner positions (`runners
+jsonb` -- `{first, second, third}`, each `{type: "player"|"opponent", id,
+name}` since our own runners are real player FKs but opposing runners
+during pitching mode are display-only), pitch-count acknowledgment flags,
+and the rolling low-accuracy-streak counter. This is what makes "resume an
+active game on a different device" actually work, not just "resume on the
+same tablet after a reload."
+
+Two more small additions, both straightforward once the above was settled:
+`substitutions(id, game_id, player_out_id, player_in_id, reason, inning,
+inning_half, created_at)` for the Substitution panel, and
+`game_events(id, game_id, inning, inning_half, event_type, note,
+created_at)` (`wild_pitch`/`passed_ball`/`balk`/`error`) for the
+runner-advancing quick-action buttons that aren't their own at-bat.
+`games`/`at_bats`/`game_state` are enabled on the `supabase_realtime`
+publication so the coach dashboard's `RealtimeRefresh` component can
+subscribe.
+
+### Pitch-logging accuracy heuristic (`src/lib/pitch-accuracy.ts`)
+
+There's no ground truth for how many pitches an at-bat "really" took --
+only what the operator logged. `expectedMinPitches(result)` estimates a
+defensible minimum from the final result (walk needs >= 4, strikeout >= 3,
+everything else >= 1) and `atBatAccuracyRatio` compares it to pitches
+actually logged, capped at 1.0. A ratio under 50% for 3 consecutive
+at-bats triggers the non-blocking "Low pitch detail" banner; `endGame`
+averages the ratio across every confirmed at-bat in the game into
+`games.logging_accuracy_score`. This is a documented heuristic, not a
+precise measurement -- fouls with 2 strikes can legitimately extend a real
+at-bat well past the minimum without that being an accuracy problem,
+which is why it only flags being *under* the threshold, never a gap above.
+
+### Operator client-state architecture
+
+`src/lib/operator/reducer.ts` (`operatorReducer`) is the single state
+machine driving the whole console -- `src/app/operator/operator-console.tsx`
+is a thin(ish) view over it plus the async glue to Server Actions.
+Every mutation dispatches synchronously (instant UI feedback -- the
+operator is tapping fast under pressure) and *separately* fires the
+corresponding Server Action through `withOfflineRetry` (fire-and-forget,
+not awaited by the UI). Key design points:
+
+- **Draft at-bat creation is lazy.** `ensureDraftAtBat()` only calls
+  `startDraftAtBat` on the *first* pitch outcome tap for a new batter, not
+  preemptively after the previous at-bat confirms. This keeps Undo simple:
+  it only ever needs to reverse the one just-confirmed row (delete it +
+  its pitches, reverse the score/outs/batting-order delta captured in
+  `state.lastConfirmed`), never a cascading "and also undo the next
+  batter's not-yet-created draft."
+- **Baserunner advancement is manual, not automatic.** The baserunner
+  diamond doesn't auto-advance runners when an at-bat result is chosen
+  (that would need real force-play logic -- which runner is forced depends
+  on which bases were occupied *before* the play, cascading rules this
+  V0 doesn't implement). The operator taps bases to reflect what actually
+  happened. The one exception is the Stolen Base quick action, which is
+  unambiguous (exactly one runner, exactly one base) and does auto-advance.
+  Wild Pitch/Passed Ball/Balk/Error quick actions advance *all* occupied
+  bases by exactly one as a simplification (the common case; doesn't
+  model multi-base or no-advance error scenarios).
+- **RBI and runs-scored are manual steppers**, not derived from base
+  state, for the same reason (deriving forced runs correctly needs the
+  same force-play logic).
+- **Offline queue is best-effort, not durable across a reload.**
+  `src/lib/operator/sync-queue.ts` retries failed writes (most commonly a
+  network error while offline) every 5s and on the `online` event, in
+  order. The retry closures live in memory -- they do not survive the tab
+  being closed or reloaded while offline. What *does* survive a reload:
+  `src/lib/operator/local-storage.ts` snapshots the full `OperatorState`
+  every 5s, so the operator's in-progress local view is restored and they
+  can see what they were mid-logging, but any write that failed and never
+  synced before a reload needs to be redone by hand. True cross-reload
+  durability would need a service worker + IndexedDB job queue -- out of
+  scope for V0, and "zero data loss under any circumstance" should be read
+  with that caveat: durable once a request reaches the server, best-effort
+  (not guaranteed) if the browser tab is destroyed mid-outage.
+- **State hydration**: on mount, `useReducer`'s lazy initializer prefers a
+  `dirty: true` localStorage snapshot (unsynced changes from a crash/close)
+  over the server-provided initial state (`buildInitialStateFromServer` in
+  `initial-state.ts`, built from `game_state` + the draft `at_bats` row and
+  its `pitches` if one exists) -- since a `dirty` snapshot means the last
+  session ended before those changes reached Supabase.
 
 ### `src/lib/stats.ts`
 
@@ -273,12 +419,30 @@ stolen bases are schema-ready but empty until Sprint 3 populates
 is still the Sprint 1 placeholder, now reachable with `?game=<id>` after
 Start Game.
 
-**Sprint 3 (next, not started):** Operator live game-logging screen (strike
-zone 3x3 tap grid, at-bat outcomes incl. pitcher_id/steals, field diagram
-tap, pitch-by-pitch logging, manual End Inning, 30-second undo window),
-player dashboard (AVG/HR/RBI/OBP/SLG/OPS, at-bat history, SVG heat map,
-SVG spray chart), Supabase Realtime subscriptions so player/coach stats
-update live as the operator logs at-bats.
+**Sprint 3 (done):** The operator live game-logging screen, tablet-first,
+at `/operator` -- HITTING/PITCHING mode toggle, current batter/pitcher
+header, ball-strike-out count, inning/score display, pitch type pills,
+3x3 strike zone tap grid, pitch outcome buttons (each pitch saved to
+`pitches` immediately, before the at-bat is confirmed -- see the draft/
+confirmed lifecycle above), at-bat result buttons with RBI/runs steppers,
+Confirm At-Bat with a 30-second visible-countdown Undo, SVG field diagram
+tap-to-mark, baserunner diamond (manual tap-to-adjust) with a Stolen Base
+quick action plus Wild Pitch/Balk/Passed Ball/Error (advance-all-runners),
+Substitution panel, running pitch count with 75/85 color warnings and a
+must-acknowledge full-screen modal at 100, the low-pitch-detail accuracy
+warning, manual End Inning/End Game with confirmation dialogs, and a
+post-game summary screen (Submit -> `endGame` sets `status='completed'`,
+computes `logging_accuracy_score`). 5-second localStorage snapshots +
+best-effort offline retry queue (see the durability caveat above -- not
+literally bulletproof across a reload while offline). Coach dashboard
+gained a live "Continue Game" panel for an active game, a live/Continue
+row on the schedule table, and `RealtimeRefresh` (Supabase Realtime ->
+debounced `router.refresh()`) so scores and stats update as the operator
+logs plays.
+
+**Sprint 4 (next, not started):** Player dashboard (AVG/HR/RBI/OBP/SLG/
+OPS, at-bat history, SVG heat map, SVG spray chart) -- the last major
+placeholder page (`/player`) left from Sprint 1.
 
 ## If `npm run build` OOMs locally: check for orphaned dev servers first
 

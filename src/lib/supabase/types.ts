@@ -29,6 +29,20 @@ export type AtBatResult =
 export type HitType = "groundball" | "linedrive" | "flyball" | "bunt" | "popup" | "hr";
 export type PitchType = "fastball" | "curveball" | "changeup" | "slider" | "2seam" | "other";
 export type PitchOutcome = "strike" | "ball" | "foul" | "hbp" | "inplay";
+export type AtBatMode = "hitting" | "pitching";
+export type SubReason = "tactical" | "injury" | "ejection" | "defensive" | "pinch_hit" | "pinch_run";
+export type GameEventType = "wild_pitch" | "passed_ball" | "balk" | "error";
+
+export interface RunnerState {
+  type: "player" | "opponent";
+  id: string | null;
+  name: string;
+}
+export interface Runners {
+  first?: RunnerState | null;
+  second?: RunnerState | null;
+  third?: RunnerState | null;
+}
 
 export interface Database {
   public: {
@@ -107,6 +121,8 @@ export interface Database {
           status: GameStatus;
           umpire_name: string | null;
           winning_pitcher_id: string | null;
+          logging_accuracy_score: number | null;
+          notes: string | null;
           created_at: string;
         };
         Insert: {
@@ -124,6 +140,8 @@ export interface Database {
           status?: GameStatus;
           umpire_name?: string | null;
           winning_pitcher_id?: string | null;
+          logging_accuracy_score?: number | null;
+          notes?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["games"]["Insert"]>;
@@ -153,35 +171,39 @@ export interface Database {
         Row: {
           id: string;
           game_id: string;
-          player_id: string;
+          player_id: string | null;
           pitcher_id: string | null;
+          mode: AtBatMode;
           inning: number;
           inning_half: InningHalf;
           batting_order_position: number | null;
-          result: AtBatResult;
+          result: AtBatResult | null;
           hit_type: HitType | null;
           field_x: number | null;
           field_y: number | null;
           rbi: number;
           runs_scored: number;
           is_out: boolean;
+          confirmed_at: string | null;
           created_at: string;
         };
         Insert: {
           id?: string;
           game_id: string;
-          player_id: string;
+          player_id?: string | null;
           pitcher_id?: string | null;
+          mode?: AtBatMode;
           inning: number;
           inning_half: InningHalf;
           batting_order_position?: number | null;
-          result: AtBatResult;
+          result?: AtBatResult | null;
           hit_type?: HitType | null;
           field_x?: number | null;
           field_y?: number | null;
           rbi?: number;
           runs_scored?: number;
           is_out?: boolean;
+          confirmed_at?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["at_bats"]["Insert"]>;
@@ -285,6 +307,96 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["stolen_bases"]["Insert"]>;
+        Relationships: [];
+      };
+      game_state: {
+        Row: {
+          id: string;
+          game_id: string;
+          inning: number;
+          inning_half: InningHalf;
+          outs: number;
+          mode: AtBatMode;
+          batting_order_position: number | null;
+          current_at_bat_id: string | null;
+          current_pitcher_id: string | null;
+          opponent_batter_name: string | null;
+          runners: Runners;
+          pitch_count_for_current_pitcher: number;
+          pitch_count_ack_75: boolean;
+          pitch_count_ack_85: boolean;
+          pitch_count_ack_100: boolean;
+          consecutive_low_accuracy_at_bats: number;
+          logging_accuracy_score: number | null;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          inning?: number;
+          inning_half?: InningHalf;
+          outs?: number;
+          mode?: AtBatMode;
+          batting_order_position?: number | null;
+          current_at_bat_id?: string | null;
+          current_pitcher_id?: string | null;
+          opponent_batter_name?: string | null;
+          runners?: Runners;
+          pitch_count_for_current_pitcher?: number;
+          pitch_count_ack_75?: boolean;
+          pitch_count_ack_85?: boolean;
+          pitch_count_ack_100?: boolean;
+          consecutive_low_accuracy_at_bats?: number;
+          logging_accuracy_score?: number | null;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["game_state"]["Insert"]>;
+        Relationships: [];
+      };
+      substitutions: {
+        Row: {
+          id: string;
+          game_id: string;
+          player_out_id: string;
+          player_in_id: string;
+          reason: SubReason;
+          inning: number;
+          inning_half: InningHalf;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          player_out_id: string;
+          player_in_id: string;
+          reason: SubReason;
+          inning: number;
+          inning_half: InningHalf;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["substitutions"]["Insert"]>;
+        Relationships: [];
+      };
+      game_events: {
+        Row: {
+          id: string;
+          game_id: string;
+          inning: number;
+          inning_half: InningHalf;
+          event_type: GameEventType;
+          note: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          inning: number;
+          inning_half: InningHalf;
+          event_type: GameEventType;
+          note?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["game_events"]["Insert"]>;
         Relationships: [];
       };
     };

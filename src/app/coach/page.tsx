@@ -6,6 +6,7 @@ import { SeasonImportSection } from "./season-import-section";
 import { NextGamePanel } from "./next-game-panel";
 import { LeadersBoard } from "./leaders-board";
 import { ScheduleTable } from "./schedule-table";
+import { RealtimeRefresh } from "./realtime-refresh";
 
 export default async function CoachPage() {
   const supabase = createClient();
@@ -35,18 +36,20 @@ export default async function CoachPage() {
   const gameIds = allGames.map((g) => g.id);
   const [{ data: atBats }, { data: stolenBases }] = gameIds.length
     ? await Promise.all([
-        supabase.from("at_bats").select("*").in("game_id", gameIds),
+        supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null),
         supabase.from("stolen_bases").select("*").in("game_id", gameIds),
       ])
     : [{ data: [] as never[] }, { data: [] as never[] }];
+  const activeGame = allGames.find((g) => g.status === "active") ?? null;
   const today = new Date().toISOString().slice(0, 10);
   const nextGame =
     [...allGames]
-      .filter((g) => g.status !== "completed" && g.status !== "cancelled" && g.game_date >= today)
+      .filter((g) => g.status === "setup" && g.game_date >= today)
       .sort((a, b) => a.game_date.localeCompare(b.game_date))[0] ?? null;
 
   return (
     <main className="min-h-screen bg-background px-6 py-8">
+      <RealtimeRefresh teamId={teamId} />
       <header className="flex items-center justify-between border-b border-border pb-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-blue">Coach</p>
@@ -61,7 +64,13 @@ export default async function CoachPage() {
       </header>
 
       <div className="mx-auto mt-6 flex max-w-6xl flex-col gap-6">
-        <NextGamePanel nextGame={nextGame} allGames={allGames} atBats={atBats ?? []} players={players ?? []} />
+        <NextGamePanel
+          nextGame={nextGame}
+          activeGame={activeGame}
+          allGames={allGames}
+          atBats={atBats ?? []}
+          players={players ?? []}
+        />
 
         <LeadersBoard players={players ?? []} atBats={atBats ?? []} stolenBases={stolenBases ?? []} games={allGames} />
 

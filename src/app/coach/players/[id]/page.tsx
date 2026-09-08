@@ -30,7 +30,12 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
 
   const [{ data: atBats }, { data: stolenBases }] = gameIds.length
     ? await Promise.all([
-        supabase.from("at_bats").select("*").eq("player_id", player.id).in("game_id", gameIds),
+        supabase
+          .from("at_bats")
+          .select("*")
+          .eq("player_id", player.id)
+          .in("game_id", gameIds)
+          .not("confirmed_at", "is", null),
         supabase.from("stolen_bases").select("*").eq("player_id", player.id).in("game_id", gameIds),
       ])
     : [{ data: [] as never[] }, { data: [] as never[] }];

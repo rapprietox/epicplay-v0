@@ -11,15 +11,41 @@ type Player = Database["public"]["Tables"]["players"]["Row"];
 
 export async function NextGamePanel({
   nextGame,
+  activeGame,
   allGames,
   atBats,
   players,
 }: {
   nextGame: Game | null;
+  activeGame: Game | null;
   allGames: Game[];
   atBats: AtBat[];
   players: Player[];
 }) {
+  if (activeGame) {
+    return (
+      <section className="rounded-lg border border-accent-green/50 bg-surface p-6">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-accent-green">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-accent-green" /> Live
+            </p>
+            <h2 className="font-heading mt-1 text-3xl font-bold text-white">vs {activeGame.opponent_name}</h2>
+            <p className="mt-1 text-sm text-foreground/60">
+              {activeGame.our_score}&ndash;{activeGame.opponent_score}
+            </p>
+          </div>
+          <Link
+            href={`/operator?game=${activeGame.id}`}
+            className="shrink-0 rounded-md bg-accent-green px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-green/90"
+          >
+            Continue Game
+          </Link>
+        </div>
+      </section>
+    );
+  }
+
   if (!nextGame) {
     return (
       <section className="rounded-lg border border-border bg-surface p-6">

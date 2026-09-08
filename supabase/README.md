@@ -13,15 +13,23 @@ For now (no DB password on hand), apply them by hand:
   `manual_apply_sprint2.sql` instead (just the `2026090713*` migrations:
   seasons, opponents, opponent_players, the games/at_bats column
   additions, stolen_bases, and the two storage buckets).
+- **Sprints 1-2 already applied, only need Sprint 3:** paste
+  `manual_apply_sprint3.sql` instead (just the `20260908*` migrations:
+  the at_bats draft/confirmed lifecycle, `game_state`, `substitutions`,
+  `game_events`, the `games` logging-accuracy/notes columns, and enabling
+  Realtime on `games`/`at_bats`/`game_state`).
 
 Then confirm in **Table Editor** that `teams`, `profiles`, `players`,
 `games`, `lineup`, `at_bats`, `pitches`, `seasons`, `opponents`,
-`opponent_players`, and `stolen_bases` all exist with RLS enabled, and in
-**Storage** that `season-schedules` and `opponent-photos` buckets exist.
+`opponent_players`, `stolen_bases`, `game_state`, `substitutions`, and
+`game_events` all exist with RLS enabled, in **Storage** that
+`season-schedules` and `opponent-photos` buckets exist, and in
+**Database > Replication** that `games`, `at_bats`, and `game_state` are
+enabled for the `supabase_realtime` publication.
 
-Both `manual_apply*.sql` files are generated convenience copies -- if you
+All `manual_apply*.sql` files are generated convenience copies -- if you
 change a migration, regenerate them by concatenating `migrations/*.sql` (or
-just the `2026090713*` subset) in filename order rather than editing them
+the relevant dated subset) in filename order rather than editing them
 directly.
 
 ## After running the Sprint 1 migrations: create a team and onboard yourself
