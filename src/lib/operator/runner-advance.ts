@@ -61,7 +61,12 @@ export function suggestRunnerAdvance(current: Runners, batter: RunnerState, resu
     case "groundout":
     case "lineout":
     case "strikeout":
+    case "double_play":
     default:
+      // Double play doesn't auto-suggest a scored runner even though one
+      // occasionally can score on the play -- the DP wizard only resolves
+      // the two outs; any additional run is a manual "Scored" tap on the
+      // diamond afterward, same as any other out.
       return { runners: current, scored: [] };
   }
 }

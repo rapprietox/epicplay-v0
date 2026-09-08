@@ -1,6 +1,7 @@
 import type {
   AtBatMode,
   AtBatResult,
+  FieldingPosition,
   HitType,
   InningHalf,
   PitchOutcome,
@@ -11,6 +12,62 @@ import type {
 
 export type RunnerQuickAction = "advance" | "scored" | "out" | "stolen_base" | "picked_off" | "error_advance";
 export type Base = "first" | "second" | "third";
+
+// How a runner reached home -- drives RBI eligibility (Fix 1/4). Only "hit",
+// "sac_fly", and "forced_walk_hbp" credit the batter with an RBI.
+export type ScoreMethod = "hit" | "wild_pitch" | "passed_ball" | "balk" | "error" | "sac_fly" | "forced_walk_hbp";
+
+export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
+  hit: true,
+  sac_fly: true,
+  forced_walk_hbp: true,
+  wild_pitch: false,
+  passed_ball: false,
+  balk: false,
+  error: false,
+};
+
+export const SCORE_METHOD_LABELS: Record<ScoreMethod, string> = {
+  hit: "Hit by batter",
+  wild_pitch: "Wild pitch",
+  passed_ball: "Passed ball",
+  balk: "Balk",
+  error: "Error",
+  sac_fly: "Sacrifice fly",
+  forced_walk_hbp: "Walk/HBP forced in",
+};
+
+// wild_pitch/passed_ball/balk/error map onto the existing game_events
+// enum for attribution logging; hit/sac_fly/forced_walk_hbp don't log a
+// separate event -- they're just how the batter's own at-bat result
+// already explains the run.
+export const SCORE_METHOD_EVENT: Partial<Record<ScoreMethod, "wild_pitch" | "passed_ball" | "balk" | "error">> = {
+  wild_pitch: "wild_pitch",
+  passed_ball: "passed_ball",
+  balk: "balk",
+  error: "error",
+};
+
+// Auto-implied score method for runners the suggestion engine advances
+// off the batter's own result (single/double/triple/hr -> hit;
+// walk/hbp -> forced; error/fc -> no RBI, same as a manual "Error" pick).
+export function resultToScoreMethod(result: AtBatResult): ScoreMethod {
+  if (result === "walk" || result === "hbp") return "forced_walk_hbp";
+  if (result === "error" || result === "fc") return "error";
+  return "hit";
+}
+
+export interface ScoredRunner {
+  runner: RunnerState;
+  method: ScoreMethod;
+}
+
+// Arranged like a field: outfield row, infield row, battery row.
+export const FIELDING_LAYOUT: FieldingPosition[][] = [
+  ["LF", "CF", "RF"],
+  ["3B", "SS", "2B", "1B"],
+  ["P", "C"],
+];
 
 export interface LocalPitch {
   pitch_number: number;
@@ -49,15 +106,23 @@ export interface OperatorState {
   pendingRbi: number;
   pendingHitType: HitType | null;
   // Runners suggested/confirmed to have scored on the current in-progress
-  // at-bat -- the sole source of truth for runsScored at confirm time (no
-  // separate manual "runs scored" stepper, to avoid it drifting out of
-  // sync with what's actually been marked on the diamond).
-  scoredThisAtBat: RunnerState[];
+  // at-bat, each tagged with how they scored (Fix 1/4) -- the sole source
+  // of truth for runsScored at confirm time (no separate manual "runs
+  // scored" stepper, to avoid it drifting out of sync with what's
+  // actually been marked on the diamond). pendingRbi auto-recomputes from
+  // this list's RBI-eligible entries but stays a manually-adjustable
+  // stepper on top, for the judgment calls a formula won't get right.
+  scoredThisAtBat: ScoredRunner[];
   // True right after a result is picked and the suggested runner movement
   // has been applied to `runners` but not yet reviewed -- drives the
   // "Confirm Runners" pulsing UI on the diamond. Cleared by tapping
   // Confirm Runners, by any manual per-runner override, or by Confirm At-Bat.
   runnersPendingConfirmation: boolean;
+  // Fielding credit captured after the field-diagram tap on an out
+  // (Fix 6) -- exactly one of playerId/opponentPlayerId is set, resolved
+  // from the lineup (mode 'pitching', ours) or opponent_players (mode
+  // 'hitting', theirs) by position.
+  pendingFielding: { position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null } | null;
 
   pitchCountForCurrentPitcher: number;
   pitchCountAck75: boolean;
@@ -66,18 +131,43 @@ export interface OperatorState {
   consecutiveLowAccuracyAtBats: number;
   showLowAccuracyWarning: boolean;
 
+  // Fix 2: live box-score-style mini dashboard. H/R are our offense
+  // (accumulated hitting-mode at-bats); E/K are our defense (accumulated
+  // pitching-mode at-bats -- errors we commit fielding, strikeouts we
+  // record pitching). LOB is ours only, captured when a hitting half-inning
+  // ends. See CLAUDE.md for the "why this framing" note.
+  hitsThisInning: number;
+  runsThisInning: number;
+  errorsThisInning: number;
+  kThisInning: number;
+  hitsGame: number;
+  runsGame: number;
+  errorsGame: number;
+  kGame: number;
+  lobGame: number;
+
   lastConfirmed: {
     atBatId: string;
+    secondAtBatId: string | null;
     mode: AtBatMode;
     runsScored: number;
-    wasOut: boolean;
+    outsRecorded: number;
     runnersBeforeAtBat: Runners;
     prevConsecutiveLowAccuracyAtBats: number;
+    prevBoxScore: {
+      hitsThisInning: number;
+      runsThisInning: number;
+      errorsThisInning: number;
+      kThisInning: number;
+      hitsGame: number;
+      runsGame: number;
+      errorsGame: number;
+      kGame: number;
+    };
     deadline: number;
   } | null;
 
   substitutionPanelOpen: boolean;
-  endInningConfirmOpen: boolean;
   endGameConfirmOpen: boolean;
   postGameOpen: boolean;
 
@@ -98,6 +188,7 @@ export const RESULT_IS_OUT: Record<AtBatResult, boolean> = {
   hbp: false,
   error: false,
   fc: false,
+  double_play: true,
 };
 
 export const RESULT_LABELS: Record<AtBatResult, string> = {
@@ -113,7 +204,13 @@ export const RESULT_LABELS: Record<AtBatResult, string> = {
   hbp: "HBP",
   error: "Error",
   fc: "FC",
+  double_play: "Double Play",
 };
+
+// Results where the ball was put in play and an out was recorded --
+// Fix 6 prompts for fielding credit after these (plus double_play, which
+// gets its own 2-position picker in the DP wizard instead).
+export const FIELDABLE_OUT_RESULTS: AtBatResult[] = ["flyout", "groundout", "lineout"];
 
 export const RESULT_BUTTON_ORDER: AtBatResult[] = [
   "single",
@@ -127,6 +224,7 @@ export const RESULT_BUTTON_ORDER: AtBatResult[] = [
   "walk",
   "error",
   "fc",
+  "double_play",
 ];
 
 export const PITCH_TYPE_LABELS: Record<PitchType, string> = {

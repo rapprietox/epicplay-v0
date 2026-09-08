@@ -5,8 +5,10 @@ import { createClient } from "@/lib/supabase/server";
 import type {
   AtBatMode,
   AtBatResult,
+  FieldingPosition,
   HitType,
   InningHalf,
+  OutType,
   PitchOutcome,
   PitchType,
   Runners,
@@ -167,6 +169,10 @@ export interface ConfirmAtBatInput {
   rbi: number;
   runsScored: number;
   isOut: boolean;
+  outType?: OutType | null;
+  fieldedByPosition?: FieldingPosition | null;
+  fieldedByPlayerId?: string | null;
+  fieldedByOpponentPlayerId?: string | null;
 }
 
 export async function confirmAtBat(input: ConfirmAtBatInput) {
@@ -182,6 +188,10 @@ export async function confirmAtBat(input: ConfirmAtBatInput) {
       rbi: input.rbi,
       runs_scored: input.runsScored,
       is_out: input.isOut,
+      out_type: input.outType ?? null,
+      fielded_by_position: input.fieldedByPosition ?? null,
+      fielded_by_player_id: input.fieldedByPlayerId ?? null,
+      fielded_by_opponent_player_id: input.fieldedByOpponentPlayerId ?? null,
       confirmed_at: new Date().toISOString(),
     })
     .eq("id", input.atBatId);
@@ -220,14 +230,91 @@ export async function confirmAtBat(input: ConfirmAtBatInput) {
   return { lowAccuracyStreak: nextStreak, showLowAccuracyWarning: nextStreak >= LOW_ACCURACY_STREAK_WARNING };
 }
 
+export interface ConfirmDoublePlayInput {
+  gameId: string;
+  atBatId: string;
+  mode: AtBatMode;
+  inning: number;
+  inningHalf: InningHalf;
+  pitcherId: string | null;
+  hitType: HitType | null;
+  fieldX: number | null;
+  fieldY: number | null;
+  batterFielding: { position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null } | null;
+  secondOutRunner: { type: "player" | "opponent"; id: string | null };
+  outType: OutType;
+  secondOutFielding: { position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null } | null;
+}
+
+// The batter's own draft row becomes the batter's out (always a force at
+// 1st); a second, separately-created at_bats row records the runner also
+// put out -- see 20260908150001_double_play_and_fielding.sql for why two
+// rows (correct is_out-based innings-pitched counting while pitching; a
+// documented minor over-count in the runner's own batting AB while hitting).
+export async function confirmDoublePlay(input: ConfirmDoublePlayInput): Promise<{ secondAtBatId: string }> {
+  const { supabase } = await requireOperatorGame(input.gameId);
+
+  const { error: batterError } = await supabase
+    .from("at_bats")
+    .update({
+      result: "double_play",
+      hit_type: input.hitType,
+      field_x: input.fieldX,
+      field_y: input.fieldY,
+      rbi: 0,
+      runs_scored: 0,
+      is_out: true,
+      out_type: "force",
+      fielded_by_position: input.batterFielding?.position ?? null,
+      fielded_by_player_id: input.batterFielding?.playerId ?? null,
+      fielded_by_opponent_player_id: input.batterFielding?.opponentPlayerId ?? null,
+      confirmed_at: new Date().toISOString(),
+    })
+    .eq("id", input.atBatId);
+  if (batterError) throw new Error(batterError.message);
+
+  const { data: secondRow, error: secondError } = await supabase
+    .from("at_bats")
+    .insert({
+      game_id: input.gameId,
+      mode: input.mode,
+      player_id: input.secondOutRunner.type === "player" ? input.secondOutRunner.id : null,
+      pitcher_id: input.pitcherId,
+      inning: input.inning,
+      inning_half: input.inningHalf,
+      result: "double_play",
+      is_out: true,
+      out_type: input.outType,
+      rbi: 0,
+      runs_scored: 0,
+      fielded_by_position: input.secondOutFielding?.position ?? null,
+      fielded_by_player_id: input.secondOutFielding?.playerId ?? null,
+      fielded_by_opponent_player_id: input.secondOutFielding?.opponentPlayerId ?? null,
+      confirmed_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+  if (secondError || !secondRow) throw new Error(secondError?.message ?? "Failed to log second out");
+
+  await supabase.from("game_state").update({ current_at_bat_id: null }).eq("game_id", input.gameId);
+
+  revalidatePath("/operator");
+  return { secondAtBatId: secondRow.id };
+}
+
 export async function undoAtBat(input: {
   gameId: string;
   atBatId: string;
+  secondAtBatId?: string | null;
   mode: AtBatMode;
   runsScoredToReverse: number;
 }) {
   const { supabase, game } = await requireOperatorGame(input.gameId);
 
+  if (input.secondAtBatId) {
+    await supabase.from("pitches").delete().eq("at_bat_id", input.secondAtBatId);
+    await supabase.from("at_bats").delete().eq("id", input.secondAtBatId);
+  }
   await supabase.from("pitches").delete().eq("at_bat_id", input.atBatId);
   const { error } = await supabase.from("at_bats").delete().eq("id", input.atBatId);
   if (error) throw new Error(error.message);
@@ -272,6 +359,8 @@ export async function logGameEvent(
     note?: string;
     mode: AtBatMode;
     runsScored?: number;
+    playerId?: string | null;
+    opponentPlayerId?: string | null;
   }
 ) {
   const { supabase, game } = await requireOperatorGame(gameId);
@@ -281,6 +370,8 @@ export async function logGameEvent(
     inning_half: input.inningHalf,
     event_type: input.eventType,
     note: input.note ?? null,
+    player_id: input.playerId ?? null,
+    opponent_player_id: input.opponentPlayerId ?? null,
   });
   if (error) throw new Error(error.message);
 

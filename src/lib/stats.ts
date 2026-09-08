@@ -183,3 +183,60 @@ export function computePitchingLines(
 export function formatAvg(value: number): string {
   return value.toFixed(3).replace(/^0\./, ".");
 }
+
+export interface FieldingLine {
+  putouts: number;
+  errors: number;
+}
+
+// Putouts only -- not assists. Fix 6 (Sprint 3) deliberately captures a
+// single fielder per play (one tap after the field-diagram tap), so there's
+// no multi-fielder chain to derive an assist from (e.g. SS-to-2B-to-1B on a
+// double play only ever records one of those three). "Opponent fielding"
+// (which of their fielders handles the most balls) uses the same shape,
+// keyed by opponent_players.id instead.
+export function computeFieldingLines(
+  atBats: Pick<AtBat, "fielded_by_player_id" | "is_out" | "result">[]
+): Map<string, FieldingLine> {
+  const lines = new Map<string, FieldingLine>();
+  const get = (playerId: string) => {
+    let line = lines.get(playerId);
+    if (!line) {
+      line = { putouts: 0, errors: 0 };
+      lines.set(playerId, line);
+    }
+    return line;
+  };
+
+  for (const ab of atBats) {
+    if (!ab.fielded_by_player_id) continue;
+    const line = get(ab.fielded_by_player_id);
+    if (ab.is_out) line.putouts += 1;
+    if (ab.result === "error") line.errors += 1;
+  }
+
+  return lines;
+}
+
+export function computeOpponentFieldingLines(
+  atBats: Pick<AtBat, "fielded_by_opponent_player_id" | "is_out" | "result">[]
+): Map<string, FieldingLine> {
+  const lines = new Map<string, FieldingLine>();
+  const get = (opponentPlayerId: string) => {
+    let line = lines.get(opponentPlayerId);
+    if (!line) {
+      line = { putouts: 0, errors: 0 };
+      lines.set(opponentPlayerId, line);
+    }
+    return line;
+  };
+
+  for (const ab of atBats) {
+    if (!ab.fielded_by_opponent_player_id) continue;
+    const line = get(ab.fielded_by_opponent_player_id);
+    if (ab.is_out) line.putouts += 1;
+    if (ab.result === "error") line.errors += 1;
+  }
+
+  return lines;
+}

@@ -364,6 +364,91 @@ prefer two-step queries (fetch a row, then a related row by id) over
 embedded `select("foo(bar)")` joins unless the generated types include real
 `Relationships` metadata -- the hand-written stub does not.
 
+## Sprint 3 follow-up: RBI crediting, double plays, fielding credit, box score
+
+A second Sprint 3 pass added six operator-screen features on top of the
+base build above -- `at_bats.result` gained `'double_play'`, plus
+`out_type`, `fielded_by_position`, `fielded_by_player_id`, and
+`fielded_by_opponent_player_id`; `game_events` gained `player_id` and
+`opponent_player_id` for attribution. No new tables.
+
+**A `games.game_state` JSONB column was requested and not built** -- the
+existing `game_state` *table* (see above) already covers everything it
+would have held (runners, outs, inning, mode), and `games.our_score`/
+`opponent_score` already cover score more usefully than nesting it in
+JSON. Building the column would have meant either a duplicate, colliding
+source of truth or a large rewrite for no functional gain.
+
+**RBI is now auto-derived, not a blanket manual count.** Every runner in
+`state.scoredThisAtBat` (`src/lib/operator/types.ts`, `ScoredRunner`)
+carries a `ScoreMethod` (`hit`/`sac_fly`/`forced_walk_hbp` award RBI;
+`wild_pitch`/`passed_ball`/`balk`/`error` don't). Runners the suggestion
+engine auto-advances off a hit/walk/HBP result get their method inferred
+(`resultToScoreMethod`); a runner marked "Scored" manually via the
+diamond's quick-action menu prompts "How did they score?" (`ScoreMethodMenu`)
+so the operator states the method explicitly. `pendingRbi` still recomputes
+as a default from this list but stays a manually-adjustable stepper on
+top, for judgment calls (e.g. the traditional no-RBI-on-GIDP-as-3rd-out
+rule) this project doesn't try to auto-enforce -- the operator has full
+control either way.
+
+**Fielding attribution reuses the same "derive from position" mechanism**
+for three different features: Fix 6's fielding-credit picker on outs (and
+on `result = 'error'`, so an error can be attributed to a fielder too),
+and the pitcher/catcher attribution on wild_pitch/balk/passed_ball events.
+`src/lib/operator/fielding.ts` (`resolveFielder`) looks up "who's playing
+position X right now" from `lineup.position` (ours, mode `'pitching'`) or
+`opponent_players.position` (theirs, mode `'hitting'`) -- not tracked as
+separate live state, so it assumes positions stay accurate through
+mid-game substitutions (a V0 simplification, same spirit as the rest of
+this sprint). All-runners quick actions (Wild Pitch/Balk/Passed
+Ball/Error, and the per-runner Error Advance) that don't have their own
+position picker log the event without a guessed fielder rather than
+attributing to an arbitrary position.
+
+**Double plays create two `at_bats` rows, not one.** The batter's own
+draft row becomes their out (always a force at 1st); a second row is
+created and confirmed in the same step for the runner also put out
+(`confirmDoublePlay` in `actions.ts`). This is deliberate, not an
+oversight: while pitching, each row's `is_out = true` with `pitcher_id`
+set is exactly what `computePitchingLines` already uses to count outs, so
+two rows correctly credit the pitcher 2/3 of an inning. The known
+trade-off: while hitting, the runner's row also counts as an extra AB/out
+in *their own* batting line, which a traditional box score wouldn't
+charge them (only the batter is charged for a DP) -- accepted as a minor,
+documented stats inaccuracy rather than building a special-cased
+"out record that isn't a real at-bat" concept. Undo for a double play
+deletes both rows (`lastConfirmed.secondAtBatId`) and reverses 2 outs.
+
+**The mini box-score dashboard (H/R/E/K + LOB) tracks *our* team's line
+specifically**, not a per-team-pair line score: hits and runs accumulate
+from hitting-mode at-bats (our offense), errors and strikeouts from
+pitching-mode at-bats (our defense -- errors we commit fielding,
+strikeouts our pitcher records). LOB counts runners left on base only when
+a *hitting* half-inning ends. This reads as "how are we doing" rather
+than a traditional two-team line score, which the spec's plain "Hits /
+Runs / Errors / Strikeouts" wording didn't specify either way. These
+counters live only in `OperatorState` (not persisted to `game_state`), so
+a page reload resets the live dashboard to 0 even though the underlying
+`at_bats` history -- the real source of truth for the coach dashboard --
+is unaffected.
+
+**Three-outs is now a blocking full-screen modal, not a bottom-bar
+button.** Whenever `state.outs >= 3` (from any source: a batter's own
+out, a runner out/picked off via the diamond, or the two outs from a
+double play) the modal renders unconditionally and, being a full-screen
+overlay, naturally blocks every pitch-logging control underneath without
+needing a separate "disabled" prop threaded through them. The only way
+past it is its own "End Inning" button.
+
+**Fielding stats computation exists but isn't surfaced in any UI yet.**
+`computeFieldingLines`/`computeOpponentFieldingLines` in `src/lib/stats.ts`
+compute putouts and errors per fielder from `at_bats.fielded_by_*`. Only
+putouts, not assists -- Fix 6 deliberately captures one fielder per play
+(a single tap after the field-diagram tap), so there's no multi-fielder
+chain to derive an assist from. No coach-dashboard panel displays these
+yet; that's future-sprint scope, not part of this batch.
+
 ## Auth flow
 
 1. `/login` -- client component, calls

@@ -1,17 +1,25 @@
 "use client";
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { AtBatResult, Database, PitchOutcome, PitchType, RunnerState, Runners } from "@/lib/supabase/types";
+import type { AtBatResult, Database, FieldingPosition, OutType, PitchOutcome, PitchType, RunnerState, Runners } from "@/lib/supabase/types";
 import { operatorReducer, UNDO_WINDOW_MS, advanceAllRunnersOneBase } from "@/lib/operator/reducer";
 import { advanceOneRunner, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
+import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
 import {
   RESULT_BUTTON_ORDER,
   RESULT_IS_OUT,
   RESULT_LABELS,
   PITCH_TYPE_LABELS,
   HIT_TYPE_LABELS,
+  FIELDABLE_OUT_RESULTS,
+  FIELDING_LAYOUT,
+  SCORE_METHOD_AWARDS_RBI,
+  SCORE_METHOD_EVENT,
+  SCORE_METHOD_LABELS,
+  resultToScoreMethod,
   type Base,
   type RunnerQuickAction,
+  type ScoreMethod,
 } from "@/lib/operator/types";
 import { atBatAccuracyRatio, LOW_ACCURACY_THRESHOLD } from "@/lib/pitch-accuracy";
 import { loadOperatorStateLocal, saveOperatorStateLocal } from "@/lib/operator/local-storage";
@@ -20,6 +28,7 @@ import { buildInitialStateFromServer } from "./initial-state";
 import {
   adjustScore,
   confirmAtBat,
+  confirmDoublePlay,
   logGameEvent,
   logPitch,
   logStolenBase,
@@ -44,6 +53,14 @@ type Pitch = Database["public"]["Tables"]["pitches"]["Row"];
 type OpponentPlayer = Database["public"]["Tables"]["opponent_players"]["Row"];
 
 const PITCH_TYPES: PitchType[] = ["fastball", "curveball", "changeup", "slider", "2seam", "other"];
+const SCORE_METHODS: ScoreMethod[] = ["hit", "sac_fly", "forced_walk_hbp", "wild_pitch", "passed_ball", "balk", "error"];
+
+interface DpWizardState {
+  step: "runner" | "type" | "fielding1" | "fielding2";
+  base?: Base;
+  outType: OutType;
+  firstFielding?: ResolvedFielder;
+}
 
 export function OperatorConsole({
   game,
@@ -89,7 +106,9 @@ export function OperatorConsole({
   const [banner, setBanner] = useState<string | null>(null);
   const [runnerPicker, setRunnerPicker] = useState<Base | null>(null);
   const [runnerActionMenu, setRunnerActionMenu] = useState<Base | null>(null);
+  const [scoreMethodPrompt, setScoreMethodPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
+  const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
 
   const battingPlayer = useMemo(
     () => (state.mode === "hitting" ? lineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
@@ -120,6 +139,10 @@ export function OperatorConsole({
     void withOfflineRetry(`runners-${game.id}-${Date.now()}`, () => syncGameState(game.id, { runners: next }));
   }
 
+  function resolve(position: FieldingPosition): ResolvedFielder {
+    return resolveFielder(position, state.mode, lineup, players, opponentPlayers);
+  }
+
   async function ensureDraftAtBat(): Promise<string> {
     if (state.currentAtBatId) return state.currentAtBatId;
     const id = await startDraftAtBat(game.id, {
@@ -135,6 +158,7 @@ export function OperatorConsole({
   }
 
   async function handlePitchOutcome(outcome: PitchOutcome) {
+    if (state.outs >= 3) return;
     setBanner(null);
     let atBatId: string;
     try {
@@ -174,10 +198,16 @@ export function OperatorConsole({
   }
 
   function pickResult(result: AtBatResult) {
+    if (result === "double_play") {
+      setDpWizard({ step: "runner", outType: "force" });
+      return;
+    }
     const batter = currentBatterRunner();
     const { runners: suggestion, scored } = suggestRunnerAdvance(state.runners, batter, result);
+    const method = resultToScoreMethod(result);
+    const taggedScored = scored.map((r) => ({ runner: r, method }));
     const hasMovement = scored.length > 0 || JSON.stringify(suggestion) !== JSON.stringify(state.runners);
-    dispatch({ type: "SET_RESULT", result, suggestion, scored, hasMovement });
+    dispatch({ type: "SET_RESULT", result, suggestion, scored: taggedScored, hasMovement });
     if (hasMovement) syncRunners(suggestion);
   }
 
@@ -193,21 +223,84 @@ export function OperatorConsole({
     const fieldY = state.fieldTap?.y ?? null;
     const rbi = state.pendingRbi;
     const mode = state.mode;
+    const fielding = state.pendingFielding;
 
-    dispatch({ type: "CONFIRM_LOCAL", atBatId, isOut, wasLowAccuracy: wasLow });
+    dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, wasLowAccuracy: wasLow });
 
     void withOfflineRetry(`confirm-${atBatId}`, async () => {
-      await confirmAtBat({ gameId: game.id, atBatId, mode, result, hitType, fieldX, fieldY, rbi, runsScored, isOut });
+      await confirmAtBat({
+        gameId: game.id,
+        atBatId,
+        mode,
+        result,
+        hitType,
+        fieldX,
+        fieldY,
+        rbi,
+        runsScored,
+        isOut,
+        fieldedByPosition: fielding?.position ?? null,
+        fieldedByPlayerId: fielding?.playerId ?? null,
+        fieldedByOpponentPlayerId: fielding?.opponentPlayerId ?? null,
+      });
     });
+  }
+
+  async function handleConfirmDoublePlay(input: {
+    base: Base;
+    runner: RunnerState;
+    outType: OutType;
+    batterFielding: ResolvedFielder;
+    secondFielding: ResolvedFielder;
+  }) {
+    const atBatId = state.currentAtBatId;
+    if (!atBatId) return;
+    setDpWizard(null);
+    setBanner(null);
+    try {
+      const { secondAtBatId } = await confirmDoublePlay({
+        gameId: game.id,
+        atBatId,
+        mode: state.mode,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+        hitType: state.pendingHitType,
+        fieldX: state.fieldTap?.x ?? null,
+        fieldY: state.fieldTap?.y ?? null,
+        batterFielding: {
+          position: input.batterFielding.position,
+          playerId: input.batterFielding.playerId,
+          opponentPlayerId: input.batterFielding.opponentPlayerId,
+        },
+        secondOutRunner: { type: input.runner.type, id: input.runner.id },
+        outType: input.outType,
+        secondOutFielding: {
+          position: input.secondFielding.position,
+          playerId: input.secondFielding.playerId,
+          opponentPlayerId: input.secondFielding.opponentPlayerId,
+        },
+      });
+      dispatch({ type: "CONFIRM_DOUBLE_PLAY", atBatId, secondAtBatId, removedBase: input.base });
+      void withOfflineRetry(`dp-state-${game.id}-${Date.now()}`, () =>
+        syncGameState(game.id, {
+          runners: { ...state.runners, [input.base]: null },
+          outs: Math.min(3, state.outs + 2),
+          current_at_bat_id: null,
+        })
+      );
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Failed to log double play -- check connection and try again");
+    }
   }
 
   async function handleUndo() {
     if (!state.lastConfirmed) return;
-    const { atBatId, mode, runsScored, runnersBeforeAtBat } = state.lastConfirmed;
+    const { atBatId, secondAtBatId, mode, runsScored, runnersBeforeAtBat } = state.lastConfirmed;
     dispatch({ type: "UNDO_LOCAL" });
     syncRunners(runnersBeforeAtBat);
     void withOfflineRetry(`undo-${atBatId}`, () =>
-      undoAtBat({ gameId: game.id, atBatId, mode, runsScoredToReverse: runsScored })
+      undoAtBat({ gameId: game.id, atBatId, secondAtBatId, mode, runsScoredToReverse: runsScored })
     );
   }
 
@@ -220,6 +313,12 @@ export function OperatorConsole({
   function handleQuickEvent(eventType: "wild_pitch" | "passed_ball" | "balk" | "error") {
     const result = advanceAllRunnersOneBase(state.runners);
     dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", result });
+    // wild_pitch/balk are unambiguously on the pitcher; passed_ball is
+    // unambiguously on the catcher. "error" has no single obvious fielder
+    // here (unlike Fix 6's picker, this all-runners quick action doesn't
+    // ask which position), so it's logged without attribution rather than
+    // guessing one.
+    const fielder = eventType === "wild_pitch" || eventType === "balk" ? resolve("P") : eventType === "passed_ball" ? resolve("C") : null;
     void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
       logGameEvent(game.id, {
         eventType,
@@ -227,15 +326,25 @@ export function OperatorConsole({
         inningHalf: state.inningHalf,
         mode: state.mode,
         runsScored: result.scored.length,
+        playerId: fielder?.playerId ?? null,
+        opponentPlayerId: fielder?.opponentPlayerId ?? null,
       })
     );
   }
 
-  function applyRunnerAction(base: Base, action: RunnerQuickAction) {
+  function applyRunnerAction(base: Base, action: RunnerQuickAction, scoreMethod?: ScoreMethod) {
     const runner = state.runners[base];
     if (!runner) return;
-    dispatch({ type: "APPLY_RUNNER_ACTION", base, action });
+
+    if (action === "scored" && !scoreMethod) {
+      setRunnerActionMenu(null);
+      setScoreMethodPrompt({ base, runner });
+      return;
+    }
+
+    dispatch({ type: "APPLY_RUNNER_ACTION", base, action, scoreMethod });
     setRunnerActionMenu(null);
+    setScoreMethodPrompt(null);
 
     if (action === "advance" || action === "stolen_base" || action === "error_advance") {
       const advanced = advanceOneRunner(state.runners, base);
@@ -244,8 +353,15 @@ export function OperatorConsole({
         void withOfflineRetry(`sb-${game.id}-${Date.now()}`, () => logStolenBase(game.id, runner.id!, state.inning));
       }
       if (action === "error_advance") {
+        // No fielder picker in this quick action -- logged without
+        // attribution rather than guessing a position.
         void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
-          logGameEvent(game.id, { eventType: "error", inning: state.inning, inningHalf: state.inningHalf, mode: state.mode })
+          logGameEvent(game.id, {
+            eventType: "error",
+            inning: state.inning,
+            inningHalf: state.inningHalf,
+            mode: state.mode,
+          })
         );
       }
       return;
@@ -258,19 +374,35 @@ export function OperatorConsole({
       );
       return;
     }
+
     // scored
     syncRunners(nextRunners);
+    const eventType = scoreMethod ? SCORE_METHOD_EVENT[scoreMethod] : undefined;
+    if (eventType) {
+      // wild_pitch/balk -> pitcher, passed_ball -> catcher; "error" (no
+      // picker in this sub-menu) is logged without a guessed fielder.
+      const fielder = eventType === "wild_pitch" || eventType === "balk" ? resolve("P") : eventType === "passed_ball" ? resolve("C") : null;
+      void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType,
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          playerId: fielder?.playerId ?? null,
+          opponentPlayerId: fielder?.opponentPlayerId ?? null,
+        })
+      );
+    }
     if (!state.awaitingResult) {
       // Ad-hoc, outside the at-bat review flow -- confirmAtBat's runsScored
-      // already covers the in-review case, so this only fires when there's
-      // no upcoming Confirm At-Bat to carry the run.
+      // already covers the in-review case (RBI included), so this only
+      // fires when there's no upcoming Confirm At-Bat to carry the run.
+      // RBI isn't attributed here -- there's no "current batter" in an
+      // ad-hoc context to credit it to.
       void withOfflineRetry(`score-${game.id}-${Date.now()}`, () => adjustScore(game.id, state.mode, 1));
     }
   }
 
-  function openEndInning() {
-    dispatch({ type: "SET_PANEL", panel: "endInning", open: true });
-  }
   function confirmEndInning() {
     dispatch({ type: "END_INNING_LOCAL" });
     const nextHalf = state.inningHalf === "top" ? "bottom" : "top";
@@ -317,6 +449,12 @@ export function OperatorConsole({
           : "text-foreground/60"
       : "text-foreground/60";
 
+  const showFieldingPicker =
+    !!state.fieldTap &&
+    !!state.suggestedResult &&
+    (FIELDABLE_OUT_RESULTS.includes(state.suggestedResult) || state.suggestedResult === "error") &&
+    !state.pendingFielding;
+
   return (
     <div className="min-h-screen bg-background pb-24 text-foreground">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
@@ -350,6 +488,8 @@ export function OperatorConsole({
           </p>
         </div>
       </header>
+
+      <BoxScoreDashboard state={state} />
 
       {state.showLowAccuracyWarning && (
         <div className="bg-accent-amber/10 px-4 py-2 text-center text-xs text-accent-amber">
@@ -477,13 +617,25 @@ export function OperatorConsole({
                 </div>
               </div>
 
+              {state.pendingFielding && (
+                <p className="mt-3 text-xs text-foreground/50">
+                  Fielded by: <span className="text-white">{state.pendingFielding.position}</span>{" "}
+                  <button
+                    onClick={() => dispatch({ type: "SET_FIELDING", position: state.pendingFielding!.position, playerId: null, opponentPlayerId: null })}
+                    className="text-accent-blue hover:underline"
+                  >
+                    change
+                  </button>
+                </p>
+              )}
+
               <div className="mt-3 flex items-start gap-6">
                 <Stepper label="RBI" value={state.pendingRbi} onChange={(v) => dispatch({ type: "SET_RBI", value: v })} />
                 <div>
                   <p className="text-xs uppercase tracking-wide text-foreground/40">Runs scoring</p>
                   <p className="font-heading mt-1 text-sm text-white">
                     {state.scoredThisAtBat.length > 0
-                      ? `${state.scoredThisAtBat.length} — ${state.scoredThisAtBat.map((r) => r.name).join(", ")}`
+                      ? `${state.scoredThisAtBat.length} — ${state.scoredThisAtBat.map((s) => s.runner.name).join(", ")}`
                       : "None"}
                   </p>
                   <p className="mt-0.5 text-[10px] text-foreground/40">Set on the diamond, right column</p>
@@ -504,6 +656,14 @@ export function OperatorConsole({
         {/* RIGHT COLUMN */}
         <div className="flex flex-col gap-4">
           <FieldDiagram tap={state.fieldTap} onTap={(x, y) => dispatch({ type: "SET_FIELD_TAP", x, y })} />
+
+          {showFieldingPicker && (
+            <FieldingPositionPicker
+              title="Who made the play?"
+              onSelect={(f) => dispatch({ type: "SET_FIELDING", position: f.position, playerId: f.playerId, opponentPlayerId: f.opponentPlayerId })}
+              resolve={resolve}
+            />
+          )}
 
           <div className="flex flex-col items-center gap-2 rounded-lg border border-border bg-surface p-4">
             {state.runnersPendingConfirmation && (
@@ -557,6 +717,39 @@ export function OperatorConsole({
         </div>
       </div>
 
+      {scoreMethodPrompt && (
+        <ScoreMethodMenu
+          runner={scoreMethodPrompt.runner}
+          onSelect={(m) => applyRunnerAction(scoreMethodPrompt.base, "scored", m)}
+          onClose={() => setScoreMethodPrompt(null)}
+        />
+      )}
+
+      {dpWizard && (
+        <DoublePlayWizard
+          wizard={dpWizard}
+          runners={state.runners}
+          resolve={resolve}
+          onChangeBase={(base) => setDpWizard({ step: "type", base, outType: "force" })}
+          onChangeType={(outType) => setDpWizard((w) => (w ? { ...w, outType } : w))}
+          onProceedToFielding1={() => setDpWizard((w) => (w ? { ...w, step: "fielding1" } : w))}
+          onFirstFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "fielding2", firstFielding: f } : w))}
+          onSecondFielding={(f) => {
+            if (!dpWizard.base || !dpWizard.firstFielding) return;
+            const runner = state.runners[dpWizard.base];
+            if (!runner) return;
+            void handleConfirmDoublePlay({
+              base: dpWizard.base,
+              runner,
+              outType: dpWizard.outType,
+              batterFielding: dpWizard.firstFielding,
+              secondFielding: f,
+            });
+          }}
+          onCancel={() => setDpWizard(null)}
+        />
+      )}
+
       {pitcherPickerOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
           <div className="w-full max-w-xs rounded-lg border border-border bg-surface p-4">
@@ -596,16 +789,6 @@ export function OperatorConsole({
         />
       )}
 
-      {state.endInningConfirmOpen && (
-        <ConfirmDialog
-          title="End half-inning?"
-          message={`${state.outs} outs recorded — end this half inning?`}
-          confirmLabel="End Inning"
-          onConfirm={confirmEndInning}
-          onCancel={() => dispatch({ type: "SET_PANEL", panel: "endInning", open: false })}
-        />
-      )}
-
       {state.endGameConfirmOpen && (
         <ConfirmDialog
           title="End game?"
@@ -629,21 +812,22 @@ export function OperatorConsole({
         />
       )}
 
+      {state.outs >= 3 && (
+        <ThreeOutsModal
+          hits={state.hitsThisInning}
+          runs={state.runsThisInning}
+          errors={state.errorsThisInning}
+          onEndInning={confirmEndInning}
+        />
+      )}
+
       <div className="fixed inset-x-0 bottom-0 z-30 flex items-center justify-between gap-3 border-t border-border bg-surface px-4 py-3">
-        <div className="flex gap-2">
-          <button
-            onClick={openEndInning}
-            className="min-h-[48px] rounded-md border border-border px-4 text-sm font-medium text-white"
-          >
-            End Inning
-          </button>
-          <button
-            onClick={() => dispatch({ type: "SET_PANEL", panel: "endGame", open: true })}
-            className="min-h-[48px] rounded-md border border-red-500/50 px-4 text-sm font-medium text-red-400"
-          >
-            End Game
-          </button>
-        </div>
+        <button
+          onClick={() => dispatch({ type: "SET_PANEL", panel: "endGame", open: true })}
+          className="min-h-[48px] rounded-md border border-red-500/50 px-4 text-sm font-medium text-red-400"
+        >
+          End Game
+        </button>
 
         {undoActive && (
           <button
@@ -896,6 +1080,235 @@ function RunnerQuickActionMenu({
       <button onClick={onClose} className="mt-2 w-full text-xs text-foreground/50">
         Close
       </button>
+    </div>
+  );
+}
+
+function ScoreMethodMenu({
+  runner,
+  onSelect,
+  onClose,
+}: {
+  runner: RunnerState;
+  onSelect: (method: ScoreMethod) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="w-full max-w-xs rounded-lg border border-border bg-surface p-4">
+        <p className="text-sm font-semibold text-white">{runner.name} scored</p>
+        <p className="mb-3 text-xs text-foreground/50">How did they score?</p>
+        <div className="flex flex-col gap-1.5">
+          {SCORE_METHODS.map((m) => (
+            <button
+              key={m}
+              onClick={() => onSelect(m)}
+              className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-blue"
+            >
+              {SCORE_METHOD_LABELS[m]}
+              <span className={`text-[10px] uppercase ${SCORE_METHOD_AWARDS_RBI[m] ? "text-accent-green" : "text-foreground/40"}`}>
+                {SCORE_METHOD_AWARDS_RBI[m] ? "RBI" : "no RBI"}
+              </span>
+            </button>
+          ))}
+        </div>
+        <button onClick={onClose} className="mt-3 w-full text-xs text-foreground/50">
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BoxScoreDashboard({ state }: { state: { hitsThisInning: number; runsThisInning: number; errorsThisInning: number; kThisInning: number; hitsGame: number; runsGame: number; errorsGame: number; kGame: number; lobGame: number } }) {
+  return (
+    <div className="grid grid-cols-1 gap-1 border-b border-border bg-surface/60 px-4 py-1.5 text-xs sm:grid-cols-2">
+      <div className="flex items-center gap-3">
+        <span className="w-20 shrink-0 uppercase tracking-wide text-foreground/40">This inning</span>
+        <BoxStat label="H" value={state.hitsThisInning} />
+        <BoxStat label="R" value={state.runsThisInning} />
+        <BoxStat label="E" value={state.errorsThisInning} />
+        <BoxStat label="K" value={state.kThisInning} />
+      </div>
+      <div className="flex items-center gap-3">
+        <span className="w-20 shrink-0 uppercase tracking-wide text-foreground/40">Game</span>
+        <BoxStat label="H" value={state.hitsGame} />
+        <BoxStat label="R" value={state.runsGame} />
+        <BoxStat label="E" value={state.errorsGame} />
+        <BoxStat label="K" value={state.kGame} />
+        <BoxStat label="LOB" value={state.lobGame} />
+      </div>
+    </div>
+  );
+}
+
+function BoxStat({ label, value }: { label: string; value: number }) {
+  return (
+    <span className="text-white">
+      <span className="text-foreground/40">{label}</span> {value}
+    </span>
+  );
+}
+
+function FieldingPositionPicker({
+  title,
+  onSelect,
+  resolve,
+}: {
+  title: string;
+  onSelect: (fielder: ResolvedFielder) => void;
+  resolve: (position: FieldingPosition) => ResolvedFielder;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-surface p-3">
+      <p className="mb-2 text-xs uppercase tracking-wide text-foreground/40">{title}</p>
+      <div className="flex flex-col items-center gap-1.5">
+        {FIELDING_LAYOUT.map((row, i) => (
+          <div key={i} className="flex gap-1.5">
+            {row.map((pos) => (
+              <button
+                key={pos}
+                onClick={() => onSelect(resolve(pos))}
+                className="min-h-[44px] min-w-[44px] rounded border border-border px-2 text-xs font-semibold text-white hover:border-accent-blue"
+              >
+                {pos}
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ThreeOutsModal({
+  hits,
+  runs,
+  errors,
+  onEndInning,
+}: {
+  hits: number;
+  runs: number;
+  errors: number;
+  onEndInning: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4">
+      <div className="w-full max-w-sm rounded-lg border border-accent-amber/50 bg-surface p-6 text-center">
+        <p className="font-heading text-3xl font-bold text-accent-amber">3 OUTS</p>
+        <p className="mt-1 text-sm text-foreground/60">Inning over</p>
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          <div>
+            <p className="font-heading text-2xl text-white">{hits}</p>
+            <p className="text-[10px] uppercase text-foreground/40">Hits</p>
+          </div>
+          <div>
+            <p className="font-heading text-2xl text-white">{runs}</p>
+            <p className="text-[10px] uppercase text-foreground/40">Runs</p>
+          </div>
+          <div>
+            <p className="font-heading text-2xl text-white">{errors}</p>
+            <p className="text-[10px] uppercase text-foreground/40">Errors</p>
+          </div>
+        </div>
+        <button
+          onClick={onEndInning}
+          className="mt-6 w-full min-h-[48px] rounded-md bg-accent-amber px-4 text-base font-semibold text-background"
+        >
+          End Inning
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DoublePlayWizard({
+  wizard,
+  runners,
+  resolve,
+  onChangeBase,
+  onChangeType,
+  onProceedToFielding1,
+  onFirstFielding,
+  onSecondFielding,
+  onCancel,
+}: {
+  wizard: DpWizardState;
+  runners: Runners;
+  resolve: (position: FieldingPosition) => ResolvedFielder;
+  onChangeBase: (base: Base) => void;
+  onChangeType: (t: OutType) => void;
+  onProceedToFielding1: () => void;
+  onFirstFielding: (f: ResolvedFielder) => void;
+  onSecondFielding: (f: ResolvedFielder) => void;
+  onCancel: () => void;
+}) {
+  const occupied = (["first", "second", "third"] as Base[]).filter((b) => runners[b]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-5">
+        <h3 className="font-heading text-lg font-bold text-white">Double Play</h3>
+
+        {wizard.step === "runner" && (
+          <>
+            <p className="mt-2 text-sm text-foreground/60">Which runner was out?</p>
+            <div className="mt-3 flex flex-col gap-2">
+              {occupied.map((b) => (
+                <button
+                  key={b}
+                  onClick={() => onChangeBase(b)}
+                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-blue"
+                >
+                  {runners[b]?.name} ({b})
+                </button>
+              ))}
+              {occupied.length === 0 && <p className="text-sm text-foreground/40">No runners on base.</p>}
+            </div>
+          </>
+        )}
+
+        {wizard.step === "type" && (
+          <>
+            <p className="mt-2 text-sm text-foreground/60">Force out or tag out (the runner)?</p>
+            <div className="mt-3 flex gap-2">
+              {(["force", "tag"] as OutType[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => onChangeType(t)}
+                  className={`flex-1 rounded-md border px-3 py-2 text-sm capitalize ${
+                    wizard.outType === t ? "border-accent-blue bg-accent-blue text-white" : "border-border text-foreground/70"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={onProceedToFielding1}
+              className="mt-4 w-full min-h-[48px] rounded-md bg-accent-blue px-4 text-sm font-semibold text-white"
+            >
+              Next
+            </button>
+          </>
+        )}
+
+        {wizard.step === "fielding1" && (
+          <div className="mt-2">
+            <FieldingPositionPicker title="First out (batter, force at 1B) — who fielded it?" onSelect={onFirstFielding} resolve={resolve} />
+          </div>
+        )}
+
+        {wizard.step === "fielding2" && (
+          <div className="mt-2">
+            <FieldingPositionPicker title="Second out — who fielded it?" onSelect={onSecondFielding} resolve={resolve} />
+          </div>
+        )}
+
+        <button onClick={onCancel} className="mt-4 w-full text-xs text-foreground/50">
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }

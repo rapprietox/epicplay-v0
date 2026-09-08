@@ -25,13 +25,16 @@ export type AtBatResult =
   | "walk"
   | "hbp"
   | "error"
-  | "fc";
+  | "fc"
+  | "double_play";
 export type HitType = "groundball" | "linedrive" | "flyball" | "bunt" | "popup" | "hr";
 export type PitchType = "fastball" | "curveball" | "changeup" | "slider" | "2seam" | "other";
 export type PitchOutcome = "strike" | "ball" | "foul" | "hbp" | "inplay";
 export type AtBatMode = "hitting" | "pitching";
 export type SubReason = "tactical" | "injury" | "ejection" | "defensive" | "pinch_hit" | "pinch_run";
 export type GameEventType = "wild_pitch" | "passed_ball" | "balk" | "error";
+export type OutType = "force" | "tag";
+export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 
 export interface RunnerState {
   type: "player" | "opponent";
@@ -185,6 +188,10 @@ export interface Database {
           rbi: number;
           runs_scored: number;
           is_out: boolean;
+          out_type: OutType | null;
+          fielded_by_position: FieldingPosition | null;
+          fielded_by_player_id: string | null;
+          fielded_by_opponent_player_id: string | null;
           confirmed_at: string | null;
           created_at: string;
         };
@@ -204,6 +211,10 @@ export interface Database {
           rbi?: number;
           runs_scored?: number;
           is_out?: boolean;
+          out_type?: OutType | null;
+          fielded_by_position?: FieldingPosition | null;
+          fielded_by_player_id?: string | null;
+          fielded_by_opponent_player_id?: string | null;
           confirmed_at?: string | null;
           created_at?: string;
         };
@@ -386,6 +397,8 @@ export interface Database {
           inning_half: InningHalf;
           event_type: GameEventType;
           note: string | null;
+          player_id: string | null;
+          opponent_player_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -395,6 +408,8 @@ export interface Database {
           inning_half: InningHalf;
           event_type: GameEventType;
           note?: string | null;
+          player_id?: string | null;
+          opponent_player_id?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["game_events"]["Insert"]>;
