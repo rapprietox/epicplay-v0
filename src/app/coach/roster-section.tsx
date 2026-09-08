@@ -2,6 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { addPlayer } from "./actions";
+import { POSITIONS } from "@/lib/baseball-positions";
 
 interface Player {
   id: string;
@@ -63,12 +64,19 @@ export function RosterSection({ players }: { players: Player[] }) {
           <label className="text-xs text-foreground/50" htmlFor="player-position">
             Position
           </label>
-          <input
+          <select
             id="player-position"
             name="position"
-            placeholder="SS"
-            className="w-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
-          />
+            defaultValue=""
+            className="w-44 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+          >
+            <option value="">—</option>
+            {POSITIONS.map((pos) => (
+              <option key={pos.value} value={pos.value}>
+                {pos.label}
+              </option>
+            ))}
+          </select>
         </div>
         <button
           type="submit"

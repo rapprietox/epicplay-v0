@@ -7,6 +7,7 @@ import type { GameType } from "@/lib/supabase/types";
 import { daysUntil, formatGameDate } from "@/lib/dates";
 import { recordAgainstOpponent, resultLetter, formatRecord } from "@/lib/opponent-history";
 import { addManualGame, cancelGame, editGame } from "./actions";
+import { TIME_OPTIONS } from "@/lib/time-options";
 
 type Game = Database["public"]["Tables"]["games"]["Row"];
 
@@ -111,12 +112,18 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
               defaultValue={game.game_date}
               className="rounded border border-border bg-background px-2 py-1 text-sm text-white"
             />
-            <input
+            <select
               name="game_time"
               defaultValue={game.game_time ?? ""}
-              placeholder="Time"
-              className="w-20 rounded border border-border bg-background px-2 py-1 text-sm text-white"
-            />
+              className="rounded border border-border bg-background px-2 py-1 text-sm text-white"
+            >
+              <option value="">—</option>
+              {TIME_OPTIONS.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
             <select
               name="home_away"
               defaultValue={game.home_away}
@@ -290,11 +297,19 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
         <label className="text-xs text-foreground/50" htmlFor="manual-time">
           Time
         </label>
-        <input
+        <select
           id="manual-time"
           name="game_time"
-          className="w-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
-        />
+          defaultValue=""
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+        >
+          <option value="">—</option>
+          {TIME_OPTIONS.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
       </div>
       <div className="flex flex-col gap-1">
         <label className="text-xs text-foreground/50" htmlFor="manual-home-away">

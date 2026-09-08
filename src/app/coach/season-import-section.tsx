@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { confirmSeasonImport, extractSchedulePdf, type ConfirmScheduleGame } from "./actions";
 import type { GameType } from "@/lib/supabase/types";
+import { TIME_OPTIONS } from "@/lib/time-options";
 
 const GAME_TYPES: GameType[] = [
   "friendly",
@@ -145,11 +146,18 @@ export function SeasonImportSection() {
                       />
                     </td>
                     <td className="py-1.5 pr-3">
-                      <input
+                      <select
                         value={g.time ?? ""}
                         onChange={(e) => updateGame(i, { time: e.target.value || null })}
-                        className="w-20 rounded border border-border bg-background px-2 py-1 text-white"
-                      />
+                        className="rounded border border-border bg-background px-2 py-1 text-white"
+                      >
+                        <option value="">—</option>
+                        {TIME_OPTIONS.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
                     </td>
                     <td className="py-1.5 pr-3">
                       <input
