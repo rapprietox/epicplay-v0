@@ -280,19 +280,49 @@ not awaited by the UI). Key design points:
   its pitches, reverse the score/outs/batting-order delta captured in
   `state.lastConfirmed`), never a cascading "and also undo the next
   batter's not-yet-created draft."
-- **Baserunner advancement is manual, not automatic.** The baserunner
-  diamond doesn't auto-advance runners when an at-bat result is chosen
-  (that would need real force-play logic -- which runner is forced depends
-  on which bases were occupied *before* the play, cascading rules this
-  V0 doesn't implement). The operator taps bases to reflect what actually
-  happened. The one exception is the Stolen Base quick action, which is
-  unambiguous (exactly one runner, exactly one base) and does auto-advance.
-  Wild Pitch/Passed Ball/Balk/Error quick actions advance *all* occupied
-  bases by exactly one as a simplification (the common case; doesn't
-  model multi-base or no-advance error scenarios).
-- **RBI and runs-scored are manual steppers**, not derived from base
-  state, for the same reason (deriving forced runs correctly needs the
-  same force-play logic).
+- **Baserunner advancement is suggested, never locked.** Picking (or
+  auto-reaching, on ball 4 / strike 3 / HBP) an at-bat result computes a
+  suggested new `runners` state via `src/lib/operator/runner-advance.ts`
+  (`suggestRunnerAdvance` -- single/double/triple/HR/error/FC advance by a
+  fixed number of bases, walk/HBP follow the standard force cascade, outs
+  leave runners on base) and applies it immediately to `state.runners` so
+  the diamond reflects it live, flagging `runnersPendingConfirmation` for
+  the pulsing "Confirm Runners" UI. It's a suggestion, not a lock: tapping
+  any occupied base at any time (mid-suggestion or not) opens the
+  quick-action menu (Advance / Scored / Out / Stolen Base / Picked Off /
+  Error Advance -- `RunnerQuickActionMenu`) to override it, since real
+  baseball has cases the suggestion can't know (runner going first-to-third
+  on a single, thrown out taking an extra base). Wild Pitch/Passed
+  Ball/Balk/(all-runners) Error quick actions still advance every occupied
+  base by exactly one as a simplification (the common case; doesn't model
+  multi-base or no-advance error scenarios). "Picked Off" and "Out" both
+  just increment `outs` -- they don't retroactively rewrite the at-bat
+  that put the runner on base, and neither is attributed to the pitcher's
+  formal `at_bats`-based stats (no at-bat row exists for a pickoff), a
+  documented simplification.
+- **RBI and runs-scored are no longer independent manual entry.**
+  `state.scoredThisAtBat` (runners marked "Scored," whether via the
+  suggestion or a manual override) is the *sole* source of truth for
+  `runsScored` at Confirm At-Bat time -- there's deliberately no separate
+  "runs scored" stepper any more, since two parallel sources of truth for
+  the same number could drift out of sync. RBI stays a small manual
+  stepper (defaults to the scored count, zeroed by default on an error)
+  since RBI crediting has real judgment-call nuance a formula won't get
+  right. A "Scored" tap *outside* the at-bat-review flow (e.g. a delayed
+  steal of home between at-bats) calls the new `adjustScore` action
+  immediately instead, since there's no upcoming Confirm At-Bat to carry it.
+- **Undo restores runner positions too**, not just score/outs/batting
+  order: `START_DRAFT_LOCAL` snapshots `runners` into
+  `runnersAtAtBatStart`, copied onto `lastConfirmed.runnersBeforeAtBat` at
+  confirm time so `UNDO_LOCAL` can put runners back exactly where they
+  were before that at-bat's suggestion was applied.
+- A live `games.game_state` JSONB column was proposed at one point for
+  this same runner/inning/score state -- rejected in favor of the
+  `game_state` **table** above, which already covered it (and already had
+  RLS + the whole operator console wired to it); a same-named column
+  would have collided with the table for no benefit, since `our_score`/
+  `opponent_score` on `games` are more query-friendly than nesting score
+  in JSON anyway.
 - **Offline queue is best-effort, not durable across a reload.**
   `src/lib/operator/sync-queue.ts` retries failed writes (most commonly a
   network error while offline) every 5s and on the `online` event, in
@@ -421,24 +451,31 @@ Start Game.
 
 **Sprint 3 (done):** The operator live game-logging screen, tablet-first,
 at `/operator` -- HITTING/PITCHING mode toggle, current batter/pitcher
-header, ball-strike-out count, inning/score display, pitch type pills,
-3x3 strike zone tap grid, pitch outcome buttons (each pitch saved to
-`pitches` immediately, before the at-bat is confirmed -- see the draft/
-confirmed lifecycle above), at-bat result buttons with RBI/runs steppers,
-Confirm At-Bat with a 30-second visible-countdown Undo, SVG field diagram
-tap-to-mark, baserunner diamond (manual tap-to-adjust) with a Stolen Base
-quick action plus Wild Pitch/Balk/Passed Ball/Error (advance-all-runners),
-Substitution panel, running pitch count with 75/85 color warnings and a
-must-acknowledge full-screen modal at 100, the low-pitch-detail accuracy
-warning, manual End Inning/End Game with confirmation dialogs, and a
-post-game summary screen (Submit -> `endGame` sets `status='completed'`,
-computes `logging_accuracy_score`). 5-second localStorage snapshots +
-best-effort offline retry queue (see the durability caveat above -- not
-literally bulletproof across a reload while offline). Coach dashboard
-gained a live "Continue Game" panel for an active game, a live/Continue
-row on the schedule table, and `RealtimeRefresh` (Supabase Realtime ->
-debounced `router.refresh()`) so scores and stats update as the operator
-logs plays.
+header, ball-strike-out count, inning/score display, pitch type pills, a
+strike zone tap grid (visually a 9x9 subdivision -- 81 zones -- of the
+original 3x3 thirds for more precise location capture, but still one
+large continuous tap surface rather than 81 small buttons, per the
+48px-minimum-tap-target rule; see `strike-zone-grid.tsx`), pitch outcome
+buttons (each pitch saved to `pitches` immediately, before the at-bat is
+confirmed -- see the draft/confirmed lifecycle above), at-bat result
+buttons with an RBI stepper and a derived (not manually entered)
+runs-scored count, Confirm At-Bat with a 30-second visible-countdown Undo
+that also restores runner positions, SVG field diagram tap-to-mark,
+baserunner diamond with suggested-then-confirmable auto-advance (see
+"Baserunner advancement is suggested, never locked" above) and a
+per-runner quick-action menu (Advance/Scored/Out/Stolen Base/Picked
+Off/Error Advance) alongside the existing all-runners Wild
+Pitch/Balk/Passed Ball/Error quick actions, Substitution panel, running
+pitch count with 75/85 color warnings and a must-acknowledge full-screen
+modal at 100, the low-pitch-detail accuracy warning, manual End Inning/End
+Game with confirmation dialogs, and a post-game summary screen (Submit ->
+`endGame` sets `status='completed'`, computes `logging_accuracy_score`).
+5-second localStorage snapshots + best-effort offline retry queue (see the
+durability caveat above -- not literally bulletproof across a reload while
+offline). Coach dashboard gained a live "Continue Game" panel for an
+active game, a live/Continue row on the schedule table, and
+`RealtimeRefresh` (Supabase Realtime -> debounced `router.refresh()`) so
+scores and stats update as the operator logs plays.
 
 **Sprint 4 (next, not started):** Player dashboard (AVG/HR/RBI/OBP/SLG/
 OPS, at-bat history, SVG heat map, SVG spray chart) -- the last major

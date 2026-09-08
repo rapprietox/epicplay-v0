@@ -1,6 +1,7 @@
 import type { AtBatMode, AtBatResult, HitType, InningHalf, PitchOutcome, PitchType, RunnerState, Runners } from "@/lib/supabase/types";
 import { LOW_ACCURACY_STREAK_WARNING } from "@/lib/pitch-accuracy";
-import type { OperatorState } from "./types";
+import { advanceOneRunner } from "./runner-advance";
+import type { Base, OperatorState, RunnerQuickAction } from "./types";
 
 export const UNDO_WINDOW_MS = 30_000;
 
@@ -17,6 +18,7 @@ export function initialOperatorState(gameId: string): OperatorState {
     currentPitcherId: null,
     opponentBatterName: "",
     runners: {},
+    runnersAtAtBatStart: null,
     currentAtBatId: null,
     balls: 0,
     strikes: 0,
@@ -28,8 +30,9 @@ export function initialOperatorState(gameId: string): OperatorState {
     suggestedResult: null,
     fieldTap: null,
     pendingRbi: 0,
-    pendingRunsScored: 0,
     pendingHitType: null,
+    scoredThisAtBat: [],
+    runnersPendingConfirmation: false,
     pitchCountForCurrentPitcher: 0,
     pitchCountAck75: false,
     pitchCountAck85: false,
@@ -53,15 +56,16 @@ export type OperatorAction =
   | { type: "TAP_ZONE"; x: number; y: number }
   | { type: "START_DRAFT_LOCAL"; atBatId: string }
   | { type: "LOG_PITCH_LOCAL"; outcome: PitchOutcome }
-  | { type: "SET_RESULT"; result: AtBatResult }
+  | { type: "SET_RESULT"; result: AtBatResult; suggestion: Runners; scored: RunnerState[]; hasMovement: boolean }
   | { type: "SET_HIT_TYPE"; hitType: HitType | null }
   | { type: "SET_FIELD_TAP"; x: number; y: number }
   | { type: "SET_RBI"; value: number }
-  | { type: "SET_RUNS_SCORED"; value: number }
-  | { type: "CONFIRM_LOCAL"; atBatId: string; isOut: boolean; runsScored: number; wasLowAccuracy: boolean }
+  | { type: "CONFIRM_RUNNERS_SUGGESTION" }
+  | { type: "APPLY_RUNNER_ACTION"; base: Base; action: RunnerQuickAction }
+  | { type: "CONFIRM_LOCAL"; atBatId: string; isOut: boolean; wasLowAccuracy: boolean }
   | { type: "UNDO_LOCAL" }
   | { type: "CLEAR_LAST_CONFIRMED" }
-  | { type: "SET_RUNNER"; base: "first" | "second" | "third"; runner: RunnerState | null }
+  | { type: "SET_RUNNER"; base: Base; runner: RunnerState | null }
   | { type: "ADVANCE_ALL_RUNNERS_LOCAL"; result: { runners: Runners; scored: RunnerState[] } }
   | { type: "SET_PITCHER"; playerId: string | null }
   | { type: "SET_OPPONENT_BATTER_NAME"; name: string }
@@ -95,7 +99,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       return { ...state, selectedZone: { x: action.x, y: action.y }, dirty: true };
 
     case "START_DRAFT_LOCAL":
-      return { ...state, currentAtBatId: action.atBatId, dirty: true };
+      return { ...state, currentAtBatId: action.atBatId, runnersAtAtBatStart: state.runners, dirty: true };
 
     case "LOG_PITCH_LOCAL": {
       const pitch = {
@@ -139,6 +143,10 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         lastPitchZone: pitch.zone_x !== null && pitch.zone_y !== null ? { x: pitch.zone_x, y: pitch.zone_y, outcome: action.outcome } : state.lastPitchZone,
         selectedZone: null,
         awaitingResult,
+        // Only set here for display purposes (e.g. highlighting the
+        // suggested result button); the runner suggestion itself is
+        // computed by the caller (needs roster/opponent-name context the
+        // reducer doesn't have) and applied via a follow-up SET_RESULT.
         suggestedResult,
         pitchCountForCurrentPitcher:
           state.mode === "pitching" ? state.pitchCountForCurrentPitcher + 1 : state.pitchCountForCurrentPitcher,
@@ -146,8 +154,18 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       };
     }
 
-    case "SET_RESULT":
-      return { ...state, suggestedResult: action.result, dirty: true };
+    case "SET_RESULT": {
+      const rbi = action.result === "error" ? 0 : Math.min(4, action.scored.length);
+      return {
+        ...state,
+        suggestedResult: action.result,
+        runners: action.suggestion,
+        scoredThisAtBat: action.scored,
+        pendingRbi: rbi,
+        runnersPendingConfirmation: action.hasMovement,
+        dirty: true,
+      };
+    }
 
     case "SET_HIT_TYPE":
       return { ...state, pendingHitType: action.hitType, dirty: true };
@@ -158,20 +176,56 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
     case "SET_RBI":
       return { ...state, pendingRbi: Math.max(0, Math.min(4, action.value)), dirty: true };
 
-    case "SET_RUNS_SCORED":
-      return { ...state, pendingRunsScored: Math.max(0, Math.min(4, action.value)), dirty: true };
+    case "CONFIRM_RUNNERS_SUGGESTION":
+      return { ...state, runnersPendingConfirmation: false, dirty: true };
+
+    case "APPLY_RUNNER_ACTION": {
+      const runner = state.runners[action.base];
+      if (!runner) return state;
+
+      if (action.action === "scored") {
+        return {
+          ...state,
+          runners: { ...state.runners, [action.base]: null },
+          scoredThisAtBat: [...state.scoredThisAtBat, runner],
+          pendingRbi: state.suggestedResult === "error" ? state.pendingRbi : Math.min(4, state.pendingRbi + 1),
+          runnersPendingConfirmation: false,
+          dirty: true,
+        };
+      }
+      if (action.action === "out" || action.action === "picked_off") {
+        return {
+          ...state,
+          runners: { ...state.runners, [action.base]: null },
+          outs: Math.min(3, state.outs + 1),
+          runnersPendingConfirmation: false,
+          dirty: true,
+        };
+      }
+      // advance / stolen_base / error_advance all move the runner one base
+      const advanced = advanceOneRunner(state.runners, action.base);
+      return {
+        ...state,
+        runners: advanced.runners,
+        scoredThisAtBat: advanced.scored.length > 0 ? [...state.scoredThisAtBat, ...advanced.scored] : state.scoredThisAtBat,
+        runnersPendingConfirmation: false,
+        dirty: true,
+      };
+    }
 
     case "CONFIRM_LOCAL": {
+      const runsScored = state.scoredThisAtBat.length;
       const nextBattingOrder =
         state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
       const nextStreak = action.wasLowAccuracy ? state.consecutiveLowAccuracyAtBats + 1 : 0;
       return {
         ...state,
         outs: action.isOut ? Math.min(3, state.outs + 1) : state.outs,
-        ourScore: state.mode === "hitting" ? state.ourScore + action.runsScored : state.ourScore,
-        opponentScore: state.mode === "pitching" ? state.opponentScore + action.runsScored : state.opponentScore,
+        ourScore: state.mode === "hitting" ? state.ourScore + runsScored : state.ourScore,
+        opponentScore: state.mode === "pitching" ? state.opponentScore + runsScored : state.opponentScore,
         battingOrderPosition: nextBattingOrder,
         currentAtBatId: null,
+        runnersAtAtBatStart: null,
         balls: 0,
         strikes: 0,
         pendingPitches: [],
@@ -181,15 +235,17 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         suggestedResult: null,
         fieldTap: null,
         pendingRbi: 0,
-        pendingRunsScored: 0,
         pendingHitType: null,
+        scoredThisAtBat: [],
+        runnersPendingConfirmation: false,
         consecutiveLowAccuracyAtBats: nextStreak,
         showLowAccuracyWarning: nextStreak >= LOW_ACCURACY_STREAK_WARNING,
         lastConfirmed: {
           atBatId: action.atBatId,
           mode: state.mode,
-          runsScored: action.runsScored,
+          runsScored,
           wasOut: action.isOut,
+          runnersBeforeAtBat: state.runnersAtAtBatStart ?? {},
           prevConsecutiveLowAccuracyAtBats: state.consecutiveLowAccuracyAtBats,
           deadline: Date.now() + UNDO_WINDOW_MS,
         },
@@ -207,6 +263,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         ...state,
         battingOrderPosition: prevBattingOrder,
         outs: state.lastConfirmed.wasOut ? Math.max(0, state.outs - 1) : state.outs,
+        runners: state.lastConfirmed.runnersBeforeAtBat,
         ourScore: state.lastConfirmed.mode === "hitting" ? Math.max(0, state.ourScore - state.lastConfirmed.runsScored) : state.ourScore,
         opponentScore:
           state.lastConfirmed.mode === "pitching" ? Math.max(0, state.opponentScore - state.lastConfirmed.runsScored) : state.opponentScore,
@@ -250,12 +307,15 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         inningHalf: nextHalf,
         outs: 0,
         runners: {},
+        runnersAtAtBatStart: null,
         currentAtBatId: null,
         balls: 0,
         strikes: 0,
         pendingPitches: [],
         awaitingResult: false,
         suggestedResult: null,
+        scoredThisAtBat: [],
+        runnersPendingConfirmation: false,
         endInningConfirmOpen: false,
         dirty: true,
       };

@@ -37,6 +37,7 @@ export interface RunnerState {
   type: "player" | "opponent";
   id: string | null;
   name: string;
+  jersey?: string | null;
 }
 export interface Runners {
   first?: RunnerState | null;

@@ -249,6 +249,20 @@ export async function logStolenBase(gameId: string, playerId: string, inning: nu
   if (error) throw new Error(error.message);
 }
 
+// Ad-hoc score adjustment for a runner marked "Scored" on the diamond
+// outside the at-bat confirmation flow (e.g. a delayed steal of home, or
+// correcting a missed call) -- when it happens as part of confirming an
+// at-bat, confirmAtBat's runsScored already covers it and this isn't called.
+export async function adjustScore(gameId: string, mode: AtBatMode, delta: number) {
+  const { supabase, game } = await requireOperatorGame(gameId);
+  const update =
+    mode === "hitting"
+      ? { our_score: Math.max(0, game.our_score + delta) }
+      : { opponent_score: Math.max(0, game.opponent_score + delta) };
+  const { error } = await supabase.from("games").update(update).eq("id", gameId);
+  if (error) throw new Error(error.message);
+}
+
 export async function logGameEvent(
   gameId: string,
   input: {

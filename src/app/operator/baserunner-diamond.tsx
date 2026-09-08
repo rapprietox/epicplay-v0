@@ -10,9 +10,11 @@ const BASE_POS = {
 
 export function BaserunnerDiamond({
   runners,
+  pending,
   onBaseTap,
 }: {
   runners: Runners;
+  pending?: boolean;
   onBaseTap: (base: "first" | "second" | "third") => void;
 }) {
   return (
@@ -26,6 +28,7 @@ export function BaserunnerDiamond({
       {(["first", "second", "third"] as const).map((base) => {
         const pos = BASE_POS[base];
         const runner = runners[base];
+        const fill = runner ? (pending ? "#EF9F27" : "#F0C060") : "#0D1E35";
         return (
           <g key={base} onClick={() => onBaseTap(base)} className="cursor-pointer">
             <rect
@@ -34,18 +37,14 @@ export function BaserunnerDiamond({
               width="10"
               height="10"
               transform={`rotate(45 ${pos.x} ${pos.y})`}
-              fill={runner ? "#F0C060" : "#0D1E35"}
-              stroke={runner ? "#F0C060" : "#1A2D4A"}
+              fill={fill}
+              stroke={fill}
               strokeWidth="1"
+              className={runner && pending ? "animate-pulse" : undefined}
             />
             {runner && (
-              <text
-                x={pos.x}
-                y={pos.y + 14}
-                textAnchor="middle"
-                fontSize="6"
-                fill="#C5D8F0"
-              >
+              <text x={pos.x} y={pos.y + 14} textAnchor="middle" fontSize="6" fill="#C5D8F0">
+                {runner.jersey ? `#${runner.jersey} ` : ""}
                 {runner.name.length > 12 ? `${runner.name.slice(0, 11)}…` : runner.name}
               </text>
             )}

@@ -5,8 +5,12 @@ import type {
   InningHalf,
   PitchOutcome,
   PitchType,
+  RunnerState,
   Runners,
 } from "@/lib/supabase/types";
+
+export type RunnerQuickAction = "advance" | "scored" | "out" | "stolen_base" | "picked_off" | "error_advance";
+export type Base = "first" | "second" | "third";
 
 export interface LocalPitch {
   pitch_number: number;
@@ -28,6 +32,9 @@ export interface OperatorState {
   currentPitcherId: string | null;
   opponentBatterName: string;
   runners: Runners;
+  // Snapshot of `runners` taken when the current draft at-bat started, so
+  // Undo can restore base state exactly, not just score/outs/batting order.
+  runnersAtAtBatStart: Runners | null;
 
   currentAtBatId: string | null;
   balls: number;
@@ -40,8 +47,17 @@ export interface OperatorState {
   suggestedResult: AtBatResult | null;
   fieldTap: { x: number; y: number } | null;
   pendingRbi: number;
-  pendingRunsScored: number;
   pendingHitType: HitType | null;
+  // Runners suggested/confirmed to have scored on the current in-progress
+  // at-bat -- the sole source of truth for runsScored at confirm time (no
+  // separate manual "runs scored" stepper, to avoid it drifting out of
+  // sync with what's actually been marked on the diamond).
+  scoredThisAtBat: RunnerState[];
+  // True right after a result is picked and the suggested runner movement
+  // has been applied to `runners` but not yet reviewed -- drives the
+  // "Confirm Runners" pulsing UI on the diamond. Cleared by tapping
+  // Confirm Runners, by any manual per-runner override, or by Confirm At-Bat.
+  runnersPendingConfirmation: boolean;
 
   pitchCountForCurrentPitcher: number;
   pitchCountAck75: boolean;
@@ -55,6 +71,7 @@ export interface OperatorState {
     mode: AtBatMode;
     runsScored: number;
     wasOut: boolean;
+    runnersBeforeAtBat: Runners;
     prevConsecutiveLowAccuracyAtBats: number;
     deadline: number;
   } | null;
