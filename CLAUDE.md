@@ -600,9 +600,79 @@ active game, a live/Continue row on the schedule table, and
 `RealtimeRefresh` (Supabase Realtime -> debounced `router.refresh()`) so
 scores and stats update as the operator logs plays.
 
-**Sprint 4 (next, not started):** Player dashboard (AVG/HR/RBI/OBP/SLG/
-OPS, at-bat history, SVG heat map, SVG spray chart) -- the last major
-placeholder page (`/player`) left from Sprint 1.
+**Sprint 4 (done):** Pitch-by-pitch logging and heat maps -- see the
+dedicated section below for the schema-driven decisions (an honest
+"Strike Rate" instead of a fabricated "Whiff Rate," how zone-based heat
+maps derive a zone from an at-bat, the running-accuracy storage
+repurposing, and a real pre-existing pitching-stats bug this sprint fixed
+along the way). **Note:** this built out the *coach's* view of a player
+(`/coach/players/[id]`) with heat maps/spray charts, plus the operator
+screen's live pitch sequence/session heat map and the coach dashboard's
+new Team Analytics section -- the *player's own* self-service dashboard
+(`/player`, what a signed-in player sees of their own stats) is still the
+Sprint 1 placeholder and remains the next real gap.
+
+## Sprint 4: pitch sequence, pitch count/accuracy display, and heat maps
+
+**Bug fix found and fixed along the way:** the coach's per-player
+breakdown page (`/coach/players/[id]`) computed pitching stats
+(`computePitchingLines`) from the *same* `at_bats` query used for batting
+stats -- `.eq("player_id", player.id)`. But pitching-mode at-bats never
+have `player_id` set (it's null; `pitcher_id` is the relevant column, per
+the Sprint 3 draft/confirmed lifecycle design). So the "Pitching" section
+on that page could never have shown real data, for any player, since
+Sprint 3. Fixed by querying pitching-mode at-bats separately, keyed by
+`pitcher_id`.
+
+**"Whiff Rate" doesn't exist in this schema, so it isn't built.**
+`pitches.outcome` has one generic `'strike'` value with no swinging-vs-
+called distinction -- there's no way to compute a real swing-and-miss
+rate from what's stored. The pitcher heat map (`pitcher-heatmap.tsx`)
+builds a defensible substitute instead: **Strike Rate by zone**
+(strike/foul/in-play share of pitches in that zone), explicitly labeled
+as such with an on-page note explaining why, rather than mislabeling it
+"whiff rate."
+
+**Zone-based heat maps use the *last pitch* of a confirmed at-bat as
+"the zone."** A plate appearance sees many pitch locations; "batting
+average by zone" only makes sense pinned to *one* location per at-bat,
+and the final pitch (the one whose outcome ended the at-bat) is the only
+defensible choice -- it's what "the pitch that got them out" or "the
+pitch they hit" actually refers to. `src/lib/heat-map.ts`
+(`zoneIndexFromCoords`, `computeZoneBattingLines`) implements this;
+`zoneIndexFromCoords` reuses the exact same 3x3 thirds boundaries as the
+operator's `StrikeZoneGrid` (33.33/66.67), so a zone means the same thing
+everywhere it's shown.
+
+**The pitch-count-accuracy running average redesign.** Sprint 3 tracked
+"3 consecutive low-accuracy at-bats" as a streak counter. Sprint 4 restated
+the requirement as a single running percentage ("Logging: 94% accurate")
+warning below 70% -- a genuinely different aggregation, not just a
+threshold tweak, so the streak counter was replaced (not kept alongside)
+with `accuracyRatioSum`/`accuracyAtBatCount` running totals
+(`src/lib/pitch-accuracy.ts` -> `runningAccuracy`,
+`RUNNING_ACCURACY_WARNING_THRESHOLD`). The spec's literal expected-pitches
+formula ("balls + strikes + fouls + 1") was *not* adopted as written --
+those counts are themselves derived from what the operator logged, so
+"expected" would always equal "actual" and the check could never fire;
+Sprint 3's result-based heuristic (`expectedMinPitches`) was kept, since
+it's the only version that can actually detect under-logging. Storage:
+`games.logging_accuracy_score` now holds a 0-1 float (was 0-100) per the
+Sprint 4 spec; `game_state.logging_accuracy_score` /
+`consecutive_low_accuracy_at_bats` are **repurposed, not renamed**, to
+hold the running sum/count instead of a score/streak (no new columns --
+see the comments at both write sites in `actions.ts` and
+`initial-state.ts`).
+
+**The operator's own "Session Heat Map" toggle is a live, session-scoped,
+best-effort view**, not authoritative: `OperatorState.gamePitchLog`
+accumulates every pitch logged this game (seeded from a fresh `pitches`
+fetch on load, appended to locally as pitches are logged) and is never
+retroactively pruned if an at-bat is later undone. It exists purely as a
+quick in-game glance for the operator; the real heat maps (player/team/
+pitcher pages) always read fresh from the `pitches`/`at_bats` tables, so
+an undone pitch never contaminates the real stats -- only this one
+session-local, non-authoritative view.
 
 ## If `npm run build` OOMs locally: check for orphaned dev servers first
 

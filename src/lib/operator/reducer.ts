@@ -9,7 +9,7 @@ import type {
   RunnerState,
   Runners,
 } from "@/lib/supabase/types";
-import { LOW_ACCURACY_STREAK_WARNING } from "@/lib/pitch-accuracy";
+import { RUNNING_ACCURACY_WARNING_THRESHOLD, runningAccuracy } from "@/lib/pitch-accuracy";
 import { advanceOneRunner } from "./runner-advance";
 import { SCORE_METHOD_AWARDS_RBI, type Base, type OperatorState, type RunnerQuickAction, type ScoreMethod, type ScoredRunner } from "./types";
 
@@ -39,6 +39,7 @@ export function initialOperatorState(gameId: string): OperatorState {
     balls: 0,
     strikes: 0,
     pendingPitches: [],
+    gamePitchLog: [],
     selectedPitchType: null,
     selectedZone: null,
     lastPitchZone: null,
@@ -54,7 +55,8 @@ export function initialOperatorState(gameId: string): OperatorState {
     pitchCountAck75: false,
     pitchCountAck85: false,
     pitchCountAck100: false,
-    consecutiveLowAccuracyAtBats: 0,
+    accuracyRatioSum: 0,
+    accuracyAtBatCount: 0,
     showLowAccuracyWarning: false,
     hitsThisInning: 0,
     runsThisInning: 0,
@@ -88,8 +90,8 @@ export type OperatorAction =
   | { type: "SET_RBI"; value: number }
   | { type: "CONFIRM_RUNNERS_SUGGESTION" }
   | { type: "APPLY_RUNNER_ACTION"; base: Base; action: RunnerQuickAction; scoreMethod?: ScoreMethod }
-  | { type: "CONFIRM_LOCAL"; atBatId: string; outsRecorded: number; wasLowAccuracy: boolean }
-  | { type: "CONFIRM_DOUBLE_PLAY"; atBatId: string; secondAtBatId: string; removedBase: Base }
+  | { type: "CONFIRM_LOCAL"; atBatId: string; outsRecorded: number; accuracyRatio: number }
+  | { type: "CONFIRM_DOUBLE_PLAY"; atBatId: string; secondAtBatId: string; removedBase: Base; accuracyRatio: number }
   | { type: "UNDO_LOCAL" }
   | { type: "CLEAR_LAST_CONFIRMED" }
   | { type: "SET_RUNNER"; base: Base; runner: RunnerState | null }
@@ -167,6 +169,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         balls,
         strikes,
         pendingPitches: [...state.pendingPitches, pitch],
+        gamePitchLog: [...state.gamePitchLog, pitch],
         lastPitchZone: pitch.zone_x !== null && pitch.zone_y !== null ? { x: pitch.zone_x, y: pitch.zone_y, outcome: action.outcome } : state.lastPitchZone,
         selectedZone: null,
         awaitingResult,
@@ -257,7 +260,8 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       const result = state.suggestedResult;
       const nextBattingOrder =
         state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
-      const nextStreak = action.wasLowAccuracy ? state.consecutiveLowAccuracyAtBats + 1 : 0;
+      const nextAccuracySum = state.accuracyRatioSum + action.accuracyRatio;
+      const nextAccuracyCount = state.accuracyAtBatCount + 1;
 
       const isHit = result !== null && HIT_RESULTS.has(result);
       const isError = result === "error";
@@ -299,8 +303,9 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         pendingHitType: null,
         scoredThisAtBat: [],
         runnersPendingConfirmation: false,
-        consecutiveLowAccuracyAtBats: nextStreak,
-        showLowAccuracyWarning: nextStreak >= LOW_ACCURACY_STREAK_WARNING,
+        accuracyRatioSum: nextAccuracySum,
+        accuracyAtBatCount: nextAccuracyCount,
+        showLowAccuracyWarning: runningAccuracy(nextAccuracySum, nextAccuracyCount) < RUNNING_ACCURACY_WARNING_THRESHOLD,
         hitsThisInning: state.hitsThisInning + hitsDelta,
         runsThisInning: state.runsThisInning + runsDelta,
         errorsThisInning: state.errorsThisInning + errorsDelta,
@@ -316,7 +321,8 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           runsScored,
           outsRecorded: action.outsRecorded,
           runnersBeforeAtBat: state.runnersAtAtBatStart ?? {},
-          prevConsecutiveLowAccuracyAtBats: state.consecutiveLowAccuracyAtBats,
+          prevAccuracyRatioSum: state.accuracyRatioSum,
+          prevAccuracyAtBatCount: state.accuracyAtBatCount,
           prevBoxScore,
           deadline: Date.now() + UNDO_WINDOW_MS,
         },
@@ -327,6 +333,8 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
     case "CONFIRM_DOUBLE_PLAY": {
       const nextBattingOrder =
         state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+      const nextAccuracySum = state.accuracyRatioSum + action.accuracyRatio;
+      const nextAccuracyCount = state.accuracyAtBatCount + 1;
       const prevBoxScore = {
         hitsThisInning: state.hitsThisInning,
         runsThisInning: state.runsThisInning,
@@ -357,6 +365,9 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         pendingHitType: null,
         scoredThisAtBat: [],
         runnersPendingConfirmation: false,
+        accuracyRatioSum: nextAccuracySum,
+        accuracyAtBatCount: nextAccuracyCount,
+        showLowAccuracyWarning: runningAccuracy(nextAccuracySum, nextAccuracyCount) < RUNNING_ACCURACY_WARNING_THRESHOLD,
         lastConfirmed: {
           atBatId: action.atBatId,
           secondAtBatId: action.secondAtBatId,
@@ -364,7 +375,8 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           runsScored: 0,
           outsRecorded: 2,
           runnersBeforeAtBat: state.runnersAtAtBatStart ?? {},
-          prevConsecutiveLowAccuracyAtBats: state.consecutiveLowAccuracyAtBats,
+          prevAccuracyRatioSum: state.accuracyRatioSum,
+          prevAccuracyAtBatCount: state.accuracyAtBatCount,
           prevBoxScore,
           deadline: Date.now() + UNDO_WINDOW_MS,
         },
@@ -386,8 +398,10 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         ourScore: state.lastConfirmed.mode === "hitting" ? Math.max(0, state.ourScore - state.lastConfirmed.runsScored) : state.ourScore,
         opponentScore:
           state.lastConfirmed.mode === "pitching" ? Math.max(0, state.opponentScore - state.lastConfirmed.runsScored) : state.opponentScore,
-        consecutiveLowAccuracyAtBats: state.lastConfirmed.prevConsecutiveLowAccuracyAtBats,
-        showLowAccuracyWarning: state.lastConfirmed.prevConsecutiveLowAccuracyAtBats >= LOW_ACCURACY_STREAK_WARNING,
+        accuracyRatioSum: state.lastConfirmed.prevAccuracyRatioSum,
+        accuracyAtBatCount: state.lastConfirmed.prevAccuracyAtBatCount,
+        showLowAccuracyWarning:
+          runningAccuracy(state.lastConfirmed.prevAccuracyRatioSum, state.lastConfirmed.prevAccuracyAtBatCount) < RUNNING_ACCURACY_WARNING_THRESHOLD,
         ...state.lastConfirmed.prevBoxScore,
         lastConfirmed: null,
         dirty: true,
@@ -462,6 +476,3 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
   }
 }
 
-export function shouldWarnLowAccuracy(streak: number): boolean {
-  return streak >= LOW_ACCURACY_STREAK_WARNING;
-}

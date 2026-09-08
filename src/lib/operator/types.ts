@@ -97,6 +97,12 @@ export interface OperatorState {
   balls: number;
   strikes: number;
   pendingPitches: LocalPitch[];
+  // Every pitch logged this game (all at-bats, never cleared on
+  // confirm/undo) -- feeds the operator's own "Session Heat Map" toggle.
+  // Not authoritative (an undone pitch stays in it), just a quick in-game
+  // visual reference; the real heat maps (player/team/pitcher pages) read
+  // straight from the pitches table.
+  gamePitchLog: LocalPitch[];
   selectedPitchType: PitchType | null;
   selectedZone: { x: number; y: number } | null;
   lastPitchZone: { x: number; y: number; outcome: PitchOutcome } | null;
@@ -128,7 +134,11 @@ export interface OperatorState {
   pitchCountAck75: boolean;
   pitchCountAck85: boolean;
   pitchCountAck100: boolean;
-  consecutiveLowAccuracyAtBats: number;
+  // Running average of atBatAccuracyRatio across every confirmed at-bat
+  // this game (sum/count, not a consecutive-streak counter) -- drives both
+  // the "Logging: N% accurate" display and the < 70% warning banner.
+  accuracyRatioSum: number;
+  accuracyAtBatCount: number;
   showLowAccuracyWarning: boolean;
 
   // Fix 2: live box-score-style mini dashboard. H/R are our offense
@@ -153,7 +163,8 @@ export interface OperatorState {
     runsScored: number;
     outsRecorded: number;
     runnersBeforeAtBat: Runners;
-    prevConsecutiveLowAccuracyAtBats: number;
+    prevAccuracyRatioSum: number;
+    prevAccuracyAtBatCount: number;
     prevBoxScore: {
       hitsThisInning: number;
       runsThisInning: number;
@@ -243,4 +254,12 @@ export const HIT_TYPE_LABELS: Record<HitType, string> = {
   bunt: "Bunt",
   popup: "Popup",
   hr: "HR",
+};
+
+export const OUTCOME_LABELS: Record<PitchOutcome, string> = {
+  ball: "Ball",
+  strike: "Strike",
+  foul: "Foul",
+  hbp: "HBP",
+  inplay: "In Play",
 };

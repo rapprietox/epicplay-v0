@@ -7,7 +7,14 @@ import type { AtBatResult } from "@/lib/supabase/types";
 // the batter) and compares it to pitches actually logged. A documented
 // heuristic, not a precise measurement -- fouls with 2 strikes can extend
 // a real at-bat well past this minimum without that being an accuracy
-// problem, which is why this only flags being under 50%, not any gap.
+// problem.
+//
+// Sprint 4 restated this as "balls + strikes + fouls + 1", but that's
+// circular if taken literally: those counts are themselves derived from
+// what the operator logged, so "expected" would always equal "actual" and
+// the check could never fail. Kept this result-based heuristic instead,
+// which is the only version of the formula that can actually detect
+// under-logging.
 const MIN_EXPECTED_PITCHES: Partial<Record<AtBatResult, number>> = {
   walk: 4,
   strikeout: 3,
@@ -22,5 +29,12 @@ export function atBatAccuracyRatio(result: AtBatResult, loggedPitchCount: number
   return Math.min(1, loggedPitchCount / expected);
 }
 
-export const LOW_ACCURACY_THRESHOLD = 0.5;
-export const LOW_ACCURACY_STREAK_WARNING = 3;
+// Running average across every confirmed at-bat so far this game (not a
+// consecutive-streak counter) -- matches the "Logging: 94% accurate"
+// running-percentage display and the single game-wide
+// games.logging_accuracy_score, stored as a 0-1 float.
+export function runningAccuracy(sumOfRatios: number, count: number): number {
+  return count > 0 ? sumOfRatios / count : 1;
+}
+
+export const RUNNING_ACCURACY_WARNING_THRESHOLD = 0.7;

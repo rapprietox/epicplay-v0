@@ -2,6 +2,7 @@ import type { Database } from "@/lib/supabase/types";
 import { initialOperatorState } from "@/lib/operator/reducer";
 import type { LocalPitch, OperatorState } from "@/lib/operator/types";
 import type { AtBatResult } from "@/lib/supabase/types";
+import { RUNNING_ACCURACY_WARNING_THRESHOLD, runningAccuracy } from "@/lib/pitch-accuracy";
 
 type GameRow = Database["public"]["Tables"]["games"]["Row"];
 type GameStateRow = Database["public"]["Tables"]["game_state"]["Row"];
@@ -11,7 +12,8 @@ type PitchRow = Database["public"]["Tables"]["pitches"]["Row"];
 export function buildInitialStateFromServer(
   game: GameRow,
   gs: GameStateRow,
-  draft: (AtBatRow & { pitches: PitchRow[] }) | null
+  draft: (AtBatRow & { pitches: PitchRow[] }) | null,
+  allGamePitches: Pick<PitchRow, "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome">[] = []
 ): OperatorState {
   const base = initialOperatorState(game.id);
 
@@ -58,6 +60,13 @@ export function buildInitialStateFromServer(
     balls,
     strikes,
     pendingPitches,
+    gamePitchLog: allGamePitches.map((p) => ({
+      pitch_number: p.pitch_number,
+      pitch_type: p.pitch_type,
+      zone_x: p.zone_x,
+      zone_y: p.zone_y,
+      outcome: p.outcome,
+    })),
     lastPitchZone,
     awaitingResult,
     suggestedResult,
@@ -65,7 +74,13 @@ export function buildInitialStateFromServer(
     pitchCountAck75: gs.pitch_count_ack_75,
     pitchCountAck85: gs.pitch_count_ack_85,
     pitchCountAck100: gs.pitch_count_ack_100,
-    consecutiveLowAccuracyAtBats: gs.consecutive_low_accuracy_at_bats,
-    showLowAccuracyWarning: gs.consecutive_low_accuracy_at_bats >= 3,
+    // Repurposed rather than adding new game_state columns: logging_accuracy_score
+    // holds the running ratio *sum* (not the averaged score itself) and
+    // consecutive_low_accuracy_at_bats holds the at-bat *count* -- together
+    // they let the running average survive a resume on a different device.
+    accuracyRatioSum: gs.logging_accuracy_score ?? 0,
+    accuracyAtBatCount: gs.consecutive_low_accuracy_at_bats,
+    showLowAccuracyWarning:
+      runningAccuracy(gs.logging_accuracy_score ?? 0, gs.consecutive_low_accuracy_at_bats) < RUNNING_ACCURACY_WARNING_THRESHOLD,
   };
 }

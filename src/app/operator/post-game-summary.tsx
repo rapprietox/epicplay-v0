@@ -59,7 +59,7 @@ export function PostGameSummary({
             <p className="text-sm text-white">Game submitted.</p>
             {result.accuracyScore !== null && (
               <p className="mt-1 text-xs text-foreground/60">
-                Logging accuracy score: {result.accuracyScore}%
+                Logging accuracy score: {Math.round(result.accuracyScore * 100)}%
               </p>
             )}
             <button

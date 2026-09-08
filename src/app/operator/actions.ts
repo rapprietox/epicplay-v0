@@ -14,7 +14,7 @@ import type {
   Runners,
   SubReason,
 } from "@/lib/supabase/types";
-import { atBatAccuracyRatio, LOW_ACCURACY_STREAK_WARNING, LOW_ACCURACY_THRESHOLD } from "@/lib/pitch-accuracy";
+import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 
 async function requireOperatorGame(gameId: string) {
   const supabase = createClient();
@@ -212,22 +212,26 @@ export async function confirmAtBat(input: ConfirmAtBatInput) {
 
   const ratio = atBatAccuracyRatio(input.result, pitchCount ?? 0);
 
+  // logging_accuracy_score holds the running ratio *sum* (not the average)
+  // and consecutive_low_accuracy_at_bats holds the at-bat *count* --
+  // repurposed rather than adding new game_state columns; see initial-state.ts.
   const { data: state } = await supabase.from("game_state").select("*").eq("game_id", input.gameId).single();
-  const wasLow = ratio < LOW_ACCURACY_THRESHOLD;
-  const nextStreak = wasLow ? (state?.consecutive_low_accuracy_at_bats ?? 0) + 1 : 0;
+  const nextSum = (state?.logging_accuracy_score ?? 0) + ratio;
+  const nextCount = (state?.consecutive_low_accuracy_at_bats ?? 0) + 1;
 
   if (state) {
     await supabase
       .from("game_state")
       .update({
         current_at_bat_id: null,
-        consecutive_low_accuracy_at_bats: nextStreak,
+        logging_accuracy_score: nextSum,
+        consecutive_low_accuracy_at_bats: nextCount,
       })
       .eq("game_id", input.gameId);
   }
 
   revalidatePath("/operator");
-  return { lowAccuracyStreak: nextStreak, showLowAccuracyWarning: nextStreak >= LOW_ACCURACY_STREAK_WARNING };
+  return { accuracyRatio: ratio, runningAccuracy: nextCount > 0 ? nextSum / nextCount : 1 };
 }
 
 export interface ConfirmDoublePlayInput {
@@ -429,7 +433,8 @@ export async function endGame(gameId: string, notes: string) {
       count += 1;
     }
   }
-  const accuracyScore = count > 0 ? Math.round((totalRatio / count) * 1000) / 10 : null;
+  // Stored as a 0-1 float (not 0-100) per the Sprint 4 spec.
+  const accuracyScore = count > 0 ? Math.round((totalRatio / count) * 1000) / 1000 : null;
 
   const { error } = await supabase
     .from("games")

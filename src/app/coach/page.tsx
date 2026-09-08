@@ -7,6 +7,9 @@ import { NextGamePanel } from "./next-game-panel";
 import { LeadersBoard } from "./leaders-board";
 import { ScheduleTable } from "./schedule-table";
 import { RealtimeRefresh } from "./realtime-refresh";
+import { TeamAnalytics } from "./team-analytics";
+import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
+import type { AtBatResult } from "@/lib/supabase/types";
 
 export default async function CoachPage() {
   const supabase = createClient();
@@ -47,6 +50,48 @@ export default async function CoachPage() {
       .filter((g) => g.status === "setup" && g.game_date >= today)
       .sort((a, b) => a.game_date.localeCompare(b.game_date))[0] ?? null;
 
+  const confirmedAtBats = atBats ?? [];
+  const { data: teamPitches } = confirmedAtBats.length
+    ? await supabase
+        .from("pitches")
+        .select("at_bat_id, pitch_number, zone_x, zone_y")
+        .in(
+          "at_bat_id",
+          confirmedAtBats.map((ab) => ab.id)
+        )
+    : { data: [] };
+
+  const lastZoneByAtBat = new Map<string, number | null>();
+  for (const ab of confirmedAtBats) {
+    const forThisAtBat = (teamPitches ?? []).filter((p) => p.at_bat_id === ab.id);
+    const last = forThisAtBat.sort((a, b) => b.pitch_number - a.pitch_number)[0];
+    lastZoneByAtBat.set(ab.id, last && last.zone_x !== null && last.zone_y !== null ? zoneIndexFromCoords(last.zone_x, last.zone_y) : null);
+  }
+  const gameById = new Map(allGames.map((g) => [g.id, g]));
+
+  const teamZoneAtBats: AtBatWithZone[] = confirmedAtBats
+    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null && ab.mode === "hitting")
+    .map((ab) => ({ result: ab.result, zoneIndex: lastZoneByAtBat.get(ab.id) ?? null }));
+
+  const teamSprayDots: (SprayDot & { opponentName: string })[] = confirmedAtBats
+    .filter(
+      (ab): ab is typeof ab & { result: AtBatResult; field_x: number; field_y: number } =>
+        ab.result !== null && ab.field_x !== null && ab.field_y !== null && ab.mode === "hitting"
+    )
+    .map((ab) => {
+      const g = gameById.get(ab.game_id);
+      return {
+        x: ab.field_x,
+        y: ab.field_y,
+        category: resultCategory(ab.result),
+        result: ab.result,
+        inning: ab.inning,
+        gameDate: g?.game_date ?? "",
+        opponentName: g?.opponent_name ?? "Unknown",
+        hitType: ab.hit_type,
+      };
+    });
+
   return (
     <main className="min-h-screen bg-background px-6 py-8">
       <RealtimeRefresh teamId={teamId} />
@@ -75,6 +120,13 @@ export default async function CoachPage() {
         <LeadersBoard players={players ?? []} atBats={atBats ?? []} stolenBases={stolenBases ?? []} games={allGames} />
 
         <ScheduleTable games={allGames} opponentNames={(opponents ?? []).map((o) => o.name)} />
+
+        <TeamAnalytics
+          zoneAtBats={teamZoneAtBats}
+          sprayDots={teamSprayDots}
+          opponentNames={(opponents ?? []).map((o) => o.name)}
+          nextOpponentName={nextGame?.opponent_name ?? null}
+        />
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <RosterSection players={players ?? []} />

@@ -13,6 +13,7 @@ import {
   HIT_TYPE_LABELS,
   FIELDABLE_OUT_RESULTS,
   FIELDING_LAYOUT,
+  OUTCOME_LABELS,
   SCORE_METHOD_AWARDS_RBI,
   SCORE_METHOD_EVENT,
   SCORE_METHOD_LABELS,
@@ -21,7 +22,7 @@ import {
   type RunnerQuickAction,
   type ScoreMethod,
 } from "@/lib/operator/types";
-import { atBatAccuracyRatio, LOW_ACCURACY_THRESHOLD } from "@/lib/pitch-accuracy";
+import { atBatAccuracyRatio, runningAccuracy } from "@/lib/pitch-accuracy";
 import { loadOperatorStateLocal, saveOperatorStateLocal } from "@/lib/operator/local-storage";
 import { withOfflineRetry, onQueueChange, pendingCount } from "@/lib/operator/sync-queue";
 import { buildInitialStateFromServer } from "./initial-state";
@@ -69,6 +70,7 @@ export function OperatorConsole({
   initialGameState,
   draftAtBat,
   opponentPlayers,
+  allGamePitches,
 }: {
   game: Game;
   players: Player[];
@@ -76,11 +78,12 @@ export function OperatorConsole({
   initialGameState: GameState;
   draftAtBat: (AtBat & { pitches: Pitch[] }) | null;
   opponentPlayers: OpponentPlayer[];
+  allGamePitches: Pick<Pitch, "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome">[];
 }) {
   const [state, dispatch] = useReducer(operatorReducer, undefined, () => {
     const local = loadOperatorStateLocal(game.id);
     if (local && local.dirty) return local;
-    return buildInitialStateFromServer(game, initialGameState, draftAtBat);
+    return buildInitialStateFromServer(game, initialGameState, draftAtBat, allGamePitches);
   });
 
   const stateRef = useRef(state);
@@ -109,6 +112,7 @@ export function OperatorConsole({
   const [scoreMethodPrompt, setScoreMethodPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
+  const [sessionHeatMapOpen, setSessionHeatMapOpen] = useState(false);
 
   const battingPlayer = useMemo(
     () => (state.mode === "hitting" ? lineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
@@ -217,7 +221,7 @@ export function OperatorConsole({
     if (!result || !atBatId) return;
     const isOut = RESULT_IS_OUT[result];
     const runsScored = state.scoredThisAtBat.length;
-    const wasLow = atBatAccuracyRatio(result, state.pendingPitches.length) < LOW_ACCURACY_THRESHOLD;
+    const accuracyRatio = atBatAccuracyRatio(result, state.pendingPitches.length);
     const hitType = state.pendingHitType;
     const fieldX = state.fieldTap?.x ?? null;
     const fieldY = state.fieldTap?.y ?? null;
@@ -225,7 +229,7 @@ export function OperatorConsole({
     const mode = state.mode;
     const fielding = state.pendingFielding;
 
-    dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, wasLowAccuracy: wasLow });
+    dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, accuracyRatio });
 
     void withOfflineRetry(`confirm-${atBatId}`, async () => {
       await confirmAtBat({
@@ -281,7 +285,8 @@ export function OperatorConsole({
           opponentPlayerId: input.secondFielding.opponentPlayerId,
         },
       });
-      dispatch({ type: "CONFIRM_DOUBLE_PLAY", atBatId, secondAtBatId, removedBase: input.base });
+      const accuracyRatio = atBatAccuracyRatio("double_play", state.pendingPitches.length);
+      dispatch({ type: "CONFIRM_DOUBLE_PLAY", atBatId, secondAtBatId, removedBase: input.base, accuracyRatio });
       void withOfflineRetry(`dp-state-${game.id}-${Date.now()}`, () =>
         syncGameState(game.id, {
           runners: { ...state.runners, [input.base]: null },
@@ -449,6 +454,8 @@ export function OperatorConsole({
           : "text-foreground/60"
       : "text-foreground/60";
 
+  const runningAccuracyPercent = Math.round(runningAccuracy(state.accuracyRatioSum, state.accuracyAtBatCount) * 100);
+
   const showFieldingPicker =
     !!state.fieldTap &&
     !!state.suggestedResult &&
@@ -477,6 +484,11 @@ export function OperatorConsole({
           </p>
         </div>
         <div className="flex items-center gap-4">
+          {state.accuracyAtBatCount > 0 && (
+            <span className={`text-xs ${runningAccuracyPercent < 70 ? "text-accent-amber" : "text-foreground/50"}`}>
+              Logging: {runningAccuracyPercent}% accurate
+            </span>
+          )}
           {pendingSync > 0 && (
             <span className="rounded-full bg-accent-amber/20 px-3 py-1 text-xs text-accent-amber">
               {pendingSync} syncing…
@@ -496,6 +508,16 @@ export function OperatorConsole({
       {state.showLowAccuracyWarning && (
         <div className="bg-accent-amber/10 px-4 py-2 text-center text-xs text-accent-amber">
           Low pitch detail — heat map accuracy is reduced
+        </div>
+      )}
+      {state.mode === "pitching" && state.pitchCountForCurrentPitcher >= 85 && (
+        <div className="bg-accent-red/10 px-4 py-2 text-center text-xs font-semibold text-accent-red">
+          High pitch count
+        </div>
+      )}
+      {state.mode === "pitching" && state.pitchCountForCurrentPitcher >= 75 && state.pitchCountForCurrentPitcher < 85 && (
+        <div className="bg-accent-amber/10 px-4 py-2 text-center text-xs font-semibold text-accent-amber">
+          Approaching pitch limit
         </div>
       )}
       {banner && <div className="bg-accent-red/10 px-4 py-2 text-center text-xs text-accent-red">{banner}</div>}
@@ -532,7 +554,9 @@ export function OperatorConsole({
                   <button onClick={() => setPitcherPickerOpen(true)} className="text-accent-primary hover:underline">
                     Pitcher: {currentPitcher ? currentPitcher.name : "Select…"}
                   </button>
-                  <span className={pitchCountColor}>{state.pitchCountForCurrentPitcher} pitches</span>
+                  <span className={pitchCountColor}>
+                    {state.pendingPitches.length} this at-bat · {state.pitchCountForCurrentPitcher} total
+                  </span>
                 </div>
               </>
             )}
@@ -564,23 +588,57 @@ export function OperatorConsole({
           </div>
 
           <div className="flex flex-col items-center gap-3">
+            <div className="flex w-full max-w-[280px] items-center justify-between">
+              <p className="text-xs uppercase tracking-wide text-foreground/40">
+                {sessionHeatMapOpen ? "Session heat map" : "Strike zone"}
+              </p>
+              <button
+                onClick={() => setSessionHeatMapOpen((v) => !v)}
+                className="rounded-full border border-border px-3 py-1 text-[11px] font-medium text-foreground/70 hover:border-accent-primary hover:text-white"
+              >
+                {sessionHeatMapOpen ? "Back to Logging" : "Session Heat Map"}
+              </button>
+            </div>
             <StrikeZoneGrid
               selectedZone={state.selectedZone}
               lastPitchZone={state.lastPitchZone}
+              pendingPitches={state.pendingPitches}
+              heatMapPitches={sessionHeatMapOpen ? state.gamePitchLog : undefined}
               onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
             />
-            <div className="grid w-full max-w-[280px] grid-cols-3 gap-2">
-              <OutcomeButton label="Ball" color="#24A058" onClick={() => handlePitchOutcome("ball")} />
-              <OutcomeButton label="Strike" color="#E24B4A" onClick={() => handlePitchOutcome("strike")} />
-              <OutcomeButton label="Foul" color="#EF9F27" onClick={() => handlePitchOutcome("foul")} />
-              <OutcomeButton label="HBP" color="#B060F0" onClick={() => handlePitchOutcome("hbp")} />
-              <OutcomeButton
-                label="In Play"
-                color="#2ECC71"
-                className="col-span-2"
-                onClick={() => handlePitchOutcome("inplay")}
-              />
-            </div>
+
+            {sessionHeatMapOpen ? (
+              <div className="flex w-full max-w-[280px] flex-wrap justify-center gap-3 text-[11px] text-foreground/50">
+                <LegendDot color="#24A058" label="Ball" />
+                <LegendDot color="#E24B4A" label="Strike" />
+                <LegendDot color="#EF9F27" label="Foul" />
+              </div>
+            ) : (
+              <>
+                <div className="grid w-full max-w-[280px] grid-cols-3 gap-2">
+                  <OutcomeButton label="Ball" color="#24A058" onClick={() => handlePitchOutcome("ball")} />
+                  <OutcomeButton label="Strike" color="#E24B4A" onClick={() => handlePitchOutcome("strike")} />
+                  <OutcomeButton label="Foul" color="#EF9F27" onClick={() => handlePitchOutcome("foul")} />
+                  <OutcomeButton label="HBP" color="#B060F0" onClick={() => handlePitchOutcome("hbp")} />
+                  <OutcomeButton
+                    label="In Play"
+                    color="#2ECC71"
+                    className="col-span-2"
+                    onClick={() => handlePitchOutcome("inplay")}
+                  />
+                </div>
+                {state.pendingPitches.length > 0 && (
+                  <p className="w-full max-w-[280px] text-xs leading-relaxed text-foreground/50">
+                    {state.pendingPitches
+                      .map(
+                        (p, i) =>
+                          `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`
+                      )
+                      .join(", ")}
+                  </p>
+                )}
+              </>
+            )}
           </div>
 
           {state.awaitingResult && (
@@ -848,6 +906,15 @@ export function OperatorConsole({
         )}
       </div>
     </div>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
+      {label}
+    </span>
   );
 }
 

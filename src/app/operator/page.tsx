@@ -69,6 +69,18 @@ export default async function OperatorPage({
     ? await supabase.from("opponent_players").select("*").eq("opponent_id", game.opponent_id)
     : { data: [] };
 
+  const { data: gameAtBatIds } = await supabase.from("at_bats").select("id").eq("game_id", game.id);
+  const { data: allGamePitches } =
+    gameAtBatIds && gameAtBatIds.length > 0
+      ? await supabase
+          .from("pitches")
+          .select("pitch_number, pitch_type, zone_x, zone_y, outcome")
+          .in(
+            "at_bat_id",
+            gameAtBatIds.map((a) => a.id)
+          )
+      : { data: [] };
+
   return (
     <>
       <OperatorConsole
@@ -78,6 +90,7 @@ export default async function OperatorPage({
         initialGameState={gameState}
         draftAtBat={draftAtBat}
         opponentPlayers={opponentPlayers ?? []}
+        allGamePitches={allGamePitches ?? []}
       />
       <div className="fixed left-3 top-3 z-20">
         <Link href="/coach" className="text-xs text-foreground/30 hover:text-foreground/60">
