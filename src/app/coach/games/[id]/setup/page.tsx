@@ -38,7 +38,7 @@ export default async function GameSetupPage({ params }: { params: { id: string }
 
   return (
     <main className="min-h-screen bg-background px-6 py-8">
-      <Link href="/coach" className="text-sm text-accent-blue hover:underline">
+      <Link href="/coach" className="text-sm text-accent-primary hover:underline">
         &larr; Back to dashboard
       </Link>
 
@@ -56,7 +56,7 @@ export default async function GameSetupPage({ params }: { params: { id: string }
       </header>
 
       <div className="mx-auto mt-6 flex max-w-4xl flex-col gap-6">
-        <section className="rounded-lg border border-border bg-surface p-5">
+        <section className="glossy rounded-lg border border-border bg-surface p-5">
           <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
             Lineup
           </h2>

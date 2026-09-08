@@ -4,11 +4,11 @@ import { useRef } from "react";
 import type { PitchOutcome } from "@/lib/supabase/types";
 
 const OUTCOME_COLOR: Record<PitchOutcome, string> = {
-  ball: "#2E6FD4",
-  strike: "#E0554F",
+  ball: "#24A058",
+  strike: "#E24B4A",
   foul: "#EF9F27",
   hbp: "#B060F0",
-  inplay: "#1D9E75",
+  inplay: "#2ECC71",
 };
 
 // Visually subdivided into a 9x9 grid (81 zones) for more precise tap
@@ -52,26 +52,26 @@ export function StrikeZoneGrid({
       onClick={handleTap}
       role="button"
       aria-label="Strike zone -- tap to mark pitch location"
-      className="relative aspect-square w-full max-w-[280px] min-h-[280px] cursor-pointer overflow-hidden rounded-md border-2 border-border bg-surface"
+      className="glossy relative aspect-square w-full max-w-[280px] min-h-[280px] cursor-pointer overflow-hidden rounded-md border-2 border-border bg-surface"
     >
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full">
         {INNER_LINES.map((pos) => (
-          <line key={`v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#1A2D4A" strokeWidth={0.4} />
+          <line key={`v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#1A3D28" strokeWidth={0.4} />
         ))}
         {INNER_LINES.map((pos) => (
-          <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#1A2D4A" strokeWidth={0.4} />
+          <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#1A3D28" strokeWidth={0.4} />
         ))}
         {OUTER_LINES.map((pos) => (
-          <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#2E6FD4" strokeWidth={0.8} opacity={0.6} />
+          <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
         ))}
         {OUTER_LINES.map((pos) => (
-          <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#2E6FD4" strokeWidth={0.8} opacity={0.6} />
+          <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
         ))}
       </svg>
 
       {selectedZone && (
         <span
-          className="pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent-blue bg-accent-blue/40"
+          className="glow-green pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent-green bg-accent-green/40"
           style={{ left: `${selectedZone.x}%`, top: `${selectedZone.y}%` }}
         />
       )}

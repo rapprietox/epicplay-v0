@@ -443,7 +443,7 @@ export function OperatorConsole({
   const pitchCountColor =
     state.mode === "pitching"
       ? state.pitchCountForCurrentPitcher >= 85
-        ? "text-red-400"
+        ? "text-accent-red"
         : state.pitchCountForCurrentPitcher >= 75
           ? "text-accent-amber"
           : "text-foreground/60"
@@ -465,7 +465,7 @@ export function OperatorConsole({
                 key={m}
                 onClick={() => dispatch({ type: "SET_MODE", mode: m })}
                 className={`rounded px-4 py-1.5 font-semibold uppercase tracking-wide transition ${
-                  state.mode === m ? "bg-accent-blue text-white" : "text-foreground/50"
+                  state.mode === m ? "bg-accent-primary text-white" : "text-foreground/50"
                 }`}
               >
                 {m}
@@ -483,7 +483,9 @@ export function OperatorConsole({
             </span>
           )}
           <p className="font-heading text-xl font-bold text-white">
-            {game.home_away === "home" ? game.opponent_name : "Us"} {state.opponentScore} &ndash; {state.ourScore}{" "}
+            {game.home_away === "home" ? game.opponent_name : "Us"}{" "}
+            <span className="text-accent-green">{state.opponentScore}</span> &ndash;{" "}
+            <span className="text-accent-green">{state.ourScore}</span>{" "}
             {game.home_away === "home" ? "Us" : game.opponent_name}
           </p>
         </div>
@@ -496,12 +498,12 @@ export function OperatorConsole({
           Low pitch detail — heat map accuracy is reduced
         </div>
       )}
-      {banner && <div className="bg-red-500/10 px-4 py-2 text-center text-xs text-red-400">{banner}</div>}
+      {banner && <div className="bg-accent-red/10 px-4 py-2 text-center text-xs text-accent-red">{banner}</div>}
 
       <div className="grid grid-cols-1 gap-6 p-4 md:grid-cols-2">
         {/* LEFT COLUMN */}
         <div className="flex flex-col gap-4">
-          <div className="rounded-lg border border-border bg-surface p-4">
+          <div className="glossy glow-green rounded-lg border border-accent-primary/40 bg-card p-4">
             {state.mode === "hitting" ? (
               <>
                 <p className="text-xs uppercase tracking-wide text-foreground/40">
@@ -519,7 +521,7 @@ export function OperatorConsole({
                   onChange={(e) => dispatch({ type: "SET_OPPONENT_BATTER_NAME", name: e.target.value })}
                   list="opponent-batters"
                   placeholder="Type or select name"
-                  className="font-heading w-full border-b border-border bg-transparent text-3xl font-bold text-white outline-none focus:border-accent-blue"
+                  className="font-heading w-full border-b border-border bg-transparent text-3xl font-bold text-white outline-none focus:border-accent-primary"
                 />
                 <datalist id="opponent-batters">
                   {opponentPlayers.map((p) => (
@@ -527,7 +529,7 @@ export function OperatorConsole({
                   ))}
                 </datalist>
                 <div className="mt-3 flex items-center justify-between text-xs">
-                  <button onClick={() => setPitcherPickerOpen(true)} className="text-accent-blue hover:underline">
+                  <button onClick={() => setPitcherPickerOpen(true)} className="text-accent-primary hover:underline">
                     Pitcher: {currentPitcher ? currentPitcher.name : "Select…"}
                   </button>
                   <span className={pitchCountColor}>{state.pitchCountForCurrentPitcher} pitches</span>
@@ -536,7 +538,7 @@ export function OperatorConsole({
             )}
           </div>
 
-          <div className="grid grid-cols-3 gap-3 rounded-lg border border-border bg-surface p-4 text-center">
+          <div className="glossy grid grid-cols-3 gap-3 rounded-lg border border-border bg-surface p-4 text-center">
             <CountBlock label="Balls" value={state.balls} />
             <CountBlock label="Strikes" value={state.strikes} />
             <CountBlock label="Outs" value={state.outs} />
@@ -551,7 +553,7 @@ export function OperatorConsole({
                   onClick={() => dispatch({ type: "SELECT_PITCH_TYPE", pitchType: state.selectedPitchType === t ? null : t })}
                   className={`min-h-[48px] rounded-full border px-4 text-sm font-medium transition ${
                     state.selectedPitchType === t
-                      ? "border-accent-blue bg-accent-blue text-white"
+                      ? "border-accent-primary bg-accent-primary text-white"
                       : "border-border bg-surface text-foreground/70"
                   }`}
                 >
@@ -568,13 +570,13 @@ export function OperatorConsole({
               onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
             />
             <div className="grid w-full max-w-[280px] grid-cols-3 gap-2">
-              <OutcomeButton label="Ball" color="#2E6FD4" onClick={() => handlePitchOutcome("ball")} />
-              <OutcomeButton label="Strike" color="#E0554F" onClick={() => handlePitchOutcome("strike")} />
+              <OutcomeButton label="Ball" color="#24A058" onClick={() => handlePitchOutcome("ball")} />
+              <OutcomeButton label="Strike" color="#E24B4A" onClick={() => handlePitchOutcome("strike")} />
               <OutcomeButton label="Foul" color="#EF9F27" onClick={() => handlePitchOutcome("foul")} />
               <OutcomeButton label="HBP" color="#B060F0" onClick={() => handlePitchOutcome("hbp")} />
               <OutcomeButton
                 label="In Play"
-                color="#1D9E75"
+                color="#2ECC71"
                 className="col-span-2"
                 onClick={() => handlePitchOutcome("inplay")}
               />
@@ -582,7 +584,7 @@ export function OperatorConsole({
           </div>
 
           {state.awaitingResult && (
-            <div className="rounded-lg border border-accent-gold/40 bg-surface p-4">
+            <div className="glossy rounded-lg border border-accent-gold/40 bg-surface p-4">
               <p className="mb-2 text-xs uppercase tracking-wide text-foreground/40">At-bat result</p>
               <div className="grid grid-cols-3 gap-2">
                 {RESULT_BUTTON_ORDER.map((r) => (
@@ -608,7 +610,7 @@ export function OperatorConsole({
                       key={ht}
                       onClick={() => dispatch({ type: "SET_HIT_TYPE", hitType: state.pendingHitType === ht ? null : ht })}
                       className={`rounded-full border px-3 py-1 text-xs ${
-                        state.pendingHitType === ht ? "border-accent-blue bg-accent-blue text-white" : "border-border text-foreground/60"
+                        state.pendingHitType === ht ? "border-accent-primary bg-accent-primary text-white" : "border-border text-foreground/60"
                       }`}
                     >
                       {HIT_TYPE_LABELS[ht]}
@@ -622,7 +624,7 @@ export function OperatorConsole({
                   Fielded by: <span className="text-white">{state.pendingFielding.position}</span>{" "}
                   <button
                     onClick={() => dispatch({ type: "SET_FIELDING", position: state.pendingFielding!.position, playerId: null, opponentPlayerId: null })}
-                    className="text-accent-blue hover:underline"
+                    className="text-accent-primary hover:underline"
                   >
                     change
                   </button>
@@ -665,7 +667,7 @@ export function OperatorConsole({
             />
           )}
 
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-border bg-surface p-4">
+          <div className="glossy flex flex-col items-center gap-2 rounded-lg border border-border bg-surface p-4">
             {state.runnersPendingConfirmation && (
               <div className="w-full rounded-md border border-accent-amber/50 bg-accent-amber/10 p-2 text-center">
                 <p className="text-xs text-accent-amber">Suggested runner movement — review or confirm</p>
@@ -763,7 +765,7 @@ export function OperatorConsole({
                     void syncGameState(game.id, { current_pitcher_id: p.id, pitch_count_for_current_pitcher: 0 });
                     setPitcherPickerOpen(false);
                   }}
-                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-blue"
+                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
                 >
                   #{p.jersey_number ?? "—"} {p.name}
                 </button>
@@ -824,7 +826,7 @@ export function OperatorConsole({
       <div className="fixed inset-x-0 bottom-0 z-30 flex items-center justify-between gap-3 border-t border-border bg-surface px-4 py-3">
         <button
           onClick={() => dispatch({ type: "SET_PANEL", panel: "endGame", open: true })}
-          className="min-h-[48px] rounded-md border border-red-500/50 px-4 text-sm font-medium text-red-400"
+          className="min-h-[48px] rounded-md border border-accent-red/50 px-4 text-sm font-medium text-accent-red"
         >
           End Game
         </button>
@@ -884,7 +886,7 @@ function QuickButton({ label, onClick, className = "" }: { label: string; onClic
   return (
     <button
       onClick={onClick}
-      className={`min-h-[48px] rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground/80 hover:border-accent-blue hover:text-white ${className}`}
+      className={`min-h-[48px] rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground/80 hover:border-accent-primary hover:text-white ${className}`}
     >
       {label}
     </button>
@@ -927,7 +929,7 @@ function ConfirmDialog({
         <h3 className="font-heading text-lg font-bold text-white">{title}</h3>
         <p className="mt-2 text-sm text-foreground/70">{message}</p>
         <div className="mt-4 flex gap-3">
-          <button onClick={onConfirm} className="flex-1 rounded-md bg-accent-blue px-4 py-2.5 text-sm font-semibold text-white">
+          <button onClick={onConfirm} className="flex-1 rounded-md bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white">
             {confirmLabel}
           </button>
           <button onClick={onCancel} className="rounded-md border border-border px-4 py-2.5 text-sm text-foreground/70">
@@ -988,7 +990,7 @@ function RunnerPicker({
                   jersey: p.jersey_number ? String(p.jersey_number) : null,
                 })
               }
-              className="rounded border border-border px-2 py-1 text-left text-sm text-white hover:border-accent-blue"
+              className="rounded border border-border px-2 py-1 text-left text-sm text-white hover:border-accent-primary"
             >
               #{p.jersey_number ?? "—"} {p.name}
             </button>
@@ -1025,7 +1027,7 @@ function OpponentRunnerInput({
       <div className="flex gap-2">
         <button
           onClick={() => name.trim() && onSelect({ type: "opponent", id: null, name: name.trim() })}
-          className="flex-1 rounded border border-accent-blue py-1 text-xs text-white"
+          className="flex-1 rounded border border-accent-primary py-1 text-xs text-white"
         >
           Set
         </button>
@@ -1071,7 +1073,7 @@ function RunnerQuickActionMenu({
           <button
             key={o.action}
             onClick={() => onAction(o.action)}
-            className="min-h-[44px] rounded border border-border px-2 text-xs font-medium text-white hover:border-accent-blue"
+            className="min-h-[44px] rounded border border-border px-2 text-xs font-medium text-white hover:border-accent-primary"
           >
             {o.label}
           </button>
@@ -1103,7 +1105,7 @@ function ScoreMethodMenu({
             <button
               key={m}
               onClick={() => onSelect(m)}
-              className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-blue"
+              className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
             >
               {SCORE_METHOD_LABELS[m]}
               <span className={`text-[10px] uppercase ${SCORE_METHOD_AWARDS_RBI[m] ? "text-accent-green" : "text-foreground/40"}`}>
@@ -1169,7 +1171,7 @@ function FieldingPositionPicker({
               <button
                 key={pos}
                 onClick={() => onSelect(resolve(pos))}
-                className="min-h-[44px] min-w-[44px] rounded border border-border px-2 text-xs font-semibold text-white hover:border-accent-blue"
+                className="min-h-[44px] min-w-[44px] rounded border border-border px-2 text-xs font-semibold text-white hover:border-accent-primary"
               >
                 {pos}
               </button>
@@ -1193,9 +1195,11 @@ function ThreeOutsModal({
   onEndInning: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4">
-      <div className="w-full max-w-sm rounded-lg border border-accent-amber/50 bg-surface p-6 text-center">
-        <p className="font-heading text-3xl font-bold text-accent-amber">3 OUTS</p>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#030A06]/95 p-4">
+      <div className="glossy glow-green w-full max-w-sm rounded-lg border border-accent-green/60 bg-card p-6 text-center">
+        <p className="font-heading text-3xl font-bold text-accent-green" style={{ textShadow: "0 0 16px rgba(0,255,127,0.6)" }}>
+          3 OUTS
+        </p>
         <p className="mt-1 text-sm text-foreground/60">Inning over</p>
         <div className="mt-4 grid grid-cols-3 gap-3">
           <div>
@@ -1213,7 +1217,7 @@ function ThreeOutsModal({
         </div>
         <button
           onClick={onEndInning}
-          className="mt-6 w-full min-h-[48px] rounded-md bg-accent-amber px-4 text-base font-semibold text-background"
+          className="mt-6 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-background"
         >
           End Inning
         </button>
@@ -1258,7 +1262,7 @@ function DoublePlayWizard({
                 <button
                   key={b}
                   onClick={() => onChangeBase(b)}
-                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-blue"
+                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
                 >
                   {runners[b]?.name} ({b})
                 </button>
@@ -1277,7 +1281,7 @@ function DoublePlayWizard({
                   key={t}
                   onClick={() => onChangeType(t)}
                   className={`flex-1 rounded-md border px-3 py-2 text-sm capitalize ${
-                    wizard.outType === t ? "border-accent-blue bg-accent-blue text-white" : "border-border text-foreground/70"
+                    wizard.outType === t ? "border-accent-primary bg-accent-primary text-white" : "border-border text-foreground/70"
                   }`}
                 >
                   {t}
@@ -1286,7 +1290,7 @@ function DoublePlayWizard({
             </div>
             <button
               onClick={onProceedToFielding1}
-              className="mt-4 w-full min-h-[48px] rounded-md bg-accent-blue px-4 text-sm font-semibold text-white"
+              className="mt-4 w-full min-h-[48px] rounded-md bg-accent-primary px-4 text-sm font-semibold text-white"
             >
               Next
             </button>

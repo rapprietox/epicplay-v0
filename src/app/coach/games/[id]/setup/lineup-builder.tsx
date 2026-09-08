@@ -123,7 +123,7 @@ export function LineupBuilder({
                 }}
                 className="flex items-center gap-3 rounded-md border border-dashed border-border bg-background/40 px-3 py-2"
               >
-                <span className="font-heading w-6 text-lg font-bold text-accent-blue">{slot}</span>
+                <span className="font-heading w-6 text-lg font-bold text-accent-primary">{slot}</span>
                 {player ? (
                   <div
                     draggable
@@ -142,7 +142,7 @@ export function LineupBuilder({
                     <button
                       type="button"
                       onClick={() => clearSlot(slot)}
-                      className="text-xs text-foreground/40 hover:text-red-400"
+                      className="text-xs text-foreground/40 hover:text-accent-red"
                     >
                       ×
                     </button>
@@ -184,7 +184,7 @@ export function LineupBuilder({
               setSaved(false);
             }}
             required
-            className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+            className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
           />
         </div>
 
@@ -192,7 +192,7 @@ export function LineupBuilder({
           type="button"
           onClick={save}
           disabled={isSaving}
-          className="mt-4 w-full rounded-md border border-border px-4 py-2 text-sm font-medium text-white transition hover:border-accent-blue disabled:opacity-50"
+          className="mt-4 w-full rounded-md border border-border px-4 py-2 text-sm font-medium text-white transition hover:border-accent-primary disabled:opacity-50"
         >
           {isSaving ? "Saving…" : saved ? "Saved" : "Save lineup"}
         </button>
@@ -210,7 +210,7 @@ export function LineupBuilder({
             Needs 9 players in the lineup and an umpire name.
           </p>
         )}
-        {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+        {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
       </div>
     </div>
   );

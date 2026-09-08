@@ -25,9 +25,9 @@ export default function LoginPage() {
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-8 shadow-2xl shadow-black/40">
+      <div className="glossy w-full max-w-sm rounded-xl border border-border bg-surface p-8 shadow-2xl shadow-black/40">
         <div className="mb-8 text-center">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-blue">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-primary">
             EpicPlay AI
           </p>
           <h1 className="mt-2 text-2xl font-semibold text-white">Sign in</h1>
@@ -39,7 +39,7 @@ export default function LoginPage() {
         <button
           onClick={signInWithGoogle}
           disabled={loading}
-          className="flex w-full items-center justify-center gap-3 rounded-lg border border-border bg-background px-4 py-3 text-sm font-medium text-white transition hover:border-accent-blue disabled:opacity-50"
+          className="flex w-full items-center justify-center gap-3 rounded-lg border border-border bg-background px-4 py-3 text-sm font-medium text-white transition hover:border-accent-primary disabled:opacity-50"
         >
           <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
             <path
@@ -63,7 +63,7 @@ export default function LoginPage() {
         </button>
 
         {error && (
-          <p className="mt-4 text-center text-sm text-red-400">{error}</p>
+          <p className="mt-4 text-center text-sm text-accent-red">{error}</p>
         )}
       </div>
     </main>

@@ -45,19 +45,19 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
 
   return (
     <main className="min-h-screen bg-background px-6 py-8">
-      <Link href="/coach" className="text-sm text-accent-blue hover:underline">
+      <Link href="/coach" className="text-sm text-accent-primary hover:underline">
         &larr; Back to dashboard
       </Link>
 
       <header className="mt-4 border-b border-border pb-4">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-blue">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-primary">
           #{player.jersey_number ?? "—"} &middot; {player.position ?? "—"}
         </p>
         <h1 className="font-heading mt-1 text-3xl font-bold text-white">{player.name}</h1>
       </header>
 
       <div className="mx-auto mt-6 max-w-3xl">
-        <section className="rounded-lg border border-border bg-surface p-5">
+        <section className="glossy rounded-lg border border-border bg-surface p-5">
           <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
             Batting
           </h2>
@@ -83,7 +83,7 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
           )}
         </section>
 
-        <section className="mt-6 rounded-lg border border-border bg-surface p-5">
+        <section className="mt-6 glossy rounded-lg border border-border bg-surface p-5">
           <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
             Pitching
           </h2>

@@ -42,7 +42,7 @@ export function PostGameSummary({
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-background p-6">
       <div className="mx-auto max-w-md">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-blue">Game Complete</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-primary">Game Complete</p>
         <h1 className="font-heading mt-1 text-3xl font-bold text-white">vs {opponentName}</h1>
         <p className="font-heading mt-2 text-4xl font-bold text-accent-gold">
           {ourScore}&ndash;{opponentScore}
@@ -65,7 +65,7 @@ export function PostGameSummary({
             <button
               type="button"
               onClick={() => router.push("/coach")}
-              className="mt-3 rounded-md bg-accent-blue px-4 py-2 text-sm font-medium text-white"
+              className="mt-3 rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-white"
             >
               Back to dashboard
             </button>
@@ -78,10 +78,10 @@ export function PostGameSummary({
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 rows={4}
-                className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+                className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
               />
             </label>
-            {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+            {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
             <button
               type="button"
               onClick={submit}
@@ -99,7 +99,7 @@ export function PostGameSummary({
 
 function SummaryStat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-md border border-border bg-surface p-3 text-center">
+    <div className="glossy rounded-md border border-border bg-surface p-3 text-center">
       <p className="font-heading text-2xl font-bold text-white">{value}</p>
       <p className="mt-0.5 text-[10px] uppercase tracking-wide text-foreground/40">{label}</p>
     </div>

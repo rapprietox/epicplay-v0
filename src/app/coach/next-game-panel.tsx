@@ -24,7 +24,7 @@ export async function NextGamePanel({
 }) {
   if (activeGame) {
     return (
-      <section className="rounded-lg border border-accent-green/50 bg-surface p-6">
+      <section className="glossy rounded-lg border border-accent-green/50 bg-surface p-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-accent-green">
@@ -48,7 +48,7 @@ export async function NextGamePanel({
 
   if (!nextGame) {
     return (
-      <section className="rounded-lg border border-border bg-surface p-6">
+      <section className="glossy rounded-lg border border-border bg-surface p-6">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-amber">
           Next Game
         </p>
@@ -76,7 +76,7 @@ export async function NextGamePanel({
   const insight = await buildInsight(nextGame, allGames, atBats, players, pastGameIds);
 
   return (
-    <section className="rounded-lg border border-accent-amber/40 bg-surface p-6">
+    <section className="glossy rounded-lg border border-accent-amber/40 bg-surface p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-amber">

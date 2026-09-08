@@ -146,7 +146,7 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
   }, [rows]);
 
   return (
-    <section className="rounded-lg border border-accent-gold/30 bg-surface p-5 shadow-[0_0_0_1px_rgba(240,192,96,0.05)]">
+    <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5 shadow-[0_0_0_1px_rgba(240,192,96,0.05)]">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-heading text-2xl font-bold uppercase tracking-wide text-accent-gold">
           Team Leaders
@@ -157,7 +157,7 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
               key={f}
               onClick={() => setFilter(f)}
               className={`rounded px-3 py-1 capitalize transition ${
-                filter === f ? "bg-accent-blue text-white" : "text-foreground/50 hover:text-white"
+                filter === f ? "bg-accent-primary text-white" : "text-foreground/50 hover:text-white"
               }`}
             >
               {f === "all" ? "All games" : `${f} only`}

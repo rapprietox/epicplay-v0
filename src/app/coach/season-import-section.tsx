@@ -66,7 +66,7 @@ export function SeasonImportSection() {
   }
 
   return (
-    <section className="rounded-lg border border-border bg-surface p-5">
+    <section className="glossy rounded-lg border border-border bg-surface p-5">
       <h2 className="font-heading text-xl font-semibold uppercase tracking-wide text-white">
         Create Season
       </h2>
@@ -85,7 +85,7 @@ export function SeasonImportSection() {
               id="season-name"
               value={seasonName}
               onChange={(e) => setSeasonName(e.target.value)}
-              className="w-48 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+              className="w-48 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
             />
           </div>
           <div className="flex flex-col gap-1">
@@ -97,10 +97,10 @@ export function SeasonImportSection() {
               type="number"
               value={seasonYear}
               onChange={(e) => setSeasonYear(Number(e.target.value))}
-              className="w-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+              className="w-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
             />
           </div>
-          <label className="cursor-pointer rounded-md bg-accent-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-blue/90">
+          <label className="cursor-pointer rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-primary/90">
             {isExtracting ? "Reading PDF…" : "Upload schedule PDF"}
             <input
               type="file"
@@ -113,7 +113,7 @@ export function SeasonImportSection() {
         </div>
       )}
 
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+      {error && <p className="mt-3 text-sm text-accent-red">{error}</p>}
       {done && <p className="mt-3 text-sm text-accent-green">Season saved.</p>}
 
       {games && (
@@ -195,7 +195,7 @@ export function SeasonImportSection() {
                       <button
                         type="button"
                         onClick={() => removeGame(i)}
-                        className="text-xs text-foreground/40 hover:text-red-400"
+                        className="text-xs text-foreground/40 hover:text-accent-red"
                       >
                         Remove
                       </button>

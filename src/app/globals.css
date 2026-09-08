@@ -3,11 +3,27 @@
 @tailwind utilities;
 
 :root {
-  --background: #0a1628;
-  --foreground: #c5d8f0;
+  --background: #030a06;
+  --foreground: #c8f0d5;
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
+}
+
+/* Glossy/satin card treatment -- cards, the strike zone grid, and the
+   operator screen panels. Composable with bg-surface/bg-card; doesn't set
+   its own background so it still respects whichever surface token the
+   element already uses. */
+.glossy {
+  background-image: linear-gradient(135deg, rgba(46, 204, 113, 0.05) 0%, rgba(36, 160, 88, 0.08) 50%, rgba(46, 204, 113, 0.05) 100%);
+  box-shadow:
+    0 1px 0 rgba(46, 204, 113, 0.1) inset,
+    0 0 20px rgba(26, 107, 60, 0.15);
+}
+
+/* Neon glow for occupied-base runner dots and other "key moment" accents. */
+.glow-green {
+  box-shadow: 0 0 8px 2px rgba(0, 255, 127, 0.55);
 }

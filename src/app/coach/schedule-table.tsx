@@ -24,7 +24,7 @@ export function ScheduleTable({ games, opponentNames }: { games: Game[]; opponen
   const sorted = [...games].sort((a, b) => a.game_date.localeCompare(b.game_date));
 
   return (
-    <section className="rounded-lg border border-border bg-surface p-5">
+    <section className="glossy rounded-lg border border-border bg-surface p-5">
       <div className="flex items-center justify-between">
         <h2 className="font-heading text-xl font-semibold uppercase tracking-wide text-white">
           Season Schedule
@@ -146,7 +146,7 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
             <button
               type="submit"
               disabled={isPending}
-              className="rounded bg-accent-blue px-3 py-1 text-sm text-white disabled:opacity-50"
+              className="rounded bg-accent-primary px-3 py-1 text-sm text-white disabled:opacity-50"
             >
               Save
             </button>
@@ -158,7 +158,7 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
               Cancel
             </button>
           </form>
-          {error && <p className="mt-1 px-1 text-xs text-red-400">{error}</p>}
+          {error && <p className="mt-1 px-1 text-xs text-accent-red">{error}</p>}
         </td>
       </tr>
     );
@@ -183,7 +183,7 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
       </td>
       <td className="py-2 pr-3">
         {cancelled ? (
-          <span className="rounded bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-400">
+          <span className="rounded bg-accent-red/10 px-2 py-0.5 text-xs font-medium text-accent-red">
             Cancelled
           </span>
         ) : game.status === "active" ? (
@@ -197,7 +197,7 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
               result === "W"
                 ? "text-accent-green"
                 : result === "L"
-                  ? "text-red-400"
+                  ? "text-accent-red"
                   : "text-foreground/60"
             }`}
           >
@@ -211,7 +211,7 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
       <td className="py-2">
         {!cancelled && game.status === "setup" && (
           <div className="flex gap-2 whitespace-nowrap">
-            <Link href={`/coach/games/${game.id}/setup`} className="text-xs text-accent-blue hover:underline">
+            <Link href={`/coach/games/${game.id}/setup`} className="text-xs text-accent-primary hover:underline">
               Set up
             </Link>
             <button
@@ -225,7 +225,7 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
               type="button"
               onClick={doCancel}
               disabled={isPending}
-              className="text-xs text-foreground/40 hover:text-red-400"
+              className="text-xs text-foreground/40 hover:text-accent-red"
             >
               Cancel
             </button>
@@ -265,7 +265,7 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="mt-4 text-sm text-accent-blue hover:underline"
+        className="mt-4 text-sm text-accent-primary hover:underline"
       >
         + Add game manually
       </button>
@@ -283,7 +283,7 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
           name="opponent_name"
           list="known-opponents"
           required
-          className="w-40 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+          className="w-40 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
         />
         <datalist id="known-opponents">
           {opponentNames.map((name) => (
@@ -300,7 +300,7 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
           type="date"
           name="game_date"
           required
-          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
         />
       </div>
       <div className="flex flex-col gap-1">
@@ -311,7 +311,7 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
           id="manual-time"
           name="game_time"
           defaultValue="TBD"
-          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
         >
           <option value="TBD">TBD</option>
           {TIME_OPTIONS.map((t) => (
@@ -328,7 +328,7 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
         <select
           id="manual-home-away"
           name="home_away"
-          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
         >
           <option value="home">Home</option>
           <option value="away">Away</option>
@@ -342,7 +342,7 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
           id="manual-type"
           name="game_type"
           defaultValue="friendly"
-          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
         >
           {GAME_TYPES.map((t) => (
             <option key={t} value={t}>
@@ -354,7 +354,7 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
       <button
         type="submit"
         disabled={isPending}
-        className="rounded-md bg-accent-blue px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
       >
         {isPending ? "Adding…" : "Add"}
       </button>
@@ -365,7 +365,7 @@ function AddGameForm({ opponentNames }: { opponentNames: string[] }) {
       >
         Cancel
       </button>
-      {error && <p className="w-full text-sm text-red-400">{error}</p>}
+      {error && <p className="w-full text-sm text-accent-red">{error}</p>}
     </form>
   );
 }

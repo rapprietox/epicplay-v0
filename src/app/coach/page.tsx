@@ -52,7 +52,7 @@ export default async function CoachPage() {
       <RealtimeRefresh teamId={teamId} />
       <header className="flex items-center justify-between border-b border-border pb-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-blue">Coach</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-primary">Coach</p>
           <h1 className="font-heading mt-1 text-3xl font-bold text-white">{team?.name ?? "Team"}</h1>
         </div>
         <div className="flex items-center gap-4">

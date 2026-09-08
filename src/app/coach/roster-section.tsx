@@ -29,7 +29,7 @@ export function RosterSection({ players }: { players: Player[] }) {
   }
 
   return (
-    <section className="rounded-lg border border-border bg-surface p-5">
+    <section className="glossy rounded-lg border border-border bg-surface p-5">
       <h2 className="font-heading text-xl font-semibold uppercase tracking-wide text-white">
         Roster
       </h2>
@@ -46,7 +46,7 @@ export function RosterSection({ players }: { players: Player[] }) {
             id="player-name"
             name="name"
             required
-            className="w-40 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+            className="w-40 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
           />
         </div>
         <div className="flex flex-col gap-1">
@@ -57,7 +57,7 @@ export function RosterSection({ players }: { players: Player[] }) {
             id="player-jersey"
             name="jersey_number"
             type="number"
-            className="w-16 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+            className="w-16 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
           />
         </div>
         <div className="flex flex-col gap-1">
@@ -68,7 +68,7 @@ export function RosterSection({ players }: { players: Player[] }) {
             id="player-position"
             name="position"
             defaultValue=""
-            className="w-44 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-blue"
+            className="w-44 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
           >
             <option value="">—</option>
             {POSITIONS.map((pos) => (
@@ -81,12 +81,12 @@ export function RosterSection({ players }: { players: Player[] }) {
         <button
           type="submit"
           disabled={isPending}
-          className="rounded-md bg-accent-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-blue/90 disabled:opacity-50"
+          className="rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-primary/90 disabled:opacity-50"
         >
           {isPending ? "Adding…" : "Add player"}
         </button>
       </form>
-      {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+      {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
 
       <ul className="mt-4 divide-y divide-border">
         {players.length === 0 && (

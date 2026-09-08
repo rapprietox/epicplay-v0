@@ -29,7 +29,7 @@ export function SubstitutionPanel({
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-5">
+      <div className="glossy w-full max-w-sm rounded-lg border border-border bg-surface p-5">
         <h3 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
           Substitution
         </h3>
@@ -88,7 +88,7 @@ export function SubstitutionPanel({
             type="button"
             disabled={!playerOut || !playerIn || playerOut === playerIn}
             onClick={() => onConfirm(playerOut, playerIn, reason)}
-            className="flex-1 rounded-md bg-accent-blue px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
+            className="flex-1 rounded-md bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
           >
             Confirm sub
           </button>

@@ -70,7 +70,7 @@ export function OpponentPhotoImport({
   }
 
   return (
-    <section className="rounded-lg border border-border bg-surface p-5">
+    <section className="glossy rounded-lg border border-border bg-surface p-5">
       <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
         {opponentName} Lineup Card
       </h2>
@@ -101,7 +101,7 @@ export function OpponentPhotoImport({
       )}
 
       {hasOpponent && !extracted && (
-        <label className="mt-4 inline-block cursor-pointer rounded-md bg-accent-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-blue/90">
+        <label className="mt-4 inline-block cursor-pointer rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-primary/90">
           {isExtracting ? "Reading photo…" : "Upload lineup photo"}
           <input
             type="file"
@@ -114,7 +114,7 @@ export function OpponentPhotoImport({
         </label>
       )}
 
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+      {error && <p className="mt-3 text-sm text-accent-red">{error}</p>}
       {done && <p className="mt-3 text-sm text-accent-green">Opponent roster saved.</p>}
 
       {extracted && (
@@ -145,7 +145,7 @@ export function OpponentPhotoImport({
                 <button
                   type="button"
                   onClick={() => removePlayer(i)}
-                  className="text-xs text-foreground/40 hover:text-red-400"
+                  className="text-xs text-foreground/40 hover:text-accent-red"
                 >
                   Remove
                 </button>

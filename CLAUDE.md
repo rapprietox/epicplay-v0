@@ -471,29 +471,67 @@ Public paths (no auth required): `/login`, `/auth/callback`,
 
 ## Design system
 
-Dark theme, must read as an MLB analytics tool, not a school project.
+Dark theme, Oakland A's-inspired green rebrand (post-Sprint-3), must read
+as an MLB analytics tool, not a school project.
 
 | Token | Value |
 |---|---|
-| Background | `#0A1628` |
-| Surface (cards) | `#0D1E35` |
-| Border | `#1A2D4A` |
-| Blue accent | `#2E6FD4` |
-| Green | `#1D9E75` |
+| Background | `#030A06` |
+| Surface (cards) | `#071A0E` |
+| Card | `#0A2214` |
+| Border | `#1A3D28` |
+| Primary accent | `#1A6B3C` |
+| Accent (light/hover) | `#24A058` |
+| Accent green (bright/success) | `#2ECC71` |
+| Glow (neon accents) | `#00FF7F` |
 | Amber | `#EF9F27` |
+| Red (errors) | `#E24B4A` |
 | Gold (leaders) | `#F0C060` |
-| Text | `#C5D8F0` |
+| Text | `#C8F0D5` |
 | Body font | DM Sans (`--font-sans`, class `font-sans`, the default) |
 | Heading/big-number font | Barlow Condensed (`--font-heading`, class `font-heading`) |
 
-Both fonts load via `next/font/google` in `src/app/layout.tsx`. Sprint 1
-shipped with Inter/`surface: #0F1F38`/`border: #1C2E4A` as a placeholder;
-Sprint 2 replaced them with the values above per the product spec --
-if you see the old hex values anywhere they're stale. Tokens live in
-`tailwind.config.ts` (`accent.blue/green/amber/gold`, `surface`, `border`,
-`fontFamily.sans/heading`) and `src/app/globals.css` (`--background`,
-`--foreground`). No external chart library -- heat maps and spray charts
-(Sprint 3) render as inline SVG.
+Both fonts load via `next/font/google` in `src/app/layout.tsx`. Tokens
+live in `tailwind.config.ts` (`accent.primary/light/green/glow/amber/red/
+gold`, `surface`, `card`, `border`, `fontFamily.sans/heading`) and
+`src/app/globals.css` (`--background`, `--foreground`, plus the `.glossy`
+and `.glow-green` utility classes -- see below). No external chart library
+-- heat maps and spray charts (Sprint 4) render as inline SVG.
+
+**Color history, oldest to newest** (if you see any of these hex values
+anywhere, they're stale and should be replaced with the current tokens
+above): Sprint 1 shipped Inter/`surface: #0F1F38`/`border: #1C2E4A` as a
+placeholder; Sprint 2 replaced them with a blue accent (`#0A1628`
+background, `#0D1E35` surface, `#1A2D4A` border, `#2E6FD4` blue,
+`#1D9E75` green, `#C5D8F0` text); a later Sprint 3 pass replaced the blue
+scheme entirely with the green palette in the table above. **The old
+`accent.blue` Tailwind token was renamed to `accent.primary`** (not just
+re-valued) -- keeping a class named "blue" that resolves to green would
+have been a confusing, stale-sounding name for anyone reading the JSX;
+the rename was a global, mechanical find-and-replace of `accent-blue` ->
+`accent-primary` across every `.tsx` file. `accent.green` kept its name
+(green already made sense) but its *value* moved from the old
+`#1D9E75` to the new bright `#2ECC71` -- it was already the app's
+established "success/confirm/positive" color (Save, Confirm At-Bat, Live
+indicator, Win), and the new palette's "bright green" is explicitly
+meant to take over exactly that role. Generic Tailwind `red-400`/`red-500`
+utility classes (errors, End Game, the pitch-count alert) were similarly
+consolidated onto the single formal `accent.red` (`#E24B4A`) token.
+
+**`.glossy`** (defined in `globals.css`): the glossy/satin gradient +
+inset-highlight + outer-glow card treatment, applied to cards, the strike
+zone grid, and operator-screen panels via `className="glossy ..."`
+alongside whatever `bg-surface`/`bg-card` the element already used (it
+doesn't set its own background, so it composes rather than overrides).
+**`.glow-green`**: a neon box-shadow glow for occupied-base runner dots
+and other "key moment" accents -- SVG shapes use an inline
+`style={{ filter: "drop-shadow(...)" }}` instead, since `box-shadow`
+doesn't reliably apply to SVG shape elements the way it does to a `<div>`.
+
+The field diagram SVG (`src/app/operator/field-diagram.tsx`) now draws
+outfield and infield grass as two separate layered shapes (`#2D5A1B`
+outfield, `#3A7A25` infield) instead of one flat fill, specifically to
+support the two distinct Oakland A's field-green shades.
 
 ## Environment variables
 
