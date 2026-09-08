@@ -62,16 +62,19 @@ export function LineupBuilder({
     setAssignments((prev) => ({ ...prev, [slot]: { ...prev[slot], position } }));
   }
 
-  function save() {
-    setError(null);
-    const lineup: LineupSlot[] = SLOTS.filter((s) => assignments[s]?.playerId).map((s) => ({
+  function buildLineupPayload(): LineupSlot[] {
+    return SLOTS.filter((s) => assignments[s]?.playerId).map((s) => ({
       batting_order: s,
       player_id: assignments[s].playerId,
       position: assignments[s].position,
     }));
+  }
+
+  function save() {
+    setError(null);
     startSave(async () => {
       try {
-        await saveLineupAndUmpire(gameId, { lineup, umpireName });
+        await saveLineupAndUmpire(gameId, { lineup: buildLineupPayload(), umpireName });
         setSaved(true);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to save");
@@ -83,6 +86,12 @@ export function LineupBuilder({
     setError(null);
     startStart(async () => {
       try {
+        // Start reads the lineup/umpire name back from the database, so
+        // the in-progress edits here must be persisted first -- otherwise
+        // a name typed but never explicitly "Saved" looks unset to the
+        // server and Start Game fails with "Umpire name is required" even
+        // though the field clearly has a value on screen.
+        await saveLineupAndUmpire(gameId, { lineup: buildLineupPayload(), umpireName });
         await startGame(gameId);
         window.location.href = `/operator?game=${gameId}`;
       } catch (err) {
