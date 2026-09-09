@@ -4,10 +4,13 @@ import { createClient } from "@/lib/supabase/server";
 import { computeBattingLines, computePitchingLines, formatAvg } from "@/lib/stats";
 import { zoneIndexFromCoords, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import { resultCategory } from "@/lib/heat-map";
+import { finalCountForAtBat, type CountState } from "@/lib/count-stats";
 import { StrikeZoneHeatmap } from "./strike-zone-heatmap";
 import { SprayChart } from "./spray-chart";
 import type { AtBatResult, GameType, PitchType } from "@/lib/supabase/types";
 import { PitcherHeatmap } from "./pitcher-heatmap";
+import { HitterExtendedStats } from "./hitter-extended-stats";
+import { PitcherExtendedStats } from "./pitcher-extended-stats";
 
 export default async function PlayerBreakdownPage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -67,11 +70,13 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
 
   const lastPitchZoneByAtBat = new Map<string, number | null>();
   const lastPitchTypeByAtBat = new Map<string, string | null>();
+  const finalCountByAtBat = new Map<string, CountState | null>();
   for (const ab of allAtBats) {
     const forThisAtBat = (pitches ?? []).filter((p) => p.at_bat_id === ab.id);
     const last = forThisAtBat.sort((a, b) => b.pitch_number - a.pitch_number)[0];
     lastPitchZoneByAtBat.set(ab.id, last && last.zone_x !== null && last.zone_y !== null ? zoneIndexFromCoords(last.zone_x, last.zone_y) : null);
     lastPitchTypeByAtBat.set(ab.id, last?.pitch_type ?? null);
+    finalCountByAtBat.set(ab.id, finalCountForAtBat(forThisAtBat));
   }
 
   const battingLine = computeBattingLines(battingAtBats ?? [], stolenBases ?? []).get(player.id);
@@ -117,6 +122,21 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
 
   const pitcherAtBatIds = new Set((pitchingAtBats ?? []).map((ab) => ab.id));
   const pitcherPitches = (pitches ?? []).filter((p) => pitcherAtBatIds.has(p.at_bat_id));
+
+  const batterAtBatIds = new Set((battingAtBats ?? []).map((ab) => ab.id));
+  const batterPitches = (pitches ?? []).filter((p) => batterAtBatIds.has(p.at_bat_id));
+
+  const hitterCountAtBats: { result: AtBatResult; finalCount: CountState | null }[] = (battingAtBats ?? [])
+    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
+    .map((ab) => ({ result: ab.result, finalCount: finalCountByAtBat.get(ab.id) ?? null }));
+
+  const hitterPitchTypeAtBats: { result: AtBatResult; pitchType: PitchType | null }[] = (battingAtBats ?? [])
+    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
+    .map((ab) => ({ result: ab.result, pitchType: (lastPitchTypeByAtBat.get(ab.id) as PitchType | null) ?? null }));
+
+  const pitcherCountAtBats: { result: AtBatResult; finalCount: CountState | null }[] = (pitchingAtBats ?? [])
+    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
+    .map((ab) => ({ result: ab.result, finalCount: finalCountByAtBat.get(ab.id) ?? null }));
 
   return (
     <main className="min-h-screen bg-background px-6 py-8">
@@ -188,6 +208,14 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
         <SprayChart dots={sprayDots} />
 
         {pitchingZoneAtBats.length > 0 && <PitcherHeatmap atBats={pitcherAtBatsByType} pitches={pitcherPitches} />}
+
+        {battingZoneAtBats.length > 0 && (
+          <HitterExtendedStats countAtBats={hitterCountAtBats} pitchTypeAtBats={hitterPitchTypeAtBats} pitches={batterPitches} />
+        )}
+
+        {pitchingZoneAtBats.length > 0 && (
+          <PitcherExtendedStats countAtBats={pitcherCountAtBats} pitches={pitcherPitches} atBatCount={(pitchingAtBats ?? []).length} />
+        )}
       </div>
     </main>
   );

@@ -449,6 +449,100 @@ putouts, not assists -- Fix 6 deliberately captures one fielder per play
 chain to derive an assist from. No coach-dashboard panel displays these
 yet; that's future-sprint scope, not part of this batch.
 
+## Post-Sprint-4 enhancements: schedule collapse, spray chart lines, extended splits
+
+Three enhancements requested after the Sprint 4 commit, built in this order
+(quickest win first, most complex last), all computed from existing
+`pitches`/`at_bats` rows -- no schema changes.
+
+**Season Schedule collapse** (`src/app/coach/schedule-table.tsx`). Games
+split into three tiers by `game_date` vs today: the next 3 upcoming games
+render expanded in their own table with the soonest one tagged "Next" and
+tinted (`prominent` prop on `GameRow`); everything before today collapses
+under a "Past Games (X)" accordion summarizing the team's overall W-L(-T)
+record (`resultLetter` tallied across every completed past game, most
+recent first when expanded); anything upcoming beyond the next 3 collapses
+under "Remaining Schedule (X)". `Collapsible` uses the CSS
+`grid-template-rows: 0fr -> 1fr` transition trick (a div wrapping the
+content in `overflow-hidden`) instead of measuring pixel heights in JS --
+it's the standard way to animate a height nobody knows in advance, and
+needs no extra state or ResizeObserver.
+
+**Spray chart "Lines" view** (`src/app/coach/players/[id]/spray-chart.tsx`).
+A toggle was added alongside the original dot rendering (now the "Zones"
+tab, unchanged) for a new "Lines" tab: each ball in play draws as an SVG
+`<line>` from home plate (fixed at the field diagram's `(50, 92)`, where
+the foul lines already meet) out to its `field_x`/`field_y`, using
+`pathLength={1}` + a `strokeDasharray`/`strokeDashoffset` transition (the
+same delayed-reveal pattern already used for the heat map grids'
+`revealed` state, just applied per-line with a small per-index stagger for
+the "radiating outward" effect) rather than pulling in an animation
+library. Color comes from hit type, not result -- `lineHitCategory` /
+`LINE_HIT_CATEGORY_COLOR` in `src/lib/heat-map.ts`: fly ball bright green,
+ground ball amber, line drive gold, pop up muted green, and a home run
+always renders white with a glow **regardless of its logged `hit_type`**
+(`result === "hr"` is checked first), since the result is the more
+reliable signal for "this ball left the park." `hit_type` values outside
+those four tracked buckets (`bunt`, or `null`) fall back to a neutral
+"Other" category instead of guessing. Line thickness follows the
+`SprayDot.category` already used by the Zones tab (out = 1px, everything
+else = 2px). The bottom-right legend (hit-type + percentage breakdown,
+counted over whatever the hit-type/game-type filters currently show) is
+an absolutely-positioned HTML overlay on top of the SVG rather than raw
+SVG text -- simpler to size/wrap correctly than hand-placing `<text>`
+elements in a 100x100 viewBox.
+
+**Extended heat map statistics** (`src/app/coach/players/[id]/page.tsx`,
+new `hitter-extended-stats.tsx` / `pitcher-extended-stats.tsx` panels,
+plus a new `src/lib/count-stats.ts`). Two schema gaps were confirmed with
+the user before building, both following the exact honesty precedent
+Sprint 4 set for "Whiff Rate":
+
+- **Chase rate and contact rate are not built at all** (not approximated).
+  Both need to know whether the batter *swung*; `pitches.outcome` only
+  records strike/ball/foul/hbp/inplay, with no swing-vs-take distinction
+  and no stored strike-zone boundary to test "outside the zone" against.
+  A note to that effect renders directly on the Hitter Splits panel rather
+  than silently omitting the sections.
+- **Runners-on vs. bases-empty pitching splits are not built.** Historical
+  base occupancy isn't persisted anywhere -- only `game_state.runners`,
+  which is overwritten continuously as the live game progresses -- so
+  there's no reliable per-at-bat "were runners on" signal to split by,
+  and reconstructing one from play sequencing was judged too unreliable
+  to present as a real stat. Documented in-panel on Pitcher Splits.
+
+Two count-dependent stats (hitters' Count Performance table, pitchers'
+Strikeouts-by-Count) both need "what ball-strike count was this at-bat
+decided in," which the schema also doesn't store directly -- so
+`src/lib/count-stats.ts` adds `reconstructCounts` / `finalCountForAtBat`,
+which replays a sorted pitch sequence (balls increment on `ball`, strikes
+increment on `strike`/`foul` capped at 2 -- a foul can never be strike
+three, `hbp`/`inplay` end the at-bat without changing the count further)
+and returns the count in effect for the pitch that decided the at-bat.
+This mirrors the existing "the zone for an at-bat is its last pitch's
+zone" convention from `heat-map.ts` -- both pick the *decisive* pitch as
+the one attribute-worthy moment in a multi-pitch at-bat, for the same
+reason. The ten counts named in the request (`0-0/1-0/0-1/2-0/0-2/1-1/
+2-1/3-1/3-2/full`) collapse to nine tracked buckets in
+`TRACKED_COUNTS` -- 3-2 and "full count" are the same count in baseball,
+so it's one row labeled "3-2 (Full)" rather than a duplicate.
+
+Both new panels reuse the "last pitch type decided this at-bat" map
+already built for the zone heat maps (for AVG/K% by pitch type, an
+at-bat-level stat) alongside raw per-pitch counts (for Strike Rate by
+pitch type, a pitch-level frequency stat) -- the same two-tier approach
+`PitcherHeatmap` already used for its zone panels, now reused for pitch
+type instead of location. `PITCH_TYPES` and `STRIKE_OUTCOMES` moved from
+being locally defined inside `pitcher-heatmap.tsx` into
+`src/lib/count-stats.ts` so all three components (existing pitcher heat
+map, new hitter panel, new pitcher panel) share one definition instead of
+three copies. Zone Coverage (hitters) and Zone Command (pitchers) are
+plain pitch-location frequency grids -- how many pitches were seen/thrown
+in each zone, not an outcome-colored heat map -- shaded by count relative
+to that grid's own max rather than a fixed batting-average color scale,
+since "most pitches" has no natural fixed thresholds the way batting
+average does.
+
 ## Auth flow
 
 1. `/login` -- client component, calls
@@ -611,6 +705,15 @@ screen's live pitch sequence/session heat map and the coach dashboard's
 new Team Analytics section -- the *player's own* self-service dashboard
 (`/player`, what a signed-in player sees of their own stats) is still the
 Sprint 1 placeholder and remains the next real gap.
+
+**Post-Sprint-4 enhancements (done):** Season Schedule three-tier
+collapse, a "Lines" spray-chart view (radiating, hit-type-colored,
+animated), and extended Hitter/Pitcher Splits panels on the player
+breakdown page (count performance, pitch-type breakdown, zone
+coverage/command, strikeouts-by-count, first-pitch-strike%,
+pitches/AB) -- see the dedicated section below for the two schema-gap
+decisions (chase/contact rate and runners-on/off splits both omitted,
+not approximated) and the count-reconstruction utility they share.
 
 ## Sprint 4: pitch sequence, pitch count/accuracy display, and heat maps
 

@@ -21,7 +21,27 @@ const GAME_TYPES: GameType[] = [
 ];
 
 export function ScheduleTable({ games, opponentNames }: { games: Game[]; opponentNames: string[] }) {
+  const [pastOpen, setPastOpen] = useState(false);
+  const [remainingOpen, setRemainingOpen] = useState(false);
+
   const sorted = [...games].sort((a, b) => a.game_date.localeCompare(b.game_date));
+  const today = new Date().toISOString().slice(0, 10);
+  const past = sorted.filter((g) => g.game_date < today);
+  const upcoming = sorted.filter((g) => g.game_date >= today);
+  const nextThree = upcoming.slice(0, 3);
+  const remaining = upcoming.slice(3);
+
+  const pastRecord = past.reduce(
+    (acc, g) => {
+      const r = resultLetter(g);
+      if (r === "W") acc.w += 1;
+      else if (r === "L") acc.l += 1;
+      else if (r === "T") acc.t += 1;
+      return acc;
+    },
+    { w: 0, l: 0, t: 0 }
+  );
+  const pastRecordLabel = `${pastRecord.w}-${pastRecord.l}${pastRecord.t ? `-${pastRecord.t}` : ""}`;
 
   return (
     <section className="glossy rounded-lg border border-border bg-surface p-5">
@@ -31,41 +51,127 @@ export function ScheduleTable({ games, opponentNames }: { games: Game[]; opponen
         </h2>
       </div>
 
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[720px] text-left text-sm">
-          <thead>
-            <tr className="text-xs uppercase tracking-wide text-foreground/40">
-              <th className="pb-2 pr-3">Date</th>
-              <th className="pb-2 pr-3">Time</th>
-              <th className="pb-2 pr-3">Opponent</th>
-              <th className="pb-2 pr-3">Home/Away</th>
-              <th className="pb-2 pr-3">Type</th>
-              <th className="pb-2 pr-3">Result</th>
-              <th className="pb-2 pr-3">Record vs Opp.</th>
-              <th className="pb-2" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {sorted.length === 0 && (
-              <tr>
-                <td colSpan={8} className="py-4 text-sm text-foreground/40">
-                  No games scheduled yet.
-                </td>
-              </tr>
-            )}
-            {sorted.map((game) => (
-              <GameRow key={game.id} game={game} allGames={games} />
-            ))}
-          </tbody>
-        </table>
+      <div className="mt-4">
+        {games.length === 0 ? (
+          <p className="py-4 text-sm text-foreground/40">No games scheduled yet.</p>
+        ) : nextThree.length > 0 ? (
+          <GameTable games={nextThree} allGames={games} highlightFirstId={nextThree[0].id} />
+        ) : (
+          <p className="py-4 text-sm text-foreground/40">No upcoming games scheduled.</p>
+        )}
       </div>
+
+      {past.length > 0 && (
+        <div className="mt-4 border-t border-border pt-3">
+          <AccordionHeader
+            open={pastOpen}
+            onClick={() => setPastOpen((o) => !o)}
+            label={`Past Games (${past.length})`}
+            summary={pastRecordLabel}
+          />
+          <Collapsible open={pastOpen}>
+            <div className="pt-3">
+              <GameTable games={[...past].reverse()} allGames={games} />
+            </div>
+          </Collapsible>
+        </div>
+      )}
+
+      {remaining.length > 0 && (
+        <div className="mt-4 border-t border-border pt-3">
+          <AccordionHeader
+            open={remainingOpen}
+            onClick={() => setRemainingOpen((o) => !o)}
+            label={`Remaining Schedule (${remaining.length})`}
+            summary={`${remaining.length} game${remaining.length === 1 ? "" : "s"}`}
+          />
+          <Collapsible open={remainingOpen}>
+            <div className="pt-3">
+              <GameTable games={remaining} allGames={games} />
+            </div>
+          </Collapsible>
+        </div>
+      )}
 
       <AddGameForm opponentNames={opponentNames} />
     </section>
   );
 }
 
-function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
+function AccordionHeader({
+  open,
+  onClick,
+  label,
+  summary,
+}: {
+  open: boolean;
+  onClick: () => void;
+  label: string;
+  summary: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center justify-between rounded-md px-1 py-1.5 text-left transition hover:bg-background/40"
+    >
+      <span className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-foreground/70">
+        <span className={`inline-block transition-transform duration-200 ${open ? "rotate-90" : ""}`}>
+          &#9656;
+        </span>
+        {label}
+      </span>
+      <span className="text-xs text-foreground/50">{summary}</span>
+    </button>
+  );
+}
+
+function Collapsible({ open, children }: { open: boolean; children: React.ReactNode }) {
+  return (
+    <div
+      className="grid transition-[grid-template-rows] duration-300 ease-in-out"
+      style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+    >
+      <div className="overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+function GameTable({
+  games,
+  allGames,
+  highlightFirstId,
+}: {
+  games: Game[];
+  allGames: Game[];
+  highlightFirstId?: string;
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[720px] text-left text-sm">
+        <thead>
+          <tr className="text-xs uppercase tracking-wide text-foreground/40">
+            <th className="pb-2 pr-3">Date</th>
+            <th className="pb-2 pr-3">Time</th>
+            <th className="pb-2 pr-3">Opponent</th>
+            <th className="pb-2 pr-3">Home/Away</th>
+            <th className="pb-2 pr-3">Type</th>
+            <th className="pb-2 pr-3">Result</th>
+            <th className="pb-2 pr-3">Record vs Opp.</th>
+            <th className="pb-2" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {games.map((game) => (
+            <GameRow key={game.id} game={game} allGames={allGames} prominent={game.id === highlightFirstId} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function GameRow({ game, allGames, prominent }: { game: Game; allGames: Game[]; prominent?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -167,6 +273,11 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
   const rowContent = (
     <>
       <td className={`py-2 pr-3 ${cancelled ? "text-foreground/30 line-through" : ""}`}>
+        {prominent && (
+          <span className="mr-2 rounded-full bg-accent-primary/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent-primary">
+            Next
+          </span>
+        )}
         {formatGameDate(game.game_date)}
       </td>
       <td className={`py-2 pr-3 ${cancelled ? "text-foreground/30 line-through" : ""}`}>
@@ -240,7 +351,7 @@ function GameRow({ game, allGames }: { game: Game; allGames: Game[] }) {
     </>
   );
 
-  return <tr>{rowContent}</tr>;
+  return <tr className={prominent ? "bg-accent-primary/5" : undefined}>{rowContent}</tr>;
 }
 
 function AddGameForm({ opponentNames }: { opponentNames: string[] }) {

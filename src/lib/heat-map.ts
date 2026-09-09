@@ -1,6 +1,6 @@
 import type { AtBatResult } from "@/lib/supabase/types";
 
-const HIT_RESULTS = new Set<AtBatResult>(["single", "double", "triple", "hr"]);
+export const HIT_RESULTS = new Set<AtBatResult>(["single", "double", "triple", "hr"]);
 const EXTRA_BASE_HIT_RESULTS = new Set<AtBatResult>(["double", "triple"]);
 
 // Same 3x3 thirds as the operator's strike zone grid (33.33/66.67
@@ -78,4 +78,37 @@ export const SPRAY_CATEGORY_COLOR: Record<SprayDot["category"], string> = {
   out: "#E24B4A",
   xbh: "#F0C060",
   hr: "#FFFFFF",
+};
+
+// Spray-chart "Lines" view: color radiating from home plate by how the ball
+// was hit, not by outcome. A home run always reads as the result (white +
+// glow), regardless of what hit_type got logged for it; hit_type values
+// outside the four tracked types (e.g. "bunt", or null) fall back to "other"
+// rather than guessing.
+export type LineHitCategory = "flyball" | "groundball" | "linedrive" | "popup" | "hr" | "other";
+
+export function lineHitCategory(dot: Pick<SprayDot, "result" | "hitType">): LineHitCategory {
+  if (dot.result === "hr") return "hr";
+  if (dot.hitType === "flyball" || dot.hitType === "groundball" || dot.hitType === "linedrive" || dot.hitType === "popup") {
+    return dot.hitType;
+  }
+  return "other";
+}
+
+export const LINE_HIT_CATEGORY_COLOR: Record<LineHitCategory, string> = {
+  flyball: "#2ECC71",
+  groundball: "#EF9F27",
+  linedrive: "#F0C060",
+  popup: "#1A6B3C",
+  hr: "#FFFFFF",
+  other: "#5A7A8A",
+};
+
+export const LINE_HIT_CATEGORY_LABEL: Record<LineHitCategory, string> = {
+  flyball: "Fly Ball",
+  groundball: "Ground Ball",
+  linedrive: "Line Drive",
+  popup: "Pop Up",
+  hr: "Home Run",
+  other: "Other",
 };

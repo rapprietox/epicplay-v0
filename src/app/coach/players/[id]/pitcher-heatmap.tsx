@@ -2,17 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { computeZoneBattingLines, zoneColor, zoneIndexFromCoords, type AtBatWithZone } from "@/lib/heat-map";
+import { PITCH_TYPES, STRIKE_OUTCOMES } from "@/lib/count-stats";
 import { formatAvg } from "@/lib/stats";
 import type { AtBatResult, PitchOutcome, PitchType } from "@/lib/supabase/types";
-
-const PITCH_TYPES: { value: PitchType; label: string }[] = [
-  { value: "fastball", label: "Fastball" },
-  { value: "curveball", label: "Curveball" },
-  { value: "changeup", label: "Changeup" },
-  { value: "slider", label: "Slider" },
-];
-
-const STRIKE_OUTCOMES = new Set<PitchOutcome>(["strike", "foul", "inplay"]);
 
 interface ZonePitchTypeAtBat extends AtBatWithZone {
   result: AtBatResult;
