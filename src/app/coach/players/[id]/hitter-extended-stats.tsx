@@ -81,6 +81,7 @@ export function HitterExtendedStats({
     for (const p of pitches) {
       if (p.zone_x === null || p.zone_y === null) continue;
       const zone = zoneIndexFromCoords(p.zone_x, p.zone_y);
+      if (zone === null) continue;
       seen[zone] += 1;
       if (p.outcome === "inplay") hit[zone] += 1;
     }

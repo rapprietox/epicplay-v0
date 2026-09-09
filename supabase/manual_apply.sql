@@ -792,3 +792,37 @@ alter table public.at_bats
 alter table public.game_events
   add column if not exists player_id uuid references public.players (id) on delete set null,
   add column if not exists opponent_player_id uuid references public.opponent_players (id) on delete set null;
+
+-- Whether the batter swung at this pitch. Nullable/additive: existing rows
+-- stay null (unknown), only pitches logged by the new sequential operator
+-- flow populate it. Lets a future Chase Rate / Contact Rate / real Whiff
+-- Rate be computed, unlike the outcome column alone (see CLAUDE.md).
+alter table public.pitches add column if not exists swing boolean;
+
+-- Fix 2: the strike zone grid grew a 16-cell outer "ball zone" ring
+-- around the original 9-cell strike zone (see strike-zone-grid.tsx). A
+-- tap in the ring stores a coordinate outside the original 0-100 range,
+-- rather than remapping 0-100 to mean something new -- that would corrupt
+-- every zone_x/zone_y value already on disk, all of which mean "position
+-- within the strike zone." -50/150 comfortably covers the ring's actual
+-- span (-16.67 to 116.67) with headroom.
+alter table public.pitches drop constraint if exists pitches_zone_x_check;
+alter table public.pitches add constraint pitches_zone_x_check
+  check (zone_x is null or (zone_x >= -50 and zone_x <= 150));
+
+alter table public.pitches drop constraint if exists pitches_zone_y_check;
+alter table public.pitches add constraint pitches_zone_y_check
+  check (zone_y is null or (zone_y >= -50 and zone_y <= 150));
+
+-- Fix 3: batter/pitcher stance, so the operator screen can show a
+-- quick L/R indicator without the operator having to remember or ask.
+alter table public.players add column if not exists batting_hand char(1) default 'R';
+alter table public.players add column if not exists throwing_hand char(1) default 'R';
+
+alter table public.players drop constraint if exists players_batting_hand_check;
+alter table public.players add constraint players_batting_hand_check
+  check (batting_hand is null or batting_hand in ('L', 'R', 'S'));
+
+alter table public.players drop constraint if exists players_throwing_hand_check;
+alter table public.players add constraint players_throwing_hand_check
+  check (throwing_hand is null or throwing_hand in ('L', 'R'));

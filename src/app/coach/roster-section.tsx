@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { addPlayer } from "./actions";
 import { POSITIONS } from "@/lib/baseball-positions";
 
@@ -9,6 +10,8 @@ interface Player {
   name: string;
   jersey_number: number | null;
   position: string | null;
+  batting_hand?: string | null;
+  throwing_hand?: string | null;
 }
 
 export function RosterSection({ players }: { players: Player[] }) {
@@ -78,6 +81,35 @@ export function RosterSection({ players }: { players: Player[] }) {
             ))}
           </select>
         </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-foreground/50" htmlFor="player-batting-hand">
+            Bats
+          </label>
+          <select
+            id="player-batting-hand"
+            name="batting_hand"
+            defaultValue="R"
+            className="w-20 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
+          >
+            <option value="R">R</option>
+            <option value="L">L</option>
+            <option value="S">S</option>
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-foreground/50" htmlFor="player-throwing-hand">
+            Throws
+          </label>
+          <select
+            id="player-throwing-hand"
+            name="throwing_hand"
+            defaultValue="R"
+            className="w-20 rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
+          >
+            <option value="R">R</option>
+            <option value="L">L</option>
+          </select>
+        </div>
         <button
           type="submit"
           disabled={isPending}
@@ -88,20 +120,26 @@ export function RosterSection({ players }: { players: Player[] }) {
       </form>
       {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
 
-      <ul className="mt-4 divide-y divide-border">
-        {players.length === 0 && (
-          <li className="py-3 text-sm text-foreground/40">No players yet.</li>
-        )}
+      <p className="mt-5 text-xs uppercase tracking-wide text-foreground/40">
+        Tap a player for their full breakdown -- heat maps, spray chart, and splits
+      </p>
+      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {players.length === 0 && <p className="py-3 text-sm text-foreground/40">No players yet.</p>}
         {players.map((p) => (
-          <li key={p.id} className="flex items-center gap-3 py-2 text-sm">
-            <span className="w-8 shrink-0 text-center text-foreground/50">
-              {p.jersey_number ?? "—"}
-            </span>
-            <span className="text-white">{p.name}</span>
+          <Link
+            key={p.id}
+            href={`/coach/players/${p.id}`}
+            className="flex items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2 text-sm transition hover:border-accent-primary hover:bg-background/70"
+          >
+            <span className="w-8 shrink-0 text-center text-foreground/50">{p.jersey_number ?? "—"}</span>
+            <span className="flex-1 truncate text-white">{p.name}</span>
             <span className="text-foreground/50">{p.position ?? ""}</span>
-          </li>
+            <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-foreground/50">
+              {p.batting_hand ?? "R"}/{p.throwing_hand ?? "R"}
+            </span>
+          </Link>
         ))}
-      </ul>
+      </div>
     </section>
   );
 }

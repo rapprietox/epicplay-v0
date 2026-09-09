@@ -39,6 +39,7 @@ export function PitcherHeatmap({ atBats, pitches }: { atBats: ZonePitchTypeAtBat
     for (const p of pitches) {
       if (p.pitch_type !== pitchType || p.zone_x === null || p.zone_y === null) continue;
       const zone = zoneIndexFromCoords(p.zone_x, p.zone_y);
+      if (zone === null) continue;
       totals[zone].total += 1;
       if (STRIKE_OUTCOMES.has(p.outcome)) totals[zone].strikes += 1;
     }

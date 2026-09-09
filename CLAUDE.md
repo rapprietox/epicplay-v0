@@ -543,6 +543,197 @@ to that grid's own max rather than a fixed batting-average color scale,
 since "most pitches" has no natural fixed thresholds the way batting
 average does.
 
+## Five UI/UX fixes: sequential pitch logging, player navigation, ball
+## zones, batter stance, and PDF season-year correction
+
+Built in this order (biggest UX win first): Fix 4 (sequential flow), Fix 1
+(player navigation), Fix 2 (ball zones), Fix 3 (batting/throwing hand),
+Fix 5 (PDF year correction).
+
+### Fix 4: sequential contextual pitch-logging flow
+
+The operator screen's pitch-by-pitch interaction was rebuilt around a
+`flowStep` derived entirely from state the reducer already tracked
+(`awaitingResult`/`suggestedResult`/`fieldTap`/`pendingHitType`/
+`pendingFielding`/`runnersPendingConfirmation`) -- turned out the Sprint
+3/4 state machine already modeled every step of "tap zone -> pick outcome
+-> [if in play] tap field -> pick hit type -> pick result -> confirm";
+what was missing was a UI that revealed one step at a time instead of
+showing every panel at once. `operator-console.tsx` computes
+`flowStep: "pitch" | "field" | "hitType" | "result" | "fielding" |
+"runnerConfirm"` as a pure function of state on every render -- no new
+state machine, this fix is almost entirely a view-layer rewrite:
+
+- **Step 1** (`StrikeZoneGrid` + `PitchOutcomePopup`): tapping a zone sets
+  `selectedZone` (unchanged reducer behavior); `StrikeZoneGrid` now
+  accepts a `popupContent` node and renders it anchored at the tapped
+  point using the same percentage-based positioning the pitch dots
+  already used, with simple quadrant-based clamping (flips left/up past
+  the 55% mark) so it never renders off the tap surface. Strike splits
+  into "Strike (Looking)" / "Strike (Swinging)" -- the one outcome where
+  swing-vs-take is genuinely ambiguous (ball/hbp are always a take,
+  foul/inplay are always a swing) -- writing to a new nullable
+  `pitches.swing` column (see below) rather than being cosmetic-only,
+  per the user's explicit choice over a same-schema alternative.
+- **Step 2** (`field`): reached when `awaitingResult && suggestedResult
+  === null && !fieldTap` -- true only after "In Play" (auto-results like
+  walk/strikeout/hbp set `suggestedResult` immediately, so they skip
+  straight past steps 2-4). Renders the field diagram full-panel with a
+  "Tap where the ball landed" prompt in place of the strike zone.
+- **Step 3** (`hitType`): a pill row from the existing `HIT_TYPE_LABELS`.
+  Picking "HR" auto-calls `pickResult("hr")` immediately (skips step 4 --
+  there's only one sensible result for that hit type).
+- **Step 4** (`result`): filtered to `HIT_TYPE_RESULT_OPTIONS[hitType]`
+  (`src/lib/operator/types.ts`) instead of all 12 results. Ground ball ->
+  groundout/single/double/error/fc/double_play; fly ball ->
+  flyout/single/double/triple/hr; line drive -> lineout/single/double/
+  triple/hr, per the request. Popup and bunt weren't specified in the
+  request -- their lists are a reasonable extrapolation of the same "what
+  can this batted ball become" logic, documented as an inference in the
+  constant's own comment. **"Sacrifice Fly" is deliberately not a button**
+  -- it isn't a distinct `AtBatResult` in this schema; a sac fly is
+  already a `flyout` result plus the runner's `ScoreMethod` set to
+  `sac_fly` when they score (the mechanism Sprint 3 built), so adding a
+  separate result value would have duplicated an already-correct
+  mechanism rather than filled a gap.
+- **Fielding + runner confirmation**: `showFieldingPicker`'s existing
+  condition became the `fielding` step; a new `runnerConfirm` step shows
+  the picked result, the RBI stepper, and a "Confirm & Continue" button
+  only when `runnersPendingConfirmation` is true. A `useEffect` watches
+  `flowStep` and calls `handleConfirm()` automatically the instant nothing
+  is left to fill in (no fielding needed, no runner movement pending) --
+  walks, strikeouts, HBPs, and now every in-play result confirm without a
+  separate button tap, matching "tap, respond, tap, respond." The effect
+  is declared *above* the `postGameOpen` early return (a hook after a
+  conditional return breaks React's rules-of-hooks) and guards on
+  `state.currentAtBatId` so it can't fire with nothing to confirm.
+- **Right column** (baserunner diamond, wild pitch/balk/passed ball/error,
+  substitution) stays persistent and outside the flow -- real baseball
+  doesn't pause for the sequential conversation (a steal or a wild pitch
+  can happen mid at-bat), so ad-hoc game events keep their own
+  always-visible controls rather than being folded into the five steps.
+  The field diagram and fielding picker, which used to live permanently
+  in this column, moved into the flow panel (they're genuinely part of
+  the in-play sequence now, not persistent state).
+- **Pitch type** is a pinned pill row above the flow panel (picked once,
+  before the zone tap, exactly as requested), not part of the step swap.
+- **At-bat summary flash**: `summaryFlash` (a plain `useState<string |
+  null>`, not reducer state -- it's transient UI, not something worth
+  persisting or undoing) shows `"Single — Line Drive — RF"`-style text for
+  2.5s after every confirm (including double plays), auto-clearing via a
+  `useEffect`/`setTimeout` pair. The existing 30-second Undo bar in the
+  bottom nav is unchanged -- undo already existed and already covers
+  every confirmed at-bat, so Fix 4 didn't need to touch it.
+- **Change-hit-type escape hatch**: the `result` step keeps a small
+  "← change hit type" link back to step 3. Strictly linear flow would
+  trap a mis-tapped hit type behind a full at-bat Undo; this one
+  intentional deviation from pure linearity is cheap and avoids that trap.
+- **Scope boundary**: the Double Play wizard, pitcher picker, substitution
+  panel, score-method menu, and runner quick-action menu are unchanged --
+  they're already self-contained modal sequences, not the flat
+  always-visible panel layout this fix targeted. The "change fielding"
+  post-hoc edit link that used to sit in the old always-visible result
+  panel was dropped (no longer has anywhere to live once fielding is its
+  own one-shot step) -- a wrong tap is now corrected via the existing
+  30s Undo, not an inline edit.
+
+`pitches.swing boolean` (migration `20260909100001_pitches_swing.sql`) is
+nullable and additive -- every pre-existing pitch stays `null` (unknown);
+only pitches logged through the new popup populate it, deterministically
+for every outcome (ball/hbp -> false, foul/inplay -> true, strike ->
+whichever button was tapped). This doesn't just serve the Looking/Swinging
+button -- it's real swing-vs-take data now accumulating for every pitch,
+which is exactly what a future Chase Rate / Contact Rate / true Whiff
+Rate would need (previously skipped, see the Enhancement 3 section above)
+-- not built in this pass, but no longer blocked by the schema either.
+
+### Fix 1: player navigation from the coach dashboard
+
+Turned out the Team Leaders Board (`leaders-board.tsx`) already wrapped
+every row in a `Link` to `/coach/players/[id]` -- that part of the
+request was already true before this fix. The actual gap was the
+**Roster** section (`roster-section.tsx`): it rendered players as plain
+`<li>` text, and since the Leaders Board only surfaces category leaders
+(not the full roster), any player without a leaderboard entry had no way
+to reach their own page. Fixed by turning the roster list into a grid of
+`Link` cards to the same `/coach/players/[id]` route -- reusing the
+section already titled "Roster" rather than adding a second, separate
+roster-shaped section, since that would have duplicated the player list
+the coach already sees while adding players.
+
+### Fix 2: outer ball-zone ring on the strike zone grid
+
+25 total zones (9 strike-zone + 16 ball-zone: 3 each on the
+top/bottom/left/right edges, plus 4 corners) on a conceptual 5x5 grid.
+The **critical constraint**: `zone_x`/`zone_y` for the original 9 zones
+already means something on every pitch logged since Sprint 3 --
+"position within the strike zone," 0-100 on each axis. Redefining what
+0-100 means (e.g. shrinking the strike zone to the middle 60% of a
+rescaled grid) would have silently corrupted every historical pitch's
+interpretation. Instead the ring's coordinates live **outside** 0-100
+(roughly -16.67 to 116.67, using a ring cell width of half a strike-zone
+third -- "smaller" than the zone's own cells, per the request), extending
+the outward but leaving the original 0-100 meaning completely untouched.
+Migration `20260909110001_pitches_ball_zone_range.sql` widens the
+`zone_x`/`zone_y` check constraints from `[0,100]` to `[-50,150]` to fit.
+
+This required auditing every caller of `zoneIndexFromCoords`
+(`src/lib/heat-map.ts`) -- it's the function all the 9-zone strike-zone
+heat maps (batting-average-by-zone, strike-rate-by-zone, zone
+coverage/command) use to bucket a pitch's coordinate into one of 9
+indices, and it would have thrown or produced a garbage negative array
+index the moment a ball-zone pitch (coordinates now outside 0-100) reached
+it. Fixed by having it return `number | null` (null for anything outside
+the strike zone) instead of always a number -- the type change forced
+every call site to handle the null case, which TypeScript caught for free
+across `pitcher-heatmap.tsx`, `pitcher-extended-stats.tsx`, and
+`hitter-extended-stats.tsx`. A ball-zone pitch correctly falling out of
+every strike-zone-only stat is exactly the right behavior, not a bug to
+route around.
+
+`strike-zone-grid.tsx`'s tap handler now maps a click to the extended
+coordinate range and snaps it either to the existing fine 9x9 sub-grid
+(inside the strike zone, unchanged precision) or to the center of
+whichever of the 16 ring cells was tapped (coarser -- the ring doesn't
+need 9x9 precision, just "which of the 16 zones"). The SVG viewBox
+extends to cover the ring; a darker background rect under a lighter
+strike-zone rect gives the "ball zones ... darker" look, and the ring's
+internal dividers use `strokeDasharray` for the "subtle dashed border"
+called for. **Building the actual walk-tendency / wild-pitch heat map
+dashboards was out of scope for this fix** -- the request's own framing
+("this builds ... heat maps *over time*") reads as future payoff from
+data now being captured, not a deliverable to ship immediately; no new
+analytics panel was added.
+
+### Fix 3: batter/throwing stance
+
+`players.batting_hand` (`'L'|'R'|'S'`) and `players.throwing_hand`
+(`'L'|'R'`), both `char(1) default 'R'` per the request, plus check
+constraints restricting the allowed values (migration
+`20260909120001_players_hands.sql`). Added to the Add Player form
+(`roster-section.tsx`, defaulting to R/R) and shown as a small `B/T`
+badge on each roster card. The operator screen shows the batting hand as
+a small badge next to the current batter's name (`operator-console.tsx`)
+-- only for our own lineup; opponent batters come from `opponent_players`
+(populated by AI photo extraction, which has no way to read a stance off
+a lineup card), so there's no data source for an opposing batter's hand
+and none is shown. HBP needed no code change -- the batter's hand is
+already available via the existing `players` row the operator screen
+already has loaded, exactly as the request anticipated.
+
+### Fix 5: season-year correction on PDF import
+
+`season-import-section.tsx`'s `detectStaleYear` checks whether every
+extracted game shares one single year and that year isn't the current
+one (a schedule PDF is often typeset with the prior year, or scanned
+early) -- if so, a dismissible prompt offers a year `<select>` (defaulting
+to the current year) with "Update to [year]" or "Keep [year]." Updating
+rewrites every extracted game's date string in place (keeps month/day,
+replaces the year) and the season name/year fields, before the coach even
+starts reviewing individual rows -- deliberately a bulk, upfront
+correction rather than a per-row fix, since the whole PDF is virtually
+always wrong in the same direction if it's wrong at all.
+
 ## Auth flow
 
 1. `/login` -- client component, calls
@@ -714,6 +905,18 @@ coverage/command, strikeouts-by-count, first-pitch-strike%,
 pitches/AB) -- see the dedicated section below for the two schema-gap
 decisions (chase/contact rate and runners-on/off splits both omitted,
 not approximated) and the count-reconstruction utility they share.
+
+**Five UI/UX fixes (done):** the operator screen's pitch logging is now a
+sequential, contextual flow (tap zone -> popup -> [in-play sub-flow] ->
+auto-confirm) instead of an always-visible multi-panel layout; every
+player is reachable from the coach dashboard (Roster cards, plus the
+Leaders Board links that already existed); the strike zone grid grew a
+16-cell outer ball-zone ring around the original 9; players carry a
+batting/throwing hand shown on the operator screen; season PDF import
+flags and offers to bulk-correct a stale extracted year. See the dedicated
+section below for the schema additions (`pitches.swing`, the widened
+`pitches.zone_x/zone_y` range, `players.batting_hand/throwing_hand`) and
+the `zoneIndexFromCoords` nullability fix the ball-zone ring required.
 
 ## Sprint 4: pitch sequence, pitch count/accuracy display, and heat maps
 

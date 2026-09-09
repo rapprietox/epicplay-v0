@@ -31,6 +31,7 @@ export function buildInitialStateFromServer(
         zone_x: p.zone_x,
         zone_y: p.zone_y,
         outcome: p.outcome,
+        swing: p.swing,
       });
       if (p.outcome === "ball") balls = Math.min(4, balls + 1);
       else if (p.outcome === "strike") strikes = Math.min(3, strikes + 1);

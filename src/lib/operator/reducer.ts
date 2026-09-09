@@ -81,8 +81,9 @@ export type OperatorAction =
   | { type: "SET_MODE"; mode: AtBatMode }
   | { type: "SELECT_PITCH_TYPE"; pitchType: PitchType | null }
   | { type: "TAP_ZONE"; x: number; y: number }
+  | { type: "CLEAR_ZONE_SELECTION" }
   | { type: "START_DRAFT_LOCAL"; atBatId: string }
-  | { type: "LOG_PITCH_LOCAL"; outcome: PitchOutcome }
+  | { type: "LOG_PITCH_LOCAL"; outcome: PitchOutcome; swing: boolean }
   | { type: "SET_RESULT"; result: AtBatResult; suggestion: Runners; scored: ScoredRunner[]; hasMovement: boolean }
   | { type: "SET_HIT_TYPE"; hitType: HitType | null }
   | { type: "SET_FIELD_TAP"; x: number; y: number }
@@ -127,6 +128,9 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
     case "TAP_ZONE":
       return { ...state, selectedZone: { x: action.x, y: action.y }, dirty: true };
 
+    case "CLEAR_ZONE_SELECTION":
+      return { ...state, selectedZone: null };
+
     case "START_DRAFT_LOCAL":
       return { ...state, currentAtBatId: action.atBatId, runnersAtAtBatStart: state.runners, dirty: true };
 
@@ -137,6 +141,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         zone_x: state.selectedZone?.x ?? null,
         zone_y: state.selectedZone?.y ?? null,
         outcome: action.outcome,
+        swing: action.swing,
       };
       let balls = state.balls;
       let strikes = state.strikes;

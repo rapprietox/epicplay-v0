@@ -46,7 +46,9 @@ export function PitcherExtendedStats({
     const counts = Array.from({ length: 9 }, () => 0);
     for (const p of pitches) {
       if (p.pitch_type !== commandPitchType || p.zone_x === null || p.zone_y === null) continue;
-      counts[zoneIndexFromCoords(p.zone_x, p.zone_y)] += 1;
+      const zone = zoneIndexFromCoords(p.zone_x, p.zone_y);
+      if (zone === null) continue;
+      counts[zone] += 1;
     }
     return counts;
   }, [pitches, commandPitchType]);

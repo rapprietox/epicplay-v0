@@ -14,19 +14,36 @@ const GAME_TYPES: GameType[] = [
   "championship",
 ];
 
+const CURRENT_YEAR = new Date().getFullYear();
+
+// Fix 5: a PDF for next season is often typeset with last year's date
+// (or the schedule was simply printed early) -- if every extracted game
+// falls in the same year and that year isn't the current one, ask before
+// the coach reviews a table full of games that read as already past.
+function detectStaleYear(games: ConfirmScheduleGame[]): number | null {
+  const years = new Set(
+    games.map((g) => Number(g.date.slice(0, 4))).filter((y) => Number.isInteger(y) && y > 0)
+  );
+  if (years.size !== 1) return null;
+  const year = Array.from(years)[0];
+  return year !== CURRENT_YEAR ? year : null;
+}
+
 export function SeasonImportSection() {
-  const [seasonName, setSeasonName] = useState(`${new Date().getFullYear()} Season`);
-  const [seasonYear, setSeasonYear] = useState(new Date().getFullYear());
+  const [seasonName, setSeasonName] = useState(`${CURRENT_YEAR} Season`);
+  const [seasonYear, setSeasonYear] = useState(CURRENT_YEAR);
   const [games, setGames] = useState<ConfirmScheduleGame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [isExtracting, startExtract] = useTransition();
   const [isConfirming, startConfirm] = useTransition();
+  const [yearPrompt, setYearPrompt] = useState<{ detectedYear: number; selectedYear: number } | null>(null);
 
   function handleFile(file: File | undefined) {
     if (!file) return;
     setError(null);
     setDone(false);
+    setYearPrompt(null);
     const formData = new FormData();
     formData.set("pdf", file);
     startExtract(async () => {
@@ -37,10 +54,19 @@ export function SeasonImportSection() {
           return;
         }
         setGames(extracted);
+        const staleYear = detectStaleYear(extracted);
+        if (staleYear) setYearPrompt({ detectedYear: staleYear, selectedYear: CURRENT_YEAR });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to read the schedule");
       }
     });
+  }
+
+  function applyYear(newYear: number) {
+    setGames((prev) => prev && prev.map((g) => ({ ...g, date: `${newYear}${g.date.slice(4)}` })));
+    setSeasonName((prev) => (yearPrompt ? prev.replace(String(yearPrompt.detectedYear), String(newYear)) : prev));
+    setSeasonYear(newYear);
+    setYearPrompt(null);
   }
 
   function updateGame(index: number, patch: Partial<ConfirmScheduleGame>) {
@@ -115,6 +141,42 @@ export function SeasonImportSection() {
 
       {error && <p className="mt-3 text-sm text-accent-red">{error}</p>}
       {done && <p className="mt-3 text-sm text-accent-green">Season saved.</p>}
+
+      {yearPrompt && (
+        <div className="mt-4 rounded-md border border-accent-amber/50 bg-accent-amber/10 p-3">
+          <p className="text-sm text-white">
+            These games appear to be from <strong>{yearPrompt.detectedYear}</strong>. Is that correct, or should we
+            update the dates to <strong>{CURRENT_YEAR}</strong>?
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <select
+              value={yearPrompt.selectedYear}
+              onChange={(e) => setYearPrompt((p) => (p ? { ...p, selectedYear: Number(e.target.value) } : p))}
+              className="rounded border border-border bg-background px-2 py-1.5 text-sm text-white"
+            >
+              {Array.from({ length: 5 }, (_, i) => yearPrompt.detectedYear - 1 + i).map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => applyYear(yearPrompt.selectedYear)}
+              className="rounded-md bg-accent-amber px-3 py-1.5 text-xs font-semibold text-background"
+            >
+              Update to {yearPrompt.selectedYear}
+            </button>
+            <button
+              type="button"
+              onClick={() => setYearPrompt(null)}
+              className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground/70 hover:text-white"
+            >
+              Keep {yearPrompt.detectedYear}
+            </button>
+          </div>
+        </div>
+      )}
 
       {games && (
         <div className="mt-4">

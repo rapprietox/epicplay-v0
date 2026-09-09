@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { extractSeasonSchedule, type ExtractedGame } from "@/lib/anthropic";
-import type { GameType } from "@/lib/supabase/types";
+import type { BattingHand, GameType, ThrowingHand } from "@/lib/supabase/types";
 
 async function requireCoachTeam() {
   const supabase = createClient();
@@ -33,12 +33,16 @@ export async function addPlayer(formData: FormData) {
   const jerseyRaw = String(formData.get("jersey_number") ?? "").trim();
   const jersey_number = jerseyRaw ? Number(jerseyRaw) : null;
   const position = String(formData.get("position") ?? "").trim() || null;
+  const batting_hand = (String(formData.get("batting_hand") ?? "").trim() || "R") as BattingHand;
+  const throwing_hand = (String(formData.get("throwing_hand") ?? "").trim() || "R") as ThrowingHand;
 
   const { error } = await supabase.from("players").insert({
     team_id: teamId,
     name,
     jersey_number,
     position,
+    batting_hand,
+    throwing_hand,
   });
   if (error) throw new Error(error.message);
 

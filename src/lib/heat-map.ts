@@ -4,8 +4,13 @@ export const HIT_RESULTS = new Set<AtBatResult>(["single", "double", "triple", "
 const EXTRA_BASE_HIT_RESULTS = new Set<AtBatResult>(["double", "triple"]);
 
 // Same 3x3 thirds as the operator's strike zone grid (33.33/66.67
-// boundaries), 0-8 reading left-to-right, top-to-bottom.
-export function zoneIndexFromCoords(x: number, y: number): number {
+// boundaries), 0-8 reading left-to-right, top-to-bottom. Returns null for
+// anything outside the strike zone itself (x/y outside 0-100) -- since
+// Fix 2, a pitch's zone_x/zone_y can land in the surrounding ball-zone
+// ring (see strike-zone-grid.tsx), and those pitches correctly don't
+// belong in any of these 9 strike-zone buckets.
+export function zoneIndexFromCoords(x: number, y: number): number | null {
+  if (x < 0 || x > 100 || y < 0 || y > 100) return null;
   const col = Math.min(2, Math.floor(x / (100 / 3)));
   const row = Math.min(2, Math.floor(y / (100 / 3)));
   return row * 3 + col;

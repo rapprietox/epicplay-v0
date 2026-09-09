@@ -35,6 +35,8 @@ export type SubReason = "tactical" | "injury" | "ejection" | "defensive" | "pinc
 export type GameEventType = "wild_pitch" | "passed_ball" | "balk" | "error";
 export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
+export type BattingHand = "L" | "R" | "S";
+export type ThrowingHand = "L" | "R";
 
 export interface RunnerState {
   type: "player" | "opponent";
@@ -95,6 +97,8 @@ export interface Database {
           jersey_number: number | null;
           position: string | null;
           user_id: string | null;
+          batting_hand: BattingHand | null;
+          throwing_hand: ThrowingHand | null;
           created_at: string;
         };
         Insert: {
@@ -104,6 +108,8 @@ export interface Database {
           jersey_number?: number | null;
           position?: string | null;
           user_id?: string | null;
+          batting_hand?: BattingHand | null;
+          throwing_hand?: ThrowingHand | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["players"]["Insert"]>;
@@ -230,6 +236,7 @@ export interface Database {
           zone_x: number | null;
           zone_y: number | null;
           outcome: PitchOutcome;
+          swing: boolean | null;
           created_at: string;
         };
         Insert: {
@@ -240,6 +247,7 @@ export interface Database {
           zone_x?: number | null;
           zone_y?: number | null;
           outcome: PitchOutcome;
+          swing?: boolean | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["pitches"]["Insert"]>;

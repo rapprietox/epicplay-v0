@@ -131,6 +131,7 @@ export async function logPitch(input: {
   zoneX: number | null;
   zoneY: number | null;
   outcome: PitchOutcome;
+  swing: boolean | null;
   isPitchingMode: boolean;
 }) {
   const { supabase } = await requireOperatorGame(input.gameId);
@@ -142,6 +143,7 @@ export async function logPitch(input: {
     zone_x: input.zoneX,
     zone_y: input.zoneY,
     outcome: input.outcome,
+    swing: input.swing,
   });
   if (error) throw new Error(error.message);
 

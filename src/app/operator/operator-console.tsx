@@ -1,16 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { AtBatResult, Database, FieldingPosition, OutType, PitchOutcome, PitchType, RunnerState, Runners } from "@/lib/supabase/types";
+import type { AtBatResult, Database, FieldingPosition, HitType, OutType, PitchOutcome, PitchType, RunnerState, Runners } from "@/lib/supabase/types";
 import { operatorReducer, UNDO_WINDOW_MS, advanceAllRunnersOneBase } from "@/lib/operator/reducer";
 import { advanceOneRunner, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
 import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
 import {
-  RESULT_BUTTON_ORDER,
   RESULT_IS_OUT,
   RESULT_LABELS,
   PITCH_TYPE_LABELS,
   HIT_TYPE_LABELS,
+  HIT_TYPE_RESULT_OPTIONS,
   FIELDABLE_OUT_RESULTS,
   FIELDING_LAYOUT,
   OUTCOME_LABELS,
@@ -38,7 +38,7 @@ import {
   syncGameState,
   undoAtBat,
 } from "./actions";
-import { StrikeZoneGrid } from "./strike-zone-grid";
+import { StrikeZoneGrid, OUTCOME_COLOR } from "./strike-zone-grid";
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
 import { SubstitutionPanel } from "./substitution-panel";
@@ -113,6 +113,13 @@ export function OperatorConsole({
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   const [sessionHeatMapOpen, setSessionHeatMapOpen] = useState(false);
+  const [summaryFlash, setSummaryFlash] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!summaryFlash) return;
+    const t = setTimeout(() => setSummaryFlash(null), 2500);
+    return () => clearTimeout(t);
+  }, [summaryFlash]);
 
   const battingPlayer = useMemo(
     () => (state.mode === "hitting" ? lineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
@@ -161,7 +168,7 @@ export function OperatorConsole({
     return id;
   }
 
-  async function handlePitchOutcome(outcome: PitchOutcome) {
+  async function handlePitchOutcome(outcome: PitchOutcome, swing: boolean) {
     if (state.outs >= 3) return;
     setBanner(null);
     let atBatId: string;
@@ -184,7 +191,7 @@ export function OperatorConsole({
     else if (outcome === "ball" && state.balls + 1 >= 4) autoResult = "walk";
     else if (outcome === "strike" && state.strikes + 1 >= 3) autoResult = "strikeout";
 
-    dispatch({ type: "LOG_PITCH_LOCAL", outcome });
+    dispatch({ type: "LOG_PITCH_LOCAL", outcome, swing });
     void withOfflineRetry(`pitch-${atBatId}-${pitchNumber}`, () =>
       logPitch({
         gameId: game.id,
@@ -194,11 +201,19 @@ export function OperatorConsole({
         zoneX: zone?.x ?? null,
         zoneY: zone?.y ?? null,
         outcome,
+        swing,
         isPitchingMode: state.mode === "pitching",
       })
     );
 
     if (autoResult) pickResult(autoResult);
+  }
+
+  function handleHitTypeTap(hitType: HitType) {
+    dispatch({ type: "SET_HIT_TYPE", hitType: state.pendingHitType === hitType ? null : hitType });
+    // HR is the one hit type with only one sensible result -- skip the
+    // result-menu step entirely rather than making the operator tap twice.
+    if (hitType === "hr" && state.pendingHitType !== hitType) pickResult("hr");
   }
 
   function pickResult(result: AtBatResult) {
@@ -230,6 +245,9 @@ export function OperatorConsole({
     const fielding = state.pendingFielding;
 
     dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, accuracyRatio });
+    setSummaryFlash(
+      [RESULT_LABELS[result], hitType ? HIT_TYPE_LABELS[hitType] : null, fielding?.position ?? null].filter(Boolean).join(" — ")
+    );
 
     void withOfflineRetry(`confirm-${atBatId}`, async () => {
       await confirmAtBat({
@@ -287,6 +305,7 @@ export function OperatorConsole({
       });
       const accuracyRatio = atBatAccuracyRatio("double_play", state.pendingPitches.length);
       dispatch({ type: "CONFIRM_DOUBLE_PLAY", atBatId, secondAtBatId, removedBase: input.base, accuracyRatio });
+      setSummaryFlash("Double Play");
       void withOfflineRetry(`dp-state-${game.id}-${Date.now()}`, () =>
         syncGameState(game.id, {
           runners: { ...state.runners, [input.base]: null },
@@ -428,6 +447,45 @@ export function OperatorConsole({
 
   const atBatsLogged = 0; // computed on the post-game screen from a fresh fetch there instead
 
+  const showFieldingPicker =
+    !!state.fieldTap &&
+    !!state.suggestedResult &&
+    (FIELDABLE_OUT_RESULTS.includes(state.suggestedResult) || state.suggestedResult === "error") &&
+    !state.pendingFielding;
+
+  // Sequential flow (Fix 4): each tap contextually reveals the next
+  // decision. All five steps fall out of state the reducer already
+  // tracked before this fix (awaitingResult/suggestedResult/fieldTap/
+  // pendingHitType/pendingFielding/runnersPendingConfirmation) -- this is
+  // purely a view-layer derivation, no new state machine was needed.
+  type FlowStep = "pitch" | "field" | "hitType" | "result" | "fielding" | "runnerConfirm";
+  const flowStep: FlowStep = !state.awaitingResult
+    ? "pitch"
+    : state.suggestedResult === null
+      ? !state.fieldTap
+        ? "field"
+        : !state.pendingHitType
+          ? "hitType"
+          : "result"
+      : showFieldingPicker
+        ? "fielding"
+        : "runnerConfirm";
+
+  // Once nothing is left to fill in, confirm automatically instead of
+  // making the operator tap a separate "Confirm At-Bat" button -- walks,
+  // strikeouts, HBPs, and now every in-play result too. Runner movement
+  // still gets an explicit "Confirm & Continue" tap first (below) since
+  // that's real judgment, not a formality. Declared above the postGameOpen
+  // early return below -- hooks can't follow a conditional return.
+  useEffect(() => {
+    if (state.postGameOpen) return;
+    if (flowStep !== "runnerConfirm") return;
+    if (state.runnersPendingConfirmation) return;
+    if (!state.currentAtBatId) return;
+    void handleConfirm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowStep, state.runnersPendingConfirmation, state.currentAtBatId, state.postGameOpen]);
+
   if (state.postGameOpen) {
     return (
       <PostGameSummary
@@ -455,12 +513,6 @@ export function OperatorConsole({
       : "text-foreground/60";
 
   const runningAccuracyPercent = Math.round(runningAccuracy(state.accuracyRatioSum, state.accuracyAtBatCount) * 100);
-
-  const showFieldingPicker =
-    !!state.fieldTap &&
-    !!state.suggestedResult &&
-    (FIELDABLE_OUT_RESULTS.includes(state.suggestedResult) || state.suggestedResult === "error") &&
-    !state.pendingFielding;
 
   return (
     <div className="min-h-screen bg-background pb-24 text-foreground">
@@ -523,16 +575,40 @@ export function OperatorConsole({
       {banner && <div className="bg-accent-red/10 px-4 py-2 text-center text-xs text-accent-red">{banner}</div>}
 
       <div className="grid grid-cols-1 gap-6 p-4 md:grid-cols-2">
-        {/* LEFT COLUMN */}
+        {/* LEFT COLUMN -- the sequential pitch-logging conversation */}
         <div className="flex flex-col gap-4">
+          <div>
+            <p className="mb-1.5 text-xs uppercase tracking-wide text-foreground/40">Pitch type</p>
+            <div className="flex flex-wrap gap-2">
+              {PITCH_TYPES.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => dispatch({ type: "SELECT_PITCH_TYPE", pitchType: state.selectedPitchType === t ? null : t })}
+                  className={`min-h-[48px] rounded-full border px-4 text-sm font-medium transition ${
+                    state.selectedPitchType === t
+                      ? "border-accent-primary bg-accent-primary text-white"
+                      : "border-border bg-surface text-foreground/70"
+                  }`}
+                >
+                  {PITCH_TYPE_LABELS[t]}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="glossy glow-green rounded-lg border border-accent-primary/40 bg-card p-4">
             {state.mode === "hitting" ? (
               <>
                 <p className="text-xs uppercase tracking-wide text-foreground/40">
                   Batting {state.battingOrderPosition} of 9
                 </p>
-                <p className="font-heading text-3xl font-bold text-white">
+                <p className="font-heading flex items-baseline gap-2 text-3xl font-bold text-white">
                   {battingPlayerInfo ? `#${battingPlayerInfo.jersey_number ?? "—"} ${battingPlayerInfo.name}` : "—"}
+                  {battingPlayerInfo && (
+                    <span className="rounded border border-accent-primary/50 px-1.5 py-0.5 text-xs font-semibold text-accent-primary">
+                      {battingPlayerInfo.batting_hand ?? "R"}
+                    </span>
+                  )}
                 </p>
               </>
             ) : (
@@ -568,173 +644,158 @@ export function OperatorConsole({
             <CountBlock label="Outs" value={state.outs} />
           </div>
 
-          <div>
-            <p className="mb-1.5 text-xs uppercase tracking-wide text-foreground/40">Pitch type</p>
-            <div className="flex flex-wrap gap-2">
-              {PITCH_TYPES.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => dispatch({ type: "SELECT_PITCH_TYPE", pitchType: state.selectedPitchType === t ? null : t })}
-                  className={`min-h-[48px] rounded-full border px-4 text-sm font-medium transition ${
-                    state.selectedPitchType === t
-                      ? "border-accent-primary bg-accent-primary text-white"
-                      : "border-border bg-surface text-foreground/70"
-                  }`}
-                >
-                  {PITCH_TYPE_LABELS[t]}
-                </button>
-              ))}
+          {summaryFlash && (
+            <div className="glossy rounded-lg border border-accent-green/50 bg-accent-green/10 px-4 py-2 text-center">
+              <p className="font-heading text-sm font-semibold text-accent-green">{summaryFlash}</p>
             </div>
-          </div>
+          )}
 
-          <div className="flex flex-col items-center gap-3">
-            <div className="flex w-full max-w-[280px] items-center justify-between">
-              <p className="text-xs uppercase tracking-wide text-foreground/40">
-                {sessionHeatMapOpen ? "Session heat map" : "Strike zone"}
-              </p>
-              <button
-                onClick={() => setSessionHeatMapOpen((v) => !v)}
-                className="rounded-full border border-border px-3 py-1 text-[11px] font-medium text-foreground/70 hover:border-accent-primary hover:text-white"
-              >
-                {sessionHeatMapOpen ? "Back to Logging" : "Session Heat Map"}
-              </button>
-            </div>
-            <StrikeZoneGrid
-              selectedZone={state.selectedZone}
-              lastPitchZone={state.lastPitchZone}
-              pendingPitches={state.pendingPitches}
-              heatMapPitches={sessionHeatMapOpen ? state.gamePitchLog : undefined}
-              onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
-            />
-
-            {sessionHeatMapOpen ? (
-              <div className="flex w-full max-w-[280px] flex-wrap justify-center gap-3 text-[11px] text-foreground/50">
-                <LegendDot color="#24A058" label="Ball" />
-                <LegendDot color="#E24B4A" label="Strike" />
-                <LegendDot color="#EF9F27" label="Foul" />
-              </div>
-            ) : (
+          <div key={flowStep} className="flex flex-col items-center gap-3 transition-opacity duration-200">
+            {flowStep === "pitch" && (
               <>
-                <div className="grid w-full max-w-[280px] grid-cols-3 gap-2">
-                  <OutcomeButton label="Ball" color="#24A058" onClick={() => handlePitchOutcome("ball")} />
-                  <OutcomeButton label="Strike" color="#E24B4A" onClick={() => handlePitchOutcome("strike")} />
-                  <OutcomeButton label="Foul" color="#EF9F27" onClick={() => handlePitchOutcome("foul")} />
-                  <OutcomeButton label="HBP" color="#B060F0" onClick={() => handlePitchOutcome("hbp")} />
-                  <OutcomeButton
-                    label="In Play"
-                    color="#2ECC71"
-                    className="col-span-2"
-                    onClick={() => handlePitchOutcome("inplay")}
-                  />
-                </div>
-                {state.pendingPitches.length > 0 && (
-                  <p className="w-full max-w-[280px] text-xs leading-relaxed text-foreground/50">
-                    {state.pendingPitches
-                      .map(
-                        (p, i) =>
-                          `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`
-                      )
-                      .join(", ")}
+                <div className="flex w-full max-w-[280px] items-center justify-between">
+                  <p className="text-xs uppercase tracking-wide text-foreground/40">
+                    {sessionHeatMapOpen ? "Session heat map" : "Strike zone — tap to log a pitch"}
                   </p>
+                  <button
+                    onClick={() => setSessionHeatMapOpen((v) => !v)}
+                    className="rounded-full border border-border px-3 py-1 text-[11px] font-medium text-foreground/70 hover:border-accent-primary hover:text-white"
+                  >
+                    {sessionHeatMapOpen ? "Back to Logging" : "Session Heat Map"}
+                  </button>
+                </div>
+                <StrikeZoneGrid
+                  selectedZone={state.selectedZone}
+                  lastPitchZone={state.lastPitchZone}
+                  pendingPitches={state.pendingPitches}
+                  heatMapPitches={sessionHeatMapOpen ? state.gamePitchLog : undefined}
+                  onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
+                  popupContent={
+                    !sessionHeatMapOpen ? (
+                      <PitchOutcomePopup
+                        onPick={handlePitchOutcome}
+                        onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                      />
+                    ) : undefined
+                  }
+                />
+
+                {sessionHeatMapOpen ? (
+                  <div className="flex w-full max-w-[280px] flex-wrap justify-center gap-3 text-[11px] text-foreground/50">
+                    <LegendDot color="#24A058" label="Ball" />
+                    <LegendDot color="#E24B4A" label="Strike" />
+                    <LegendDot color="#EF9F27" label="Foul" />
+                  </div>
+                ) : (
+                  state.pendingPitches.length > 0 && (
+                    <p className="w-full max-w-[280px] text-xs leading-relaxed text-foreground/50">
+                      {state.pendingPitches
+                        .map(
+                          (p, i) =>
+                            `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`
+                        )
+                        .join(", ")}
+                    </p>
+                  )
                 )}
               </>
             )}
-          </div>
 
-          {state.awaitingResult && (
-            <div className="glossy rounded-lg border border-accent-gold/40 bg-surface p-4">
-              <p className="mb-2 text-xs uppercase tracking-wide text-foreground/40">At-bat result</p>
-              <div className="grid grid-cols-3 gap-2">
-                {RESULT_BUTTON_ORDER.map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => pickResult(r)}
-                    className={`min-h-[48px] rounded-md border px-2 text-sm font-medium transition ${
-                      state.suggestedResult === r
-                        ? "border-accent-gold bg-accent-gold/20 text-white"
-                        : "border-border bg-background text-foreground/70"
-                    }`}
-                  >
-                    {RESULT_LABELS[r]}
-                  </button>
-                ))}
-              </div>
+            {flowStep === "field" && (
+              <>
+                <p className="font-heading text-center text-lg font-bold text-white">Tap where the ball landed</p>
+                <FieldDiagram tap={state.fieldTap} onTap={(x, y) => dispatch({ type: "SET_FIELD_TAP", x, y })} />
+              </>
+            )}
 
-              <div className="mt-3">
-                <p className="mb-1 text-xs uppercase tracking-wide text-foreground/40">Hit type (optional)</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {(Object.keys(HIT_TYPE_LABELS) as (keyof typeof HIT_TYPE_LABELS)[]).map((ht) => (
+            {flowStep === "hitType" && (
+              <div className="w-full max-w-[320px]">
+                <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">What kind of hit?</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {(Object.keys(HIT_TYPE_LABELS) as HitType[]).map((ht) => (
                     <button
                       key={ht}
-                      onClick={() => dispatch({ type: "SET_HIT_TYPE", hitType: state.pendingHitType === ht ? null : ht })}
-                      className={`rounded-full border px-3 py-1 text-xs ${
-                        state.pendingHitType === ht ? "border-accent-primary bg-accent-primary text-white" : "border-border text-foreground/60"
-                      }`}
+                      onClick={() => handleHitTypeTap(ht)}
+                      className="min-h-[48px] rounded-full border-2 border-accent-primary px-4 text-sm font-semibold text-white transition hover:bg-accent-primary/20"
                     >
                       {HIT_TYPE_LABELS[ht]}
                     </button>
                   ))}
                 </div>
               </div>
+            )}
 
-              {state.pendingFielding && (
-                <p className="mt-3 text-xs text-foreground/50">
-                  Fielded by: <span className="text-white">{state.pendingFielding.position}</span>{" "}
-                  <button
-                    onClick={() => dispatch({ type: "SET_FIELDING", position: state.pendingFielding!.position, playerId: null, opponentPlayerId: null })}
-                    className="text-accent-primary hover:underline"
-                  >
-                    change
-                  </button>
+            {flowStep === "result" && state.pendingHitType && (
+              <div className="w-full max-w-[320px]">
+                <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">
+                  {HIT_TYPE_LABELS[state.pendingHitType]} — result
                 </p>
-              )}
-
-              <div className="mt-3 flex items-start gap-6">
-                <Stepper label="RBI" value={state.pendingRbi} onChange={(v) => dispatch({ type: "SET_RBI", value: v })} />
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-foreground/40">Runs scoring</p>
-                  <p className="font-heading mt-1 text-sm text-white">
-                    {state.scoredThisAtBat.length > 0
-                      ? `${state.scoredThisAtBat.length} — ${state.scoredThisAtBat.map((s) => s.runner.name).join(", ")}`
-                      : "None"}
-                  </p>
-                  <p className="mt-0.5 text-[10px] text-foreground/40">Set on the diamond, right column</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {HIT_TYPE_RESULT_OPTIONS[state.pendingHitType].map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => pickResult(r)}
+                      className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-foreground/70 transition hover:border-accent-gold hover:text-white"
+                    >
+                      {RESULT_LABELS[r]}
+                    </button>
+                  ))}
                 </div>
+                <button
+                  onClick={() => dispatch({ type: "SET_HIT_TYPE", hitType: null })}
+                  className="mt-2 text-xs text-foreground/40 hover:text-white"
+                >
+                  ← change hit type
+                </button>
               </div>
+            )}
 
-              <button
-                onClick={handleConfirm}
-                disabled={!state.suggestedResult}
-                className="mt-4 w-full rounded-md bg-accent-green px-4 py-3 text-base font-semibold text-white disabled:opacity-40"
-              >
-                Confirm At-Bat
-              </button>
-            </div>
-          )}
+            {flowStep === "fielding" && (
+              <FieldingPositionPicker
+                title="Who made the play?"
+                onSelect={(f) => dispatch({ type: "SET_FIELDING", position: f.position, playerId: f.playerId, opponentPlayerId: f.opponentPlayerId })}
+                resolve={resolve}
+              />
+            )}
+
+            {flowStep === "runnerConfirm" && state.suggestedResult && (
+              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-gold/40 bg-surface p-4 text-center">
+                <p className="font-heading text-lg font-bold text-white">{RESULT_LABELS[state.suggestedResult]}</p>
+                {state.runnersPendingConfirmation ? (
+                  <>
+                    <p className="mt-1 text-xs text-accent-amber">Suggested runner movement — review on the diamond, right column</p>
+                    <div className="mt-3 flex items-start justify-center gap-6">
+                      <Stepper label="RBI" value={state.pendingRbi} onChange={(v) => dispatch({ type: "SET_RBI", value: v })} />
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-foreground/40">Runs scoring</p>
+                        <p className="font-heading mt-1 text-sm text-white">
+                          {state.scoredThisAtBat.length > 0
+                            ? `${state.scoredThisAtBat.length} — ${state.scoredThisAtBat.map((s) => s.runner.name).join(", ")}`
+                            : "None"}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => dispatch({ type: "CONFIRM_RUNNERS_SUGGESTION" })}
+                      className="mt-4 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-white"
+                    >
+                      Confirm &amp; Continue
+                    </button>
+                  </>
+                ) : (
+                  <p className="mt-2 text-xs text-foreground/40">Confirming…</p>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* RIGHT COLUMN */}
+        {/* RIGHT COLUMN -- persistent game state, not part of the sequential flow */}
         <div className="flex flex-col gap-4">
-          <FieldDiagram tap={state.fieldTap} onTap={(x, y) => dispatch({ type: "SET_FIELD_TAP", x, y })} />
-
-          {showFieldingPicker && (
-            <FieldingPositionPicker
-              title="Who made the play?"
-              onSelect={(f) => dispatch({ type: "SET_FIELDING", position: f.position, playerId: f.playerId, opponentPlayerId: f.opponentPlayerId })}
-              resolve={resolve}
-            />
-          )}
-
           <div className="glossy flex flex-col items-center gap-2 rounded-lg border border-border bg-surface p-4">
             {state.runnersPendingConfirmation && (
               <div className="w-full rounded-md border border-accent-amber/50 bg-accent-amber/10 p-2 text-center">
-                <p className="text-xs text-accent-amber">Suggested runner movement — review or confirm</p>
-                <button
-                  onClick={() => dispatch({ type: "CONFIRM_RUNNERS_SUGGESTION" })}
-                  className="mt-1.5 min-h-[40px] rounded-md bg-accent-amber px-4 text-xs font-semibold text-background"
-                >
-                  Confirm Runners
-                </button>
+                <p className="text-xs text-accent-amber">Suggested runner movement — confirm in the flow panel, left column</p>
               </div>
             )}
             <BaserunnerDiamond
@@ -927,7 +988,36 @@ function CountBlock({ label, value }: { label: string; value: number }) {
   );
 }
 
-function OutcomeButton({
+// Step 1 of the sequential flow: appears anchored to the tapped zone
+// (StrikeZoneGrid owns the positioning). Strike is split into
+// looking/swinging -- the only pitches.outcome value where swing-vs-take
+// is genuinely ambiguous (ball/hbp always no-swing, foul/inplay always a
+// swing) -- see the pitches.swing migration.
+function PitchOutcomePopup({
+  onPick,
+  onClose,
+}: {
+  onPick: (outcome: PitchOutcome, swing: boolean) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="glossy w-48 rounded-lg border border-accent-primary/50 bg-card p-2 shadow-lg">
+      <div className="grid grid-cols-2 gap-1.5">
+        <PopupButton label="Strike (Looking)" color={OUTCOME_COLOR.strike} onClick={() => onPick("strike", false)} />
+        <PopupButton label="Strike (Swinging)" color={OUTCOME_COLOR.strike} onClick={() => onPick("strike", true)} />
+        <PopupButton label="Foul" color={OUTCOME_COLOR.foul} onClick={() => onPick("foul", true)} />
+        <PopupButton label="Ball" color={OUTCOME_COLOR.ball} onClick={() => onPick("ball", false)} />
+        <PopupButton label="HBP" color="#B060F0" onClick={() => onPick("hbp", false)} />
+        <PopupButton label="In Play" color={OUTCOME_COLOR.inplay} onClick={() => onPick("inplay", true)} />
+      </div>
+      <button onClick={onClose} className="mt-1.5 w-full text-[10px] text-foreground/40 hover:text-white">
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+function PopupButton({
   label,
   color,
   onClick,
@@ -942,7 +1032,7 @@ function OutcomeButton({
     <button
       onClick={onClick}
       style={{ borderColor: color }}
-      className={`min-h-[48px] rounded-full border-2 px-3 text-sm font-semibold text-white transition hover:brightness-125 ${className}`}
+      className={`min-h-[44px] rounded-md border-2 px-1.5 text-[11px] font-semibold leading-tight text-white transition hover:brightness-125 ${className}`}
     >
       {label}
     </button>

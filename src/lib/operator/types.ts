@@ -75,6 +75,10 @@ export interface LocalPitch {
   zone_x: number | null;
   zone_y: number | null;
   outcome: PitchOutcome;
+  // Whether the batter swung -- only populated going forward (see the
+  // pitches.swing migration); older pitches and the session heat map log
+  // leave this undefined/null.
+  swing?: boolean | null;
 }
 
 export interface OperatorState {
@@ -237,6 +241,24 @@ export const RESULT_BUTTON_ORDER: AtBatResult[] = [
   "fc",
   "double_play",
 ];
+
+// Sequential flow (Fix 4): once a hit type is picked, only these results
+// make baseball sense for it, so the result menu filters down to just
+// these instead of showing all 12. A "sac fly" isn't its own AtBatResult
+// here -- it's still a "flyout" result, credited as a sac fly via the
+// runner's ScoreMethod when they score (the mechanism Sprint 3 already
+// built), so it deliberately isn't listed as a separate button. Popup and
+// bunt aren't named in the original spec (only ground ball/fly ball/line
+// drive were) -- these two lists are a reasonable extrapolation of the
+// same "what can this batted ball actually become" logic.
+export const HIT_TYPE_RESULT_OPTIONS: Record<HitType, AtBatResult[]> = {
+  groundball: ["groundout", "single", "double", "error", "fc", "double_play"],
+  flyball: ["flyout", "single", "double", "triple", "hr"],
+  linedrive: ["lineout", "single", "double", "triple", "hr"],
+  popup: ["flyout", "single", "error", "fc"],
+  bunt: ["groundout", "single", "error", "fc"],
+  hr: ["hr"],
+};
 
 export const PITCH_TYPE_LABELS: Record<PitchType, string> = {
   fastball: "Fastball",
