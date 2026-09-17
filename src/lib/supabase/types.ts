@@ -32,7 +32,14 @@ export type PitchType = "fastball" | "curveball" | "changeup" | "slider" | "2sea
 export type PitchOutcome = "strike" | "ball" | "foul" | "hbp" | "inplay";
 export type AtBatMode = "hitting" | "pitching";
 export type SubReason = "tactical" | "injury" | "ejection" | "defensive" | "pinch_hit" | "pinch_run";
-export type GameEventType = "wild_pitch" | "passed_ball" | "balk" | "error";
+export type GameEventType =
+  | "wild_pitch"
+  | "passed_ball"
+  | "balk"
+  | "error"
+  | "pickoff_out"
+  | "pickoff_attempt"
+  | "tag_up_violation";
 export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";

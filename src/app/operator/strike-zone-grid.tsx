@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { PitchOutcome } from "@/lib/supabase/types";
 
 export const OUTCOME_COLOR: Record<PitchOutcome, string> = {
@@ -80,6 +81,7 @@ export function StrikeZoneGrid({
   heatMapPitches,
   onTap,
   popupContent,
+  flashKey,
 }: {
   selectedZone: { x: number; y: number } | null;
   lastPitchZone: { x: number; y: number; outcome: PitchOutcome } | null;
@@ -97,17 +99,39 @@ export function StrikeZoneGrid({
   // space as the tap dots) and edge clamping so it never renders off the
   // tap surface.
   popupContent?: React.ReactNode;
+  // Fix 5: bumped by the caller (a fresh number, any change triggers it --
+  // not a boolean, since a boolean toggled true->true on back-to-back
+  // pitches wouldn't re-trigger a CSS animation) after every ball/strike/
+  // foul/HBP confirmation. Never bumped for "In Play" -- that transitions
+  // straight to the field diagram instead.
+  flashKey?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const isHeatMap = heatMapPitches !== undefined;
+
+  // Fix 1: the popup used to be positioned as a percentage inside this
+  // same box -- but the box has overflow-hidden (to clip the SVG/dots to
+  // its rounded corners), so any part of the popup that fell outside the
+  // ~280x280px grid was silently clipped, not just "off in the page
+  // somewhere." tapAnchor captures the tap's real viewport pixel position
+  // (from getBoundingClientRect(), per spec) plus which half of the grid
+  // it landed in, so the popup can be portaled straight to <body> and
+  // positioned with `position: fixed` -- escaping the clipping container
+  // entirely -- instead of living inside it.
+  const [tapAnchor, setTapAnchor] = useState<{ clientX: number; clientY: number; topHalf: boolean; leftHalf: boolean } | null>(
+    null
+  );
 
   function handleTap(e: React.MouseEvent<HTMLDivElement>) {
     if (isHeatMap) return;
     const rect = ref.current?.getBoundingClientRect();
     if (!rect || rect.width === 0 || rect.height === 0) return;
-    const relX = EXT_MIN + ((e.clientX - rect.left) / rect.width) * EXT_SPAN;
-    const relY = EXT_MIN + ((e.clientY - rect.top) / rect.height) * EXT_SPAN;
+    const fracX = (e.clientX - rect.left) / rect.width;
+    const fracY = (e.clientY - rect.top) / rect.height;
+    const relX = EXT_MIN + fracX * EXT_SPAN;
+    const relY = EXT_MIN + fracY * EXT_SPAN;
     const snapped = snapTap(relX, relY);
+    setTapAnchor({ clientX: e.clientX, clientY: e.clientY, topHalf: fracY < 0.5, leftHalf: fracX < 0.5 });
     onTap(snapped.x, snapped.y);
   }
 
@@ -159,6 +183,10 @@ export function StrikeZoneGrid({
         <rect x={0} y={0} width={100} height={100} fill="none" stroke="#2ECC71" strokeWidth={1} opacity={0.85} />
       </svg>
 
+      {!isHeatMap && !!flashKey && (
+        <div key={flashKey} className="pitch-flash-overlay pointer-events-none absolute inset-0" style={{ backgroundColor: "#2ECC71" }} />
+      )}
+
       {isHeatMap
         ? heatMapPitches
             .filter((p): p is ZonePitch & { zone_x: number; zone_y: number } => p.zone_x !== null && p.zone_y !== null)
@@ -196,19 +224,66 @@ export function StrikeZoneGrid({
         />
       )}
 
-      {!isHeatMap && selectedZone && popupContent && (
-        <div
-          className="absolute z-10"
-          style={{
-            left: `${toPct(selectedZone.x)}%`,
-            top: `${toPct(selectedZone.y)}%`,
-            transform: `translate(${toPct(selectedZone.x) > 55 ? "-100%" : "0%"}, ${toPct(selectedZone.y) > 55 ? "-100%" : "0%"})`,
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {popupContent}
-        </div>
+      {!isHeatMap && selectedZone && popupContent && tapAnchor && (
+        <PopupPortal anchor={tapAnchor}>{popupContent}</PopupPortal>
       )}
     </div>
+  );
+}
+
+// Below the tap point when it's in the top half of the grid, above it when
+// in the bottom half; anchored to the tap's right edge (menu extends left)
+// when the tap was in the right half, and vice versa -- per spec. Rendered
+// via a portal straight to <body> with `position: fixed` in real viewport
+// pixels (not the grid's own percentage space) so the parent's
+// overflow-hidden can never clip it. After the first paint, a boundary
+// check measures the popup's own rendered rect and nudges it back on-screen
+// if it still overflows the viewport (e.g. a tap very close to a screen
+// edge) -- a pure CSS heuristic alone can't know the popup's actual size.
+function PopupPortal({
+  anchor,
+  children,
+}: {
+  anchor: { clientX: number; clientY: number; topHalf: boolean; leftHalf: boolean };
+  children: React.ReactNode;
+}) {
+  const popupRef = useRef<HTMLDivElement>(null);
+  const [nudge, setNudge] = useState({ dx: 0, dy: 0 });
+
+  useLayoutEffect(() => {
+    setNudge({ dx: 0, dy: 0 });
+    const el = popupRef.current;
+    if (!el) return;
+    const margin = 8;
+    const rect = el.getBoundingClientRect();
+    let dx = 0;
+    let dy = 0;
+    if (rect.left < margin) dx = margin - rect.left;
+    else if (rect.right > window.innerWidth - margin) dx = window.innerWidth - margin - rect.right;
+    if (rect.top < margin) dy = margin - rect.top;
+    else if (rect.bottom > window.innerHeight - margin) dy = window.innerHeight - margin - rect.bottom;
+    if (dx !== 0 || dy !== 0) setNudge({ dx, dy });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor.clientX, anchor.clientY, anchor.topHalf, anchor.leftHalf]);
+
+  if (typeof document === "undefined") return null;
+
+  const gap = 8;
+  const baseTransform = `translate(${anchor.leftHalf ? "0" : "-100%"}, ${anchor.topHalf ? `${gap}px` : `calc(-100% - ${gap}px)`})`;
+
+  return createPortal(
+    <div
+      ref={popupRef}
+      className="fixed z-50"
+      style={{
+        left: anchor.clientX,
+        top: anchor.clientY,
+        transform: `${baseTransform} translate(${nudge.dx}px, ${nudge.dy}px)`,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {children}
+    </div>,
+    document.body
   );
 }

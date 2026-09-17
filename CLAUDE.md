@@ -734,6 +734,127 @@ starts reviewing individual rows -- deliberately a bulk, upfront
 correction rather than a per-row fix, since the whole PDF is virtually
 always wrong in the same direction if it's wrong at all.
 
+## Five more operator-screen fixes: popup positioning, pitch flash, pickoff, balk, tag-up
+
+Built in the requested order: Fix 1 (menu position -- the most disruptive
+bug), Fix 5 (flash), Fix 2 (pickoff), Fix 3 (balk), Fix 4 (tag-up),
+prompted "no database changes needed except pickoff already exists in
+game_events." That premise turned out wrong (see Fix 2) -- worth flagging
+here since it's exactly the kind of assumption this file exists to
+correct before it causes confusion later.
+
+### Fix 1: the outcome popup was being clipped, not "off-screen"
+
+The popup added in the Fix 4 sequential-flow rework positioned itself as
+a `left/top: %` child inside `StrikeZoneGrid`'s own box -- which has
+`overflow-hidden` (to clip the SVG/dots to its rounded corners). Any part
+of the popup that fell outside that ~280x280px box was being silently
+clipped by its own parent, not rendered somewhere else on the page. A
+purely CSS/percentage-based repositioning fix couldn't solve this; the
+popup had to leave that DOM subtree entirely.
+
+Fixed with a `createPortal` (`react-dom`) straight to `<body>`, positioned
+`fixed` in real viewport pixel coordinates captured from
+`getBoundingClientRect()` + the tap event's `clientX`/`clientY` (per
+spec) -- `position: fixed` on a portaled node is no longer a descendant
+of the clipping container, so `overflow-hidden` can't touch it. Anchor
+side follows the spec exactly: top-half tap -> menu renders below
+(`translateY(+gap)`), bottom-half -> above (`translateY(-100% - gap)`),
+right-half tap -> anchored left (`translateX(-100%)`), left-half ->
+anchored right (`translateX(0)`). A `useLayoutEffect` then measures the
+popup's own rendered `getBoundingClientRect()` after paint and nudges it
+back with an extra `translate(dx, dy)` if it still overflows the viewport
+by less than an 8px margin -- the CSS-side quadrant logic gets it right
+in the vast majority of taps, but only an actual post-render measurement
+can guarantee "never outside the viewport" for a tap right at a screen
+edge, which is what the spec's own "use getBoundingClientRect()" line was
+asking for.
+
+### Fix 5: pitch confirmation flash
+
+A `pitch-flash-overlay` CSS class (`globals.css`) with a `@keyframes
+pitch-flash` (`0%`/`50%`/`100%` opacity `0`/`0.4`/`0` over `300ms` --
+150ms up, 150ms down, exactly per spec) renders as an absolutely
+positioned div over the grid. `operator-console.tsx` bumps a `flashKey`
+counter (not a boolean -- a boolean flipped `true` on back-to-back
+identical pitches wouldn't re-trigger a CSS animation, since the class
+never actually changed) on every `ball`/`strike`/`foul`/`hbp` outcome,
+and `StrikeZoneGrid` keys the overlay div on that number so React
+remounts a fresh element (and therefore restarts the animation) each
+time. `"inplay"` deliberately never bumps `flashKey`, per spec -- that
+outcome transitions straight to the field-diagram step instead of
+resetting for another pitch.
+
+### Fix 2: pickoff -- and the incorrect premise about game_events
+
+**The request's framing ("pickoff already exists in game_events") doesn't
+match the schema.** `game_events.event_type`'s check constraint only ever
+allowed `wild_pitch`/`passed_ball`/`balk`/`error`. What already existed
+was a *different* thing: `RunnerQuickAction`'s `"picked_off"` value, a
+per-base menu item (tap an occupied base -> its quick-action menu) that
+only increments `outs` and clears the runner locally -- by design, per
+the Sprint 3 note already in this file, it "doesn't retroactively rewrite
+the at-bat... neither is attributed to the pitcher's formal
+`at_bats`-based stats," and critically **it never wrote a `game_events`
+row at all.** So a real migration was needed here despite the request
+saying otherwise: `20260917100001_game_events_pickoff_tagup.sql` widens
+the constraint to add `pickoff_out`, `pickoff_attempt`, and (for Fix 4)
+`tag_up_violation`.
+
+The new "Pickoff" quick-action button opens its own two-step
+`PickoffWizard` (pick the occupied base, then Out/Safe) -- kept
+deliberately separate from the existing per-base "Picked Off" menu item
+rather than replacing it, since that one is still a legitimate quick
+single-tap path for "this runner's just out, don't ask more"; the new
+wizard is for when the operator specifically wants the pickoff attempt
+itself on record (including the "attempted, runner safe, nothing changes"
+case the old action had no way to represent at all). "Out" reuses the
+same `applyRunnerAction(base, "picked_off")` path (removes the runner,
+increments `outs` -- the always-rendered `ThreeOutsModal` reacts on its
+own if this happens to be out #3, no special-cased "is this the 3rd out"
+check needed anywhere) and additionally logs a `pickoff_out` event
+attributed to the pitcher (`resolve("P")` -- a pickoff throw is always
+pitcher-initiated). "Safe" logs `pickoff_attempt` with no state change at
+all. Both flash a confirmation via the same `summaryFlash` state Fix 4
+introduced.
+
+### Fix 3: balk -- already fully worked
+
+**Balk was already a fully-correct existing quick action**
+(`handleQuickEvent("balk")`, built well before this batch): all runners
+already advance one base (`advanceAllRunnersOneBase`), a runner on 3rd
+already scores (via the same call's `scored` array feeding `runsScored`
+into `logGameEvent`, which credits the run directly to `games.our_score`/
+`opponent_score`), no RBI is credited (nothing in that path touches
+`pendingRbi`), and the event already logs to `game_events` with
+`event_type: 'balk'` attributed to the pitcher. The request's own
+requirements were, unknowingly, already fully met -- the only literal gap
+was the "show a brief confirmation" line, so that's the only thing this
+fix actually added: `setSummaryFlash("Balk — all runners advance")`
+alongside the existing dispatch.
+
+### Fix 4: tag-up violation (appeal play)
+
+A distinct, separate out from the fly out that just ended the at-bat --
+scoped to `result === "flyout"` specifically (the request's "Fly Out or
+any caught fly ball" phrasing reads as clarifying what a fly out *is*,
+not asking to extend this to line outs too). Right after `handleConfirm`
+dispatches `CONFIRM_LOCAL` for a flyout, if any runner is still on base
+(`Object.values(state.runners).some(Boolean)` -- no point prompting with
+empty bases), `tagUpPrompt` flips true and a small panel appears in the
+flow column: one button per occupied base ("<name> (<base>) — Out, left
+early") plus a "No" dismiss. Tapping a runner reuses
+`applyRunnerAction(base, "out")` (same reasoning as Fix 2 -- outs
+accumulate from any source and `ThreeOutsModal` is purely reactive to
+`state.outs >= 3`, so "if this brings total outs to 3" needed no special
+code) and logs a `tag_up_violation` event with no fielder attribution
+(the spec didn't ask for a picker here, so this follows the same
+"log without a guessed attribution" precedent as `error_advance`). The
+prompt auto-clears via a `useEffect` on `state.currentAtBatId` -- once
+the next batter's first pitch starts a new draft at-bat, the appeal
+window has implicitly passed, so there's no need to track a separate
+timeout for it.
+
 ## Auth flow
 
 1. `/login` -- client component, calls
@@ -917,6 +1038,20 @@ flags and offers to bulk-correct a stale extracted year. See the dedicated
 section below for the schema additions (`pitches.swing`, the widened
 `pitches.zone_x/zone_y` range, `players.batting_hand/throwing_hand`) and
 the `zoneIndexFromCoords` nullability fix the ball-zone ring required.
+
+**Five more operator-screen fixes (done):** the pitch-outcome popup is now
+portaled to `<body>` with real-pixel `position: fixed` placement instead
+of a percentage position inside an `overflow-hidden` parent that was
+silently clipping it; ball/strike/foul/HBP now flash the strike zone grid
+green on confirmation; a new "Pickoff" quick action logs a real
+`game_events` row (`pickoff_out`/`pickoff_attempt`) that the pre-existing
+per-base "Picked Off" runner action never did; Balk needed no logic
+changes (it already fully worked) beyond a confirmation flash; a
+post-flyout "did a runner leave early" appeal panel logs
+`tag_up_violation` as a second, separate out. See the dedicated section
+below -- including a note on the one incorrect premise in that request
+(pickoff did *not* already have a `game_events` type) and the migration
+that followed from it.
 
 ## Sprint 4: pitch sequence, pitch count/accuracy display, and heat maps
 

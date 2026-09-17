@@ -6,6 +6,7 @@ import type {
   AtBatMode,
   AtBatResult,
   FieldingPosition,
+  GameEventType,
   HitType,
   InningHalf,
   OutType,
@@ -359,7 +360,7 @@ export async function adjustScore(gameId: string, mode: AtBatMode, delta: number
 export async function logGameEvent(
   gameId: string,
   input: {
-    eventType: "wild_pitch" | "passed_ball" | "balk" | "error";
+    eventType: GameEventType;
     inning: number;
     inningHalf: InningHalf;
     note?: string;

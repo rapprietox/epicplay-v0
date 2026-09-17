@@ -80,11 +80,25 @@ export function OperatorConsole({
   opponentPlayers: OpponentPlayer[];
   allGamePitches: Pick<Pitch, "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome">[];
 }) {
-  const [state, dispatch] = useReducer(operatorReducer, undefined, () => {
+  // Deterministic on both server and client -- must never read localStorage
+  // here. This function is Next.js's SSR pass for the initial HTML AND the
+  // client's first render before hydration; if it returned a localStorage
+  // snapshot on the client but not the server (localStorage doesn't exist
+  // during SSR), the two renders would produce different batter/inning/
+  // score text and React would throw a hydration mismatch the moment any
+  // operator had an unsynced snapshot sitting in their browser.
+  const [state, dispatch] = useReducer(operatorReducer, undefined, () =>
+    buildInitialStateFromServer(game, initialGameState, draftAtBat, allGamePitches)
+  );
+
+  // Swapping in a recovered localStorage snapshot happens *after* mount
+  // instead, once hydration has already matched the server output --
+  // this is what the reducer's HYDRATE action is for.
+  useEffect(() => {
     const local = loadOperatorStateLocal(game.id);
-    if (local && local.dirty) return local;
-    return buildInitialStateFromServer(game, initialGameState, draftAtBat, allGamePitches);
-  });
+    if (local && local.dirty) dispatch({ type: "HYDRATE", state: local });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game.id]);
 
   const stateRef = useRef(state);
   useEffect(() => {
@@ -112,14 +126,36 @@ export function OperatorConsole({
   const [scoreMethodPrompt, setScoreMethodPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
+  // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
+  // from the quick-actions panel -- separate from the existing per-base
+  // "Picked Off" runner quick-action (tap an occupied base -> its menu),
+  // which stays as the quick single-tap path and still doesn't log a
+  // game_events row (see CLAUDE.md). This one always does, and adds the
+  // "attempted, runner safe" outcome that quick-action never had.
+  const [pickoffWizard, setPickoffWizard] = useState<{ step: "base" | "result"; base?: Base } | null>(null);
+  // Fix 4: shown after a flyout at-bat confirms, offering to record a
+  // runner who left a base early and got doubled off on appeal -- a
+  // second, separate out from the fly out itself. Cleared automatically
+  // once the next batter's first pitch starts a new draft at-bat (the
+  // appeal window has passed), or by an explicit "No"/tap-a-runner choice.
+  const [tagUpPrompt, setTagUpPrompt] = useState(false);
   const [sessionHeatMapOpen, setSessionHeatMapOpen] = useState(false);
   const [summaryFlash, setSummaryFlash] = useState<string | null>(null);
+  // Fix 5: bumped (never reset to 0) on every ball/strike/foul/HBP so
+  // StrikeZoneGrid's flash overlay remounts and its CSS animation restarts
+  // -- "In Play" deliberately never bumps this, since that outcome moves
+  // straight to the field diagram instead of resetting for another pitch.
+  const [flashKey, setFlashKey] = useState(0);
 
   useEffect(() => {
     if (!summaryFlash) return;
     const t = setTimeout(() => setSummaryFlash(null), 2500);
     return () => clearTimeout(t);
   }, [summaryFlash]);
+
+  useEffect(() => {
+    if (state.currentAtBatId) setTagUpPrompt(false);
+  }, [state.currentAtBatId]);
 
   const battingPlayer = useMemo(
     () => (state.mode === "hitting" ? lineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
@@ -192,6 +228,11 @@ export function OperatorConsole({
     else if (outcome === "strike" && state.strikes + 1 >= 3) autoResult = "strikeout";
 
     dispatch({ type: "LOG_PITCH_LOCAL", outcome, swing });
+    // Fix 5: confirmation flash for every outcome except "In Play" -- that
+    // one transitions straight into the field-diagram sub-flow instead of
+    // resetting the grid for another pitch, so a flash there would just be
+    // a distraction on the way out.
+    if (outcome !== "inplay") setFlashKey((k) => k + 1);
     void withOfflineRetry(`pitch-${atBatId}-${pitchNumber}`, () =>
       logPitch({
         gameId: game.id,
@@ -248,6 +289,9 @@ export function OperatorConsole({
     setSummaryFlash(
       [RESULT_LABELS[result], hitType ? HIT_TYPE_LABELS[hitType] : null, fielding?.position ?? null].filter(Boolean).join(" — ")
     );
+    // Fix 4: only offer the tag-up appeal when there's actually a runner
+    // left on base to appeal against.
+    if (result === "flyout" && Object.values(state.runners).some(Boolean)) setTagUpPrompt(true);
 
     void withOfflineRetry(`confirm-${atBatId}`, async () => {
       await confirmAtBat({
@@ -337,6 +381,13 @@ export function OperatorConsole({
   function handleQuickEvent(eventType: "wild_pitch" | "passed_ball" | "balk" | "error") {
     const result = advanceAllRunnersOneBase(state.runners);
     dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", result });
+    // Fix 3: Balk/Wild Pitch/Passed Ball/Error (all-runners) already fully
+    // worked before this fix -- advance-all-one-base, a 3rd-base runner's
+    // run already gets credited via runsScored below with no RBI (nothing
+    // here touches pendingRbi), and the pitcher/catcher attribution below
+    // already maps onto this exact game_events row. The only literally
+    // missing piece was the on-screen confirmation.
+    if (eventType === "balk") setSummaryFlash("Balk — all runners advance");
     // wild_pitch/balk are unambiguously on the pitcher; passed_ball is
     // unambiguously on the catcher. "error" has no single obvious fielder
     // here (unlike Fix 6's picker, this all-runners quick action doesn't
@@ -425,6 +476,62 @@ export function OperatorConsole({
       // ad-hoc context to credit it to.
       void withOfflineRetry(`score-${game.id}-${Date.now()}`, () => adjustScore(game.id, state.mode, 1));
     }
+  }
+
+  // Fix 2, step 2 of the pickoff wizard.
+  function handlePickoffResult(base: Base, outcome: "out" | "safe") {
+    const runner = state.runners[base];
+    setPickoffWizard(null);
+    if (!runner) return;
+    const fielder = resolve("P");
+    if (outcome === "out") {
+      applyRunnerAction(base, "picked_off");
+      setSummaryFlash(`Pickoff — ${runner.name} out at ${base}`);
+      void withOfflineRetry(`pickoff-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType: "pickoff_out",
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          playerId: fielder?.playerId ?? null,
+          opponentPlayerId: fielder?.opponentPlayerId ?? null,
+        })
+      );
+    } else {
+      setSummaryFlash(`Pickoff attempt — ${runner.name} safe`);
+      void withOfflineRetry(`pickoff-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType: "pickoff_attempt",
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          playerId: fielder?.playerId ?? null,
+          opponentPlayerId: fielder?.opponentPlayerId ?? null,
+        })
+      );
+    }
+  }
+
+  // Fix 4: an appeal-play out separate from the fly out that just ended
+  // the at-bat -- reuses the same "out" runner-action path (removes the
+  // runner, increments outs, which the always-rendered ThreeOutsModal
+  // reacts to on its own if this is out #3) and additionally logs its own
+  // game_events row. No fielder picker here (the spec didn't ask for one),
+  // same "log without a guessed attribution" precedent as error_advance.
+  function handleTagUpViolation(base: Base) {
+    const runner = state.runners[base];
+    setTagUpPrompt(false);
+    if (!runner) return;
+    applyRunnerAction(base, "out");
+    setSummaryFlash(`${runner.name} — Out, left base early`);
+    void withOfflineRetry(`tagup-${game.id}-${Date.now()}`, () =>
+      logGameEvent(game.id, {
+        eventType: "tag_up_violation",
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        mode: state.mode,
+      })
+    );
   }
 
   function confirmEndInning() {
@@ -650,6 +757,31 @@ export function OperatorConsole({
             </div>
           )}
 
+          {tagUpPrompt && (
+            <div className="glossy rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
+              <p className="text-xs text-accent-amber">Did any runner leave early and get thrown out?</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {(["first", "second", "third"] as Base[])
+                  .filter((b) => state.runners[b])
+                  .map((b) => (
+                    <button
+                      key={b}
+                      onClick={() => handleTagUpViolation(b)}
+                      className="min-h-[40px] rounded-md border border-accent-amber/60 px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-amber/20"
+                    >
+                      {state.runners[b]!.name} ({b}) — Out, left early
+                    </button>
+                  ))}
+                <button
+                  onClick={() => setTagUpPrompt(false)}
+                  className="min-h-[40px] rounded-md border border-border px-3 py-1.5 text-xs text-foreground/60"
+                >
+                  No
+                </button>
+              </div>
+            </div>
+          )}
+
           <div key={flowStep} className="flex flex-col items-center gap-3 transition-opacity duration-200">
             {flowStep === "pitch" && (
               <>
@@ -670,6 +802,7 @@ export function OperatorConsole({
                   pendingPitches={state.pendingPitches}
                   heatMapPitches={sessionHeatMapOpen ? state.gamePitchLog : undefined}
                   onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
+                  flashKey={flashKey}
                   popupContent={
                     !sessionHeatMapOpen ? (
                       <PitchOutcomePopup
@@ -830,6 +963,11 @@ export function OperatorConsole({
             <QuickButton label="Passed Ball" onClick={() => handleQuickEvent("passed_ball")} />
             <QuickButton label="Error (all runners)" onClick={() => handleQuickEvent("error")} />
             <QuickButton
+              label="Pickoff"
+              onClick={() => setPickoffWizard({ step: "base" })}
+              className="col-span-2"
+            />
+            <QuickButton
               label="Substitution"
               onClick={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: true })}
               className="col-span-2"
@@ -868,6 +1006,16 @@ export function OperatorConsole({
             });
           }}
           onCancel={() => setDpWizard(null)}
+        />
+      )}
+
+      {pickoffWizard && (
+        <PickoffWizard
+          wizard={pickoffWizard}
+          runners={state.runners}
+          onChangeBase={(base) => setPickoffWizard({ step: "result", base })}
+          onResult={(outcome) => pickoffWizard.base && handlePickoffResult(pickoffWizard.base, outcome)}
+          onCancel={() => setPickoffWizard(null)}
         />
       )}
 
@@ -1377,6 +1525,74 @@ function ThreeOutsModal({
           className="mt-6 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-background"
         >
           End Inning
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PickoffWizard({
+  wizard,
+  runners,
+  onChangeBase,
+  onResult,
+  onCancel,
+}: {
+  wizard: { step: "base" | "result"; base?: Base };
+  runners: Runners;
+  onChangeBase: (base: Base) => void;
+  onResult: (outcome: "out" | "safe") => void;
+  onCancel: () => void;
+}) {
+  const occupied = (["first", "second", "third"] as Base[]).filter((b) => runners[b]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-5">
+        <h3 className="font-heading text-lg font-bold text-white">Pickoff</h3>
+
+        {wizard.step === "base" && (
+          <>
+            <p className="mt-2 text-sm text-foreground/60">Throw to which base?</p>
+            <div className="mt-3 flex flex-col gap-2">
+              {occupied.map((b) => (
+                <button
+                  key={b}
+                  onClick={() => onChangeBase(b)}
+                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
+                >
+                  {runners[b]?.name} ({b})
+                </button>
+              ))}
+              {occupied.length === 0 && <p className="text-sm text-foreground/40">No runners on base.</p>}
+            </div>
+          </>
+        )}
+
+        {wizard.step === "result" && wizard.base && (
+          <>
+            <p className="mt-2 text-sm text-foreground/60">
+              {runners[wizard.base]?.name} at {wizard.base} —
+            </p>
+            <div className="mt-3 flex flex-col gap-2">
+              <button
+                onClick={() => onResult("out")}
+                className="min-h-[48px] rounded-md border border-accent-red/50 px-3 py-2 text-sm font-semibold text-white hover:bg-accent-red/10"
+              >
+                Out — runner caught
+              </button>
+              <button
+                onClick={() => onResult("safe")}
+                className="min-h-[48px] rounded-md border border-accent-green/50 px-3 py-2 text-sm font-semibold text-white hover:bg-accent-green/10"
+              >
+                Safe — runner dives back
+              </button>
+            </div>
+          </>
+        )}
+
+        <button onClick={onCancel} className="mt-4 w-full text-xs text-foreground/50">
+          Cancel
         </button>
       </div>
     </div>

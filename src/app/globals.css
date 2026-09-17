@@ -27,3 +27,23 @@ body {
 .glow-green {
   box-shadow: 0 0 8px 2px rgba(0, 255, 127, 0.55);
 }
+
+/* Fix 5: strike zone grid confirmation flash on ball/strike/foul/HBP --
+   150ms fade in to 40% opacity, 150ms fade back out, 300ms total. Applied
+   to a fresh element (remounted via a changing `key`) each time so the
+   animation restarts on every pitch instead of needing JS to toggle a
+   class off and back on. */
+@keyframes pitch-flash {
+  0% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.pitch-flash-overlay {
+  animation: pitch-flash 300ms ease-in-out;
+}
