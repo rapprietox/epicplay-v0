@@ -1004,6 +1004,90 @@ coherent record was judged out of scope; the operator needs to decide
 *before* the first pitch, which matches how intentional walks are
 signaled in real games anyway (before the pitcher throws, not mid at-bat).
 
+## Six more operator-screen fixes: RBI auto-only, wild pitch/passed ball as a ball, pitch type in the popup, IBB/HBP relocated
+
+The one request in this batch framed as "no database changes needed" was,
+for once, actually accurate -- every fix here reuses existing columns.
+
+### Fix 2: RBI is now purely computed, never editable
+
+The manual `Stepper` in the `runnerConfirm` panel is gone, along with the
+now-dead `SET_RBI` reducer action -- `state.pendingRbi` was already being
+computed correctly (`scoredRbiCount` in `reducer.ts`, filtering
+`scoredThisAtBat` by `SCORE_METHOD_AWARDS_RBI`, which already zeroes out
+error/wild_pitch/passed_ball/balk-scored runs); the stepper just let the
+operator override that correct number, which is exactly what "never show
+an RBI input field" asks to stop. The runnerConfirm panel now shows the
+computed RBI as plain read-only text ("Auto -- not editable") instead of
+silently dropping the number entirely -- the operator still benefits from
+seeing it before confirming.
+
+### Fix 3/6: Wild Pitch and Passed Ball are always a ball
+
+Previously these two quick actions only advanced runners one base and
+logged a `game_events` row -- the pitch count never moved, which is wrong
+(a wild pitch or passed ball is, definitionally, a pitch the catcher
+couldn't handle; it's always a ball). `handleQuickEvent` now logs a real
+`pitches` row (`outcome: 'ball'`, `zone_x`/`zone_y`/`pitch_type` all
+`null` -- no tap happened for it) through the exact same
+`ensureDraftAtBat` -> `LOG_PITCH_LOCAL` -> `logPitch` path every other
+pitch takes, **not** a local-only counter bump -- `state.balls` has never
+been a persisted column (per the Sprint 3 design, the count is always
+*derived* from pitches attached to the draft at-bat), so a bump that
+wasn't backed by a real pitch row would silently vanish on a
+reload/resume. The runner-advance-one-base effect these two already had
+still happens, unchanged. If this pitch is the 4th ball, the batter is
+walked using the *same* force-cascade a real 4th ball triggers --
+`pickResult` gained an optional `baseRunners` parameter (default
+`state.runners`) so this case can compute the walk's force-cascade on
+top of the wild pitch/passed ball's own one-base advance instead of the
+pre-advance positions, since `state.runners` in this handler hasn't
+caught up to the just-dispatched `ADVANCE_ALL_RUNNERS_LOCAL` yet. Balk is
+unchanged -- still not a ball, runners advance, the count stays put.
+
+### Fix 1: pitch type is step 1 of the same zone-tap popup
+
+The persistent top-bar pitch-type pill row is gone. `StrikeZoneGrid`'s
+`popupContent` now switches between two menus depending on a new local
+`pitchTypeStepDone` flag (reset by a `useEffect` keyed on
+`state.selectedZone`'s coordinates, so it flips back to "ask pitch type
+first" the moment a *new* zone tap starts): `PitchTypePopup` ("What pitch
+was it?" -- the six existing types plus "Unknown," which dispatches
+`SELECT_PITCH_TYPE` with `null`) until a choice is made, then
+`PitchOutcomePopup` at the same anchored position, no second tap needed.
+"Unknown" needed no new plumbing -- `pitch_type` has always been nullable
+and every pitch-type-keyed stat already treats null as "excluded from
+that breakdown," which is the correct behavior, not a gap. `LOG_PITCH_LOCAL`
+now also resets `selectedPitchType` to `null` after every pitch (it never
+did before, since the old sticky top-bar selection was *meant* to persist
+across pitches) -- otherwise a stale type from the previous pitch could
+leak into the new direct-HBP button (Fix 5), which reads
+`state.selectedPitchType` straight off state rather than requiring the
+popup flow.
+
+### Fix 4: IBB relocated next to the strike zone grid
+
+Removed from the quick-actions panel; a small amber (`#EF9F27`) pill
+button labeled "IBB — Intentional Walk" now sits directly under the
+strike zone grid (only in the `pitch` flow step, hidden in session-heat-
+map mode), next to the new direct-HBP button from Fix 5. Same
+`ibbConfirmOpen` confirmation dialog and `handleIntentionalWalk` logic as
+before -- only the button's location and color changed.
+
+### Fix 5: a direct HBP shortcut, bypassing the zone tap
+
+`handleDirectHbp` mirrors a zone-tapped HBP (`ensureDraftAtBat` ->
+`LOG_PITCH_LOCAL("hbp")` -> `logPitch` -> `pickResult("hbp")`) but forces
+`zone_x`/`zone_y` to `null` explicitly and dispatches
+`CLEAR_ZONE_SELECTION` first, rather than trusting `state.selectedZone`
+to already be null -- belt-and-suspenders in case a zone tap was
+mid-flight (say, the pitch-type popup was open) when the operator hit
+this button instead. "Counts as a pitch but not a ball or strike" needed
+no special-casing: `LOG_PITCH_LOCAL`'s existing `"hbp"` branch has never
+touched `balls`/`strikes`, only `pendingPitches` (the pitch count) and
+`pitchCountForCurrentPitcher` -- both of which are exactly what should
+move here.
+
 ## Auth flow
 
 1. `/login` -- client component, calls

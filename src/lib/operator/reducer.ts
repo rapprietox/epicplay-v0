@@ -88,7 +88,6 @@ export type OperatorAction =
   | { type: "SET_HIT_TYPE"; hitType: HitType | null }
   | { type: "SET_FIELD_TAP"; x: number; y: number }
   | { type: "SET_FIELDING"; position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null }
-  | { type: "SET_RBI"; value: number }
   | { type: "CONFIRM_RUNNERS_SUGGESTION" }
   | { type: "APPLY_RUNNER_ACTION"; base: Base; action: RunnerQuickAction; scoreMethod?: ScoreMethod }
   | { type: "CONFIRM_LOCAL"; atBatId: string; outsRecorded: number; accuracyRatio: number }
@@ -178,6 +177,11 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         gamePitchLog: [...state.gamePitchLog, pitch],
         lastPitchZone: pitch.zone_x !== null && pitch.zone_y !== null ? { x: pitch.zone_x, y: pitch.zone_y, outcome: action.outcome } : state.lastPitchZone,
         selectedZone: null,
+        // Fix 1: pitch type is asked fresh every pitch now (step 1 of the
+        // zone-tap popup), not a sticky top-bar selection -- reset so a
+        // stale type from the last pitch can't silently leak into the
+        // direct-HBP-button shortcut (Fix 5), which reads this directly.
+        selectedPitchType: null,
         awaitingResult,
         // Only set here for display purposes (e.g. highlighting the
         // suggested result button); the runner suggestion itself is
@@ -214,9 +218,6 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         pendingFielding: { position: action.position, playerId: action.playerId, opponentPlayerId: action.opponentPlayerId },
         dirty: true,
       };
-
-    case "SET_RBI":
-      return { ...state, pendingRbi: Math.max(0, Math.min(4, action.value)), dirty: true };
 
     case "CONFIRM_RUNNERS_SUGGESTION":
       return { ...state, runnersPendingConfirmation: false, dirty: true };

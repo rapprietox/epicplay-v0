@@ -155,6 +155,18 @@ export function OperatorConsole({
   // bypasses pitch logging entirely, so there's no popup/zone step to
   // confirm through the way a normal at-bat has.
   const [ibbConfirmOpen, setIbbConfirmOpen] = useState(false);
+  // Fix 1: pitch type is now step 1 of the same zone-tap popup, asked
+  // before the outcome menu, instead of a persistent top-bar pill row
+  // picked before tapping. false = still showing the "what pitch was it"
+  // menu; true = pitch type is settled (including "Unknown" -> null,
+  // still a deliberate choice, not "not asked yet") and the outcome menu
+  // should show instead. Local UI state, not reducer state -- it's purely
+  // "which half of this one popup are we on," reset whenever a new zone
+  // tap starts a fresh pitch.
+  const [pitchTypeStepDone, setPitchTypeStepDone] = useState(false);
+  useEffect(() => {
+    setPitchTypeStepDone(false);
+  }, [state.selectedZone?.x, state.selectedZone?.y]);
   const [sessionHeatMapOpen, setSessionHeatMapOpen] = useState(false);
   const [summaryFlash, setSummaryFlash] = useState<string | null>(null);
   // Fix 5: bumped (never reset to 0) on every ball/strike/foul/HBP so
@@ -273,16 +285,21 @@ export function OperatorConsole({
     if (hitType === "hr" && state.pendingHitType !== hitType) pickResult("hr");
   }
 
-  function pickResult(result: AtBatResult) {
+  // baseRunners defaults to the current state, but Fix 3/6 (wild
+  // pitch/passed ball landing as the 4th ball) needs to compute the
+  // resulting walk's force-cascade on top of runners already moved by the
+  // wild pitch's own one-base advance -- a snapshot state.runners hasn't
+  // caught up to yet within the same synchronous handler.
+  function pickResult(result: AtBatResult, baseRunners: Runners = state.runners) {
     if (result === "double_play") {
       setDpWizard({ step: "runner", outType: "force" });
       return;
     }
     const batter = currentBatterRunner();
-    const { runners: suggestion, scored } = suggestRunnerAdvance(state.runners, batter, result);
+    const { runners: suggestion, scored } = suggestRunnerAdvance(baseRunners, batter, result);
     const method = resultToScoreMethod(result);
     const taggedScored = scored.map((r) => ({ runner: r, method }));
-    const hasMovement = scored.length > 0 || JSON.stringify(suggestion) !== JSON.stringify(state.runners);
+    const hasMovement = scored.length > 0 || JSON.stringify(suggestion) !== JSON.stringify(baseRunners);
     dispatch({ type: "SET_RESULT", result, suggestion, scored: taggedScored, hasMovement });
     if (hasMovement) syncRunners(suggestion);
   }
@@ -394,22 +411,67 @@ export function OperatorConsole({
     syncRunners({ ...state.runners, [base]: runner });
   }
 
-  function handleQuickEvent(eventType: "wild_pitch" | "passed_ball" | "balk" | "error") {
+  async function handleQuickEvent(eventType: "wild_pitch" | "passed_ball" | "balk" | "error") {
+    // Fix 3/6: a wild pitch or passed ball is *always* a ball -- unlike a
+    // balk (runners just advance, count is untouched), it also logs a real
+    // "ball" pitches row (zone/type unknown, no tap happened for it) so
+    // the count survives a reload the same way every other pitch does,
+    // not just a local counter bump that a resume would silently lose.
+    if (eventType === "wild_pitch" || eventType === "passed_ball") {
+      let atBatId: string;
+      try {
+        atBatId = await ensureDraftAtBat();
+      } catch (err) {
+        setBanner(err instanceof Error ? err.message : "Could not start at-bat -- check connection and try again");
+        return;
+      }
+      const pitchNumber = state.pendingPitches.length + 1;
+      const ballsAfter = Math.min(4, state.balls + 1);
+      dispatch({ type: "LOG_PITCH_LOCAL", outcome: "ball", swing: false });
+      void withOfflineRetry(`pitch-${atBatId}-${pitchNumber}`, () =>
+        logPitch({
+          gameId: game.id,
+          atBatId,
+          pitchNumber,
+          pitchType: null,
+          zoneX: null,
+          zoneY: null,
+          outcome: "ball",
+          swing: false,
+          isPitchingMode: state.mode === "pitching",
+        })
+      );
+
+      const advance = advanceAllRunnersOneBase(state.runners);
+      dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", result: advance });
+      const fielder = eventType === "wild_pitch" ? resolve("P") : resolve("C");
+      void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType,
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          runsScored: advance.scored.length,
+          playerId: fielder?.playerId ?? null,
+          opponentPlayerId: fielder?.opponentPlayerId ?? null,
+        })
+      );
+
+      // The walk's own force-cascade applies on top of the wild
+      // pitch/passed ball's one-base advance, not the pre-advance runners.
+      if (ballsAfter >= 4) pickResult("walk", advance.runners);
+      return;
+    }
+
     const result = advanceAllRunnersOneBase(state.runners);
     dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", result });
-    // Fix 3: Balk/Wild Pitch/Passed Ball/Error (all-runners) already fully
-    // worked before this fix -- advance-all-one-base, a 3rd-base runner's
-    // run already gets credited via runsScored below with no RBI (nothing
-    // here touches pendingRbi), and the pitcher/catcher attribution below
-    // already maps onto this exact game_events row. The only literally
-    // missing piece was the on-screen confirmation.
+    // Balk is not a ball -- runners just advance, the count is untouched.
     if (eventType === "balk") setSummaryFlash("Balk — all runners advance");
-    // wild_pitch/balk are unambiguously on the pitcher; passed_ball is
-    // unambiguously on the catcher. "error" has no single obvious fielder
-    // here (unlike Fix 6's picker, this all-runners quick action doesn't
-    // ask which position), so it's logged without attribution rather than
-    // guessing one.
-    const fielder = eventType === "wild_pitch" || eventType === "balk" ? resolve("P") : eventType === "passed_ball" ? resolve("C") : null;
+    // balk is unambiguously on the pitcher. "error" has no single obvious
+    // fielder here (unlike Fix 6's picker, this all-runners quick action
+    // doesn't ask which position), so it's logged without attribution
+    // rather than guessing one.
+    const fielder = eventType === "balk" ? resolve("P") : null;
     void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
       logGameEvent(game.id, {
         eventType,
@@ -588,6 +650,44 @@ export function OperatorConsole({
     }
   }
 
+  // Fix 5: a direct HBP shortcut for when the operator knows it was a hit
+  // batter without having tapped the exact zone -- forces zone null
+  // (rather than trusting state.selectedZone to already be null, in case
+  // a zone tap was mid-flight when this got tapped instead) and clears
+  // any in-flight zone selection so a stray popup can't linger. Otherwise
+  // identical to a zone-tapped HBP: LOG_PITCH_LOCAL's own "hbp" branch
+  // already never touches balls/strikes, so this "counts as a pitch but
+  // not a ball or strike" for free, no special-casing needed.
+  async function handleDirectHbp() {
+    if (state.outs >= 3) return;
+    setBanner(null);
+    let atBatId: string;
+    try {
+      atBatId = await ensureDraftAtBat();
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Could not start at-bat -- check connection and try again");
+      return;
+    }
+    const pitchNumber = state.pendingPitches.length + 1;
+    const pitchType = state.selectedPitchType;
+    dispatch({ type: "CLEAR_ZONE_SELECTION" });
+    dispatch({ type: "LOG_PITCH_LOCAL", outcome: "hbp", swing: false });
+    void withOfflineRetry(`pitch-${atBatId}-${pitchNumber}`, () =>
+      logPitch({
+        gameId: game.id,
+        atBatId,
+        pitchNumber,
+        pitchType,
+        zoneX: null,
+        zoneY: null,
+        outcome: "hbp",
+        swing: false,
+        isPitchingMode: state.mode === "pitching",
+      })
+    );
+    pickResult("hbp");
+  }
+
   function confirmEndInning() {
     dispatch({ type: "END_INNING_LOCAL" });
     const nextHalf = state.inningHalf === "top" ? "bottom" : "top";
@@ -738,25 +838,6 @@ export function OperatorConsole({
       <div className="grid grid-cols-1 gap-6 p-4 md:grid-cols-2">
         {/* LEFT COLUMN -- the sequential pitch-logging conversation */}
         <div className="flex flex-col gap-4">
-          <div>
-            <p className="mb-1.5 text-xs uppercase tracking-wide text-foreground/40">Pitch type</p>
-            <div className="flex flex-wrap gap-2">
-              {PITCH_TYPES.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => dispatch({ type: "SELECT_PITCH_TYPE", pitchType: state.selectedPitchType === t ? null : t })}
-                  className={`min-h-[48px] rounded-full border px-4 text-sm font-medium transition ${
-                    state.selectedPitchType === t
-                      ? "border-accent-primary bg-accent-primary text-white"
-                      : "border-border bg-surface text-foreground/70"
-                  }`}
-                >
-                  {PITCH_TYPE_LABELS[t]}
-                </button>
-              ))}
-            </div>
-          </div>
-
           <div className="glossy glow-green rounded-lg border border-accent-primary/40 bg-card p-4">
             {state.mode === "hitting" ? (
               <>
@@ -858,14 +939,24 @@ export function OperatorConsole({
                   onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
                   flashKey={flashKey}
                   popupContent={
-                    !sessionHeatMapOpen && state.selectedZone ? (
-                      <PitchOutcomePopup
-                        zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
-                        battingHand={state.mode === "hitting" ? battingPlayerInfo?.batting_hand ?? null : null}
-                        onPick={handlePitchOutcome}
-                        onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
-                      />
-                    ) : undefined
+                    !sessionHeatMapOpen && state.selectedZone
+                      ? pitchTypeStepDone ? (
+                          <PitchOutcomePopup
+                            zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
+                            battingHand={state.mode === "hitting" ? battingPlayerInfo?.batting_hand ?? null : null}
+                            onPick={handlePitchOutcome}
+                            onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                          />
+                        ) : (
+                          <PitchTypePopup
+                            onPick={(t) => {
+                              dispatch({ type: "SELECT_PITCH_TYPE", pitchType: t });
+                              setPitchTypeStepDone(true);
+                            }}
+                            onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                          />
+                        )
+                      : undefined
                   }
                 />
 
@@ -886,6 +977,24 @@ export function OperatorConsole({
                         .join(", ")}
                     </p>
                   )
+                )}
+
+                {!sessionHeatMapOpen && (
+                  <div className="flex w-full max-w-[280px] justify-center gap-2">
+                    <button
+                      onClick={() => setIbbConfirmOpen(true)}
+                      className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
+                      style={{ borderColor: "#EF9F27", color: "#EF9F27" }}
+                    >
+                      IBB — Intentional Walk
+                    </button>
+                    <button
+                      onClick={() => void handleDirectHbp()}
+                      className="min-h-[36px] rounded-full border border-border px-3 text-xs font-semibold text-foreground/70 transition hover:border-accent-primary hover:text-white"
+                    >
+                      HBP
+                    </button>
+                  </div>
                 )}
               </>
             )}
@@ -954,7 +1063,11 @@ export function OperatorConsole({
                   <>
                     <p className="mt-1 text-xs text-accent-amber">Suggested runner movement — review on the diamond, right column</p>
                     <div className="mt-3 flex items-start justify-center gap-6">
-                      <Stepper label="RBI" value={state.pendingRbi} onChange={(v) => dispatch({ type: "SET_RBI", value: v })} />
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-foreground/40">RBI</p>
+                        <p className="font-heading mt-1 text-lg font-bold text-white">{state.pendingRbi}</p>
+                        <p className="mt-0.5 text-[10px] text-foreground/40">Auto -- not editable</p>
+                      </div>
                       <div>
                         <p className="text-xs uppercase tracking-wide text-foreground/40">Runs scoring</p>
                         <p className="font-heading mt-1 text-sm text-white">
@@ -1014,18 +1127,13 @@ export function OperatorConsole({
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            <QuickButton label="Wild Pitch" onClick={() => handleQuickEvent("wild_pitch")} />
-            <QuickButton label="Balk" onClick={() => handleQuickEvent("balk")} />
-            <QuickButton label="Passed Ball" onClick={() => handleQuickEvent("passed_ball")} />
-            <QuickButton label="Error (all runners)" onClick={() => handleQuickEvent("error")} />
+            <QuickButton label="Wild Pitch" onClick={() => void handleQuickEvent("wild_pitch")} />
+            <QuickButton label="Balk" onClick={() => void handleQuickEvent("balk")} />
+            <QuickButton label="Passed Ball" onClick={() => void handleQuickEvent("passed_ball")} />
+            <QuickButton label="Error (all runners)" onClick={() => void handleQuickEvent("error")} />
             <QuickButton
               label="Pickoff"
               onClick={() => setPickoffWizard({ step: "base" })}
-              className="col-span-2"
-            />
-            <QuickButton
-              label="Intentional Walk"
-              onClick={() => setIbbConfirmOpen(true)}
               className="col-span-2"
             />
             <QuickButton
@@ -1210,6 +1318,41 @@ function CountBlock({ label, value }: { label: string; value: number }) {
   );
 }
 
+// Fix 1: step 1 of the zone-tap popup -- asked before the outcome menu,
+// per spec. "Unknown" logs pitch_type as null (already how an unset pitch
+// type has always been recorded -- nothing new needed there) with no
+// separate "penalty" flag to track, since none of the pitch-type-keyed
+// stats (Strike Rate by pitch type, etc.) treat a null pitch_type as
+// anything but "excluded from that breakdown," which is already correct.
+const PITCH_TYPE_POPUP_OPTIONS: { value: PitchType | null; label: string }[] = [
+  ...PITCH_TYPES.map((t) => ({ value: t, label: PITCH_TYPE_LABELS[t] })),
+  { value: null, label: "Unknown" },
+];
+
+function PitchTypePopup({ onPick, onClose }: { onPick: (t: PitchType | null) => void; onClose: () => void }) {
+  return (
+    <div className="glossy w-48 rounded-lg border border-accent-primary/50 bg-card p-2 shadow-lg">
+      <p className="mb-1.5 text-center text-[10px] uppercase tracking-wide text-foreground/50">What pitch was it?</p>
+      <div className="grid grid-cols-2 gap-1.5">
+        {PITCH_TYPE_POPUP_OPTIONS.map((o) => (
+          <button
+            key={o.label}
+            onClick={() => onPick(o.value)}
+            className={`min-h-[40px] rounded-md border border-border px-1.5 text-[11px] font-medium text-white transition hover:border-accent-primary hover:bg-accent-primary/10 ${
+              o.value === null ? "col-span-2" : ""
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <button onClick={onClose} className="mt-1.5 w-full text-[10px] text-foreground/40 hover:text-white">
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 // HBP is only physically plausible on the inside part of the zone (the
 // ball-zone column closest to the batter's body) at roughly chest/waist
 // height -- not the corner cells (too high or too low) and not the
@@ -1300,23 +1443,6 @@ function QuickButton({ label, onClick, className = "" }: { label: string; onClic
     >
       {label}
     </button>
-  );
-}
-
-function Stepper({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-foreground/40">{label}</p>
-      <div className="mt-1 flex items-center gap-2">
-        <button onClick={() => onChange(value - 1)} className="h-8 w-8 rounded border border-border text-white">
-          −
-        </button>
-        <span className="font-heading w-4 text-center text-lg text-white">{value}</span>
-        <button onClick={() => onChange(value + 1)} className="h-8 w-8 rounded border border-border text-white">
-          +
-        </button>
-      </div>
-    </div>
   );
 }
 
