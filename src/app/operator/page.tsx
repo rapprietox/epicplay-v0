@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
@@ -82,21 +81,14 @@ export default async function OperatorPage({
       : { data: [] };
 
   return (
-    <>
-      <OperatorConsole
-        game={game}
-        players={players ?? []}
-        lineup={lineup ?? []}
-        initialGameState={gameState}
-        draftAtBat={draftAtBat}
-        opponentPlayers={opponentPlayers ?? []}
-        allGamePitches={allGamePitches ?? []}
-      />
-      <div className="fixed left-3 top-3 z-20">
-        <Link href="/coach" className="text-xs text-foreground/30 hover:text-foreground/60">
-          ← dashboard
-        </Link>
-      </div>
-    </>
+    <OperatorConsole
+      game={game}
+      players={players ?? []}
+      lineup={lineup ?? []}
+      initialGameState={gameState}
+      draftAtBat={draftAtBat}
+      opponentPlayers={opponentPlayers ?? []}
+      allGamePitches={allGamePitches ?? []}
+    />
   );
 }

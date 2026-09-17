@@ -1088,6 +1088,92 @@ touched `balls`/`strikes`, only `pendingPitches` (the pitch count) and
 `pitchCountForCurrentPitcher` -- both of which are exactly what should
 move here.
 
+## Four more operator-screen fixes: header overlap, live batter handedness, out reasons
+
+Built in the requested order: Fix 3 (layout overlap), Fix 1 (handedness
+ellipses, with Fix 4's mid-at-bat correction built in from the start
+rather than bolted on after), Fix 2 (out reason + migration).
+
+### Fix 3: the back button was a separate fixed overlay
+
+`page.tsx` rendered "← dashboard" as its own `fixed left-3 top-3`
+`<Link>`, entirely independent of `OperatorConsole`'s own header -- which
+put it directly on top of the HITTING/PITCHING toggle, also anchored top
+left inside that header. Moved into the header itself, as its last item
+on the right (next to the score), and it's now a `useRouter()` push
+gated by a confirmation dialog ("Leave this game? Your progress is
+saved.") instead of a bare navigable link -- a stray tap could
+previously leave the game instantly. The header already had a `border-b`
+separating it from the rest of the screen, so "add a thin separator
+line" needed no change once the overlapping element was gone.
+
+### Fix 1/4: live per-at-bat batter handedness, correctable at any point
+
+**Deliberately does not write back to `players.batting_hand`** -- the
+request's own "no database changes needed except one small addition"
+(that one addition being Fix 2's migration) rules out a new column, and
+the profile stays the durable system of record. `atBatBattingHand`
+(`operator-console.tsx`) is a local override, seeded from
+`battingPlayerInfo?.batting_hand` by a `useEffect` keyed on the batter's
+*identity* (`battingPlayerInfo?.id`) so it reseeds only when a new batter
+steps up, not on every render. Fix 4 ("correctable at any point during
+the at-bat") is just... not adding any logic that would prevent that --
+`BatterHandSelector`'s `EllipseButton`s call `setAtBatBattingHand`
+directly and unconditionally, no separate "editing" mode, no
+confirmation, so there was nothing extra to build for Fix 4 once Fix 1
+was done right the first time.
+
+Two tall narrow ovals (`h-16 w-9 rounded-[50%]`) above the strike zone
+grid, hitting/mode only -- opponent batters have no hand data source at
+all (`opponent_players` has no such column, unchanged from the earlier
+Fix 3 that added this column to `players`), so the selector doesn't
+render during `mode === "pitching"` and HBP eligibility keeps its
+existing "fall back to both inside columns" behavior there, same as for
+an unset/switch-hitter profile. When both are unselected (a genuinely
+unknown hand, no profile value to seed from), `StrikeZoneGrid` gained a
+`disabled` prop -- taps are inert and the box dims to 40% opacity -- so
+"operator must tap one before the zone grid activates" is a real
+constraint, not just a suggestion. `hbpEligible`'s `battingHand` argument
+now comes from `atBatBattingHand` instead of reading the player's profile
+value directly, so a correction takes effect on the very next zone tap.
+
+"Spray chart orientation," mentioned in the request as one of the things
+this selection "affects," isn't something the operator screen renders at
+all -- spray charts live on the coach's per-player breakdown page, built
+from historical confirmed `at_bats` rows, a completely different route.
+Nothing needed building there; this fix only ever touches the operator
+screen's own live zone-eligibility logic.
+
+### Fix 2: runner "Out" now requires a reason
+
+`RUNNER_QUICK_ACTIONS`' existing "Out" button no longer applies the out
+directly -- it opens `OutReasonMenu` (six reasons -> six `GameEventType`
+values) instead, and only `handleRunnerOutWithReason` (called once a
+reason is picked) actually calls `applyRunnerAction(base, "out")` and
+logs the `game_events` row. The out still "counts immediately" in the
+sense the request means (one extra tap, not a separate multi-step flow);
+what changed is that no out can be recorded anymore without one of the
+six reasons attached. **The separate "Picked Off" quick action (its own
+button in the same menu, tapping an occupied base directly) is
+unchanged** -- it stays the deliberate one-tap path with no event logged,
+exactly as before this fix; the request only asked about the *generic*
+"Out" button. Two of the six reasons map onto event types that already
+existed for a *different*, narrower trigger rather than being genuinely
+new concepts: "Pickoff" here logs the same `pickoff_out` the standalone
+Pickoff wizard logs, and "Out on Appeal" logs the same `tag_up_violation`
+the post-flyout appeal panel logs -- this menu is just a second path to
+each, for whenever the operator wants to record that kind of out without
+having gone through either of those specific flows.
+
+Migration `20260918100001_game_events_out_reasons.sql` widens
+`game_events.event_type` to add `caught_stealing`, `rundown_out`,
+`runner_passed`, `out_at_next_base`, and `stolen_base` -- applied exactly
+as given in the request, including `stolen_base`, even though nothing
+inserts that value yet (a successful steal is still its own row in the
+separate `stolen_bases` table, per the Sprint 2 design; allowing the
+value in this constraint costs nothing and matches the request's own
+SQL verbatim).
+
 ## Auth flow
 
 1. `/login` -- client component, calls

@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type {
   AtBatResult,
   BattingHand,
   Database,
   FieldingPosition,
+  GameEventType,
   HitType,
   OutType,
   PitchOutcome,
@@ -92,6 +94,15 @@ export function OperatorConsole({
   opponentPlayers: OpponentPlayer[];
   allGamePitches: Pick<Pitch, "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome">[];
 }) {
+  const router = useRouter();
+  // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
+  // overlay, independent of this console's own header -- which put it
+  // directly on top of the HITTING/PITCHING toggle also anchored top-left.
+  // Moved into the header itself (top right) so it's part of the normal
+  // layout instead of a separately-positioned overlay that can collide
+  // with anything else near that corner, and gained a confirmation dialog
+  // it never had (a stray tap could previously leave the game instantly).
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
   // Deterministic on both server and client -- must never read localStorage
   // here. This function is Next.js's SSR pass for the initial HTML AND the
   // client's first render before hydration; if it returned a localStorage
@@ -136,6 +147,10 @@ export function OperatorConsole({
   const [runnerPicker, setRunnerPicker] = useState<Base | null>(null);
   const [runnerActionMenu, setRunnerActionMenu] = useState<Base | null>(null);
   const [scoreMethodPrompt, setScoreMethodPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
+  // Fix 2: a generic "Out" on a runner now asks why before applying it --
+  // "Picked Off" keeps its own unambiguous one-tap path unchanged (see
+  // below), this is only for the generic case.
+  const [outReasonPrompt, setOutReasonPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
@@ -193,6 +208,28 @@ export function OperatorConsole({
     () => (battingPlayer ? players.find((p) => p.id === battingPlayer.player_id) : undefined),
     [battingPlayer, players]
   );
+
+  // Fix 1/4: a live, per-at-bat override of the batter's hand -- not
+  // written back to players.batting_hand (this fix needs no schema
+  // change; that stays the profile's system of record). Auto-seeded from
+  // the profile whenever a *new* batter steps up (battingPlayerInfo?.id
+  // changing), but freely one-tap-correctable at any point during that
+  // same at-bat per Fix 4, with no confirmation -- it only feeds this
+  // at-bat's own HBP-zone-eligibility check. Opponent batters (mode ===
+  // "pitching") have no hand data source at all (opponent_players has no
+  // such column, same as before this fix) so this stays null there and
+  // the selector itself isn't shown.
+  const [atBatBattingHand, setAtBatBattingHand] = useState<BattingHand | null>(null);
+  useEffect(() => {
+    setAtBatBattingHand(battingPlayerInfo?.batting_hand ?? null);
+    // Deliberately keyed on the batter's identity, not the hand value --
+    // this should only re-seed when a *new* batter steps up. players is
+    // static per page load, so the value can't actually change out from
+    // under the same id, but keying on id alone states the real intent
+    // (new batter -> reseed) more clearly than the value would.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [battingPlayerInfo?.id]);
+
   const currentPitcher = useMemo(
     () => players.find((p) => p.id === state.currentPitcherId),
     [players, state.currentPitcherId]
@@ -556,6 +593,23 @@ export function OperatorConsole({
     }
   }
 
+  // Fix 2 (this batch): the out still counts immediately via the same
+  // applyRunnerAction("out") path as before -- this just adds the
+  // game_events row the reason implies, one extra tap after "Out" rather
+  // than a separate confirmation step.
+  function handleRunnerOutWithReason(base: Base, eventType: GameEventType) {
+    setOutReasonPrompt(null);
+    applyRunnerAction(base, "out");
+    void withOfflineRetry(`outreason-${game.id}-${Date.now()}`, () =>
+      logGameEvent(game.id, {
+        eventType,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        mode: state.mode,
+      })
+    );
+  }
+
   // Fix 2, step 2 of the pickoff wizard.
   function handlePickoffResult(base: Base, outcome: "out" | "safe") {
     const runner = state.runners[base];
@@ -813,6 +867,12 @@ export function OperatorConsole({
             <span className="text-accent-green">{state.ourScore}</span>{" "}
             {game.home_away === "home" ? "Us" : game.opponent_name}
           </p>
+          <button
+            onClick={() => setLeaveConfirmOpen(true)}
+            className="text-xs text-foreground/40 hover:text-white"
+          >
+            ← Dashboard
+          </button>
         </div>
       </header>
 
@@ -931,6 +991,11 @@ export function OperatorConsole({
                     {sessionHeatMapOpen ? "Back to Logging" : "Session Heat Map"}
                   </button>
                 </div>
+
+                {state.mode === "hitting" && !sessionHeatMapOpen && (
+                  <BatterHandSelector value={atBatBattingHand} onChange={setAtBatBattingHand} />
+                )}
+
                 <StrikeZoneGrid
                   selectedZone={state.selectedZone}
                   lastPitchZone={state.lastPitchZone}
@@ -938,12 +1003,13 @@ export function OperatorConsole({
                   heatMapPitches={sessionHeatMapOpen ? state.gamePitchLog : undefined}
                   onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
                   flashKey={flashKey}
+                  disabled={!sessionHeatMapOpen && state.mode === "hitting" && atBatBattingHand === null}
                   popupContent={
                     !sessionHeatMapOpen && state.selectedZone
                       ? pitchTypeStepDone ? (
                           <PitchOutcomePopup
                             zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
-                            battingHand={state.mode === "hitting" ? battingPlayerInfo?.batting_hand ?? null : null}
+                            battingHand={state.mode === "hitting" ? atBatBattingHand : null}
                             onPick={handlePitchOutcome}
                             onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
                           />
@@ -1120,8 +1186,25 @@ export function OperatorConsole({
               <RunnerQuickActionMenu
                 base={runnerActionMenu}
                 runner={state.runners[runnerActionMenu]!}
-                onAction={(a) => applyRunnerAction(runnerActionMenu, a)}
+                onAction={(a) => {
+                  // Fix 2: generic "Out" asks why first; every other action
+                  // (including the separate "Picked Off") is unchanged.
+                  if (a === "out") {
+                    setOutReasonPrompt({ base: runnerActionMenu, runner: state.runners[runnerActionMenu]! });
+                    setRunnerActionMenu(null);
+                    return;
+                  }
+                  applyRunnerAction(runnerActionMenu, a);
+                }}
                 onClose={() => setRunnerActionMenu(null)}
+              />
+            )}
+            {outReasonPrompt && (
+              <OutReasonMenu
+                base={outReasonPrompt.base}
+                runner={outReasonPrompt.runner}
+                onSelect={(eventType) => handleRunnerOutWithReason(outReasonPrompt.base, eventType)}
+                onClose={() => setOutReasonPrompt(null)}
               />
             )}
           </div>
@@ -1253,6 +1336,19 @@ export function OperatorConsole({
         />
       )}
 
+      {leaveConfirmOpen && (
+        <ConfirmDialog
+          title="Leave this game?"
+          message="Your progress is saved."
+          confirmLabel="Leave"
+          onConfirm={() => {
+            setLeaveConfirmOpen(false);
+            router.push("/coach");
+          }}
+          onCancel={() => setLeaveConfirmOpen(false)}
+        />
+      )}
+
       {state.mode === "pitching" && state.pitchCountForCurrentPitcher >= 100 && !state.pitchCountAck100 && (
         <PitchCountModal
           count={state.pitchCountForCurrentPitcher}
@@ -1324,6 +1420,36 @@ function CountBlock({ label, value }: { label: string; value: number }) {
 // separate "penalty" flag to track, since none of the pitch-type-keyed
 // stats (Strike Rate by pitch type, etc.) treat a null pitch_type as
 // anything but "excluded from that breakdown," which is already correct.
+// Fix 1/4: two tall thin ovals side by side ("L"/"R") above the strike
+// zone grid, always tappable (not just at at-bat start, per Fix 4) --
+// this is a live per-at-bat override, not a write to the player's
+// profile, so there's no confirmation and no server round-trip either.
+function BatterHandSelector({ value, onChange }: { value: BattingHand | null; onChange: (hand: BattingHand) => void }) {
+  return (
+    <div className="flex w-full max-w-[280px] flex-col items-center gap-1.5">
+      <div className="flex items-center gap-4">
+        <EllipseButton label="L" selected={value === "L"} onClick={() => onChange("L")} />
+        <EllipseButton label="R" selected={value === "R"} onClick={() => onChange("R")} />
+      </div>
+      {value === null && <p className="text-[10px] text-accent-amber">Select batter&apos;s stance to activate the zone</p>}
+    </div>
+  );
+}
+
+function EllipseButton({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={selected}
+      className={`flex h-16 w-9 items-center justify-center rounded-[50%] border-2 text-sm font-bold transition ${
+        selected ? "glow-green border-accent-green bg-accent-green/25 text-white" : "border-border bg-surface text-foreground/40"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 const PITCH_TYPE_POPUP_OPTIONS: { value: PitchType | null; label: string }[] = [
   ...PITCH_TYPES.map((t) => ({ value: t, label: PITCH_TYPE_LABELS[t] })),
   { value: null, label: "Unknown" },
@@ -1617,6 +1743,56 @@ function RunnerQuickActionMenu({
       </div>
       <button onClick={onClose} className="mt-2 w-full text-xs text-foreground/50">
         Close
+      </button>
+    </div>
+  );
+}
+
+// Fix 2: required after a generic "Out" -- "Pickoff" here maps onto the
+// exact same pickoff_out event type the standalone Pickoff wizard (a few
+// fixes back) logs, and "Out on Appeal" maps onto the same
+// tag_up_violation type the post-flyout appeal panel logs -- both are
+// just a second path to an event type that already existed for a
+// narrower trigger, not a new concept.
+const OUT_REASONS: { eventType: GameEventType; label: string }[] = [
+  { eventType: "caught_stealing", label: "Caught Stealing" },
+  { eventType: "pickoff_out", label: "Pickoff" },
+  { eventType: "tag_up_violation", label: "Out on Appeal" },
+  { eventType: "rundown_out", label: "Rundown" },
+  { eventType: "runner_passed", label: "Passed" },
+  { eventType: "out_at_next_base", label: "Out at Next Base" },
+];
+
+function OutReasonMenu({
+  base,
+  runner,
+  onSelect,
+  onClose,
+}: {
+  base: Base;
+  runner: RunnerState;
+  onSelect: (eventType: GameEventType) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="w-full max-w-xs rounded-md border border-accent-red/40 bg-background p-3">
+      <p className="mb-2 text-xs text-foreground/50">
+        {runner.jersey ? `#${runner.jersey} ` : ""}
+        {runner.name} on {base} — out. Why?
+      </p>
+      <div className="grid grid-cols-2 gap-1.5">
+        {OUT_REASONS.map((r) => (
+          <button
+            key={r.eventType}
+            onClick={() => onSelect(r.eventType)}
+            className="min-h-[44px] rounded border border-border px-2 text-xs font-medium text-white hover:border-accent-primary"
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+      <button onClick={onClose} className="mt-2 w-full text-xs text-foreground/50">
+        Cancel
       </button>
     </div>
   );

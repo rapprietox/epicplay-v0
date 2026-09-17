@@ -41,7 +41,12 @@ export type GameEventType =
   | "pickoff_out"
   | "pickoff_attempt"
   | "tag_up_violation"
-  | "intentional_walk";
+  | "intentional_walk"
+  | "stolen_base"
+  | "caught_stealing"
+  | "rundown_out"
+  | "runner_passed"
+  | "out_at_next_base";
 export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";

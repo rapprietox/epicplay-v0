@@ -100,6 +100,7 @@ export function StrikeZoneGrid({
   onTap,
   popupContent,
   flashKey,
+  disabled,
 }: {
   selectedZone: { x: number; y: number } | null;
   lastPitchZone: { x: number; y: number; outcome: PitchOutcome } | null;
@@ -123,6 +124,10 @@ export function StrikeZoneGrid({
   // foul/HBP confirmation. Never bumped for "In Play" -- that transitions
   // straight to the field diagram instead.
   flashKey?: number;
+  // Fix 1 (batter handedness): true while the operator hasn't picked a
+  // stance yet for an unknown batter -- taps are inert and the grid reads
+  // as visually inactive until a stance is chosen.
+  disabled?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const isHeatMap = heatMapPitches !== undefined;
@@ -141,7 +146,7 @@ export function StrikeZoneGrid({
   );
 
   function handleTap(e: React.MouseEvent<HTMLDivElement>) {
-    if (isHeatMap) return;
+    if (isHeatMap || disabled) return;
     const rect = ref.current?.getBoundingClientRect();
     if (!rect || rect.width === 0 || rect.height === 0) return;
     const fracX = (e.clientX - rect.left) / rect.width;
@@ -158,8 +163,11 @@ export function StrikeZoneGrid({
       ref={ref}
       onClick={handleTap}
       role={isHeatMap ? undefined : "button"}
+      aria-disabled={disabled}
       aria-label={isHeatMap ? "Session heat map -- this game's pitch locations" : "Strike zone and ball zones -- tap to mark pitch location"}
-      className={`glossy relative aspect-square w-full max-w-[280px] min-h-[280px] overflow-hidden rounded-md border-2 border-border bg-surface ${isHeatMap ? "" : "cursor-pointer"}`}
+      className={`glossy relative aspect-square w-full max-w-[280px] min-h-[280px] overflow-hidden rounded-md border-2 border-border bg-surface ${
+        isHeatMap ? "" : disabled ? "opacity-40" : "cursor-pointer"
+      }`}
     >
       <svg viewBox={`${EXT_MIN} ${EXT_MIN} ${EXT_SPAN} ${EXT_SPAN}`} preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full">
         {/* Ball-zone ring: translucent red background, immediately
