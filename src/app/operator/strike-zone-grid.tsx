@@ -32,12 +32,19 @@ const THIRDS = [100 / 3, (2 * 100) / 3];
 
 // Fix 2: a 16-cell outer "ball zone" ring around the original 9-cell
 // strike zone -- 3 zones each on the top/bottom/left/right edges plus 4
-// corners (5x5 grid minus the center 3x3 = 16). The ring is deliberately
-// narrower than a strike-zone third ("ball zones ... smaller"), and its
-// coordinates fall outside 0-100 rather than the 0-100 range being
-// redefined -- see the pitches_ball_zone_range migration for why
-// (existing zone_x/zone_y values must keep meaning what they always have).
-const RING = 100 / 6;
+// corners (5x5 grid minus the center 3x3 = 16). Its coordinates fall
+// outside 0-100 rather than the 0-100 range being redefined -- see the
+// pitches_ball_zone_range migration for why (existing zone_x/zone_y
+// values must keep meaning what they always have). RING is the ring's
+// thickness in the same 0-100-scaled units as the strike zone; a later
+// fix widened it from 100/6 to 100/5 -- exactly a 20% increase
+// ((100/5)/(100/6) = 6/5), for bigger tap targets during fast gameplay.
+// Widening it doesn't corrupt any historical data: no shipped feature
+// buckets by "which of the 16 ring cells" yet (only the 9 strike zones
+// are ever aggregated -- zoneIndexFromCoords returns null for anything
+// outside 0-100), so the exact ring-cell center coordinate isn't
+// load-bearing the way the strike zone's own 0-100 meaning is.
+const RING = 100 / 5;
 export const EXT_MIN = -RING;
 const EXT_MAX = 100 + RING;
 const EXT_SPAN = EXT_MAX - EXT_MIN;
@@ -144,25 +151,28 @@ export function StrikeZoneGrid({
       className={`glossy relative aspect-square w-full max-w-[280px] min-h-[280px] overflow-hidden rounded-md border-2 border-border bg-surface ${isHeatMap ? "" : "cursor-pointer"}`}
     >
       <svg viewBox={`${EXT_MIN} ${EXT_MIN} ${EXT_SPAN} ${EXT_SPAN}`} preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full">
-        {/* Ball-zone ring: darker background than the strike zone */}
-        <rect x={EXT_MIN} y={EXT_MIN} width={EXT_SPAN} height={EXT_SPAN} fill="#04120A" />
+        {/* Ball-zone ring: translucent red background, immediately
+            distinct at a glance from the strike zone's green -- per spec. */}
+        <rect x={EXT_MIN} y={EXT_MIN} width={EXT_SPAN} height={EXT_SPAN} fill="rgba(226, 75, 74, 0.15)" />
         <rect x={0} y={0} width={100} height={100} fill="#071A0E" />
 
         {/* Ring cell dividers, continuing the strike-zone column/row
-            boundaries out into the ring -- subtle dashed lines, per spec.
-            DIVIDERS covers all 4 boundary positions (0/33.33/66.67/100)
-            so every ring cell (including corners) gets a full edge. */}
+            boundaries out into the ring -- subtle dashed red lines (not
+            the strike zone's green/dark-green) reinforcing the same
+            distinction. DIVIDERS covers all 4 boundary positions
+            (0/33.33/66.67/100) so every ring cell (including corners)
+            gets a full edge. */}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN} x2={pos} y2={0} stroke="#1A3D28" strokeWidth={0.4} strokeDasharray="1.5,1.5" />
+          <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN} x2={pos} y2={0} stroke="#E24B4A" strokeWidth={0.4} strokeOpacity={0.5} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX} stroke="#1A3D28" strokeWidth={0.4} strokeDasharray="1.5,1.5" />
+          <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX} stroke="#E24B4A" strokeWidth={0.4} strokeOpacity={0.5} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-h-${pos}`} x1={EXT_MIN} y1={pos} x2={0} y2={pos} stroke="#1A3D28" strokeWidth={0.4} strokeDasharray="1.5,1.5" />
+          <line key={`ring-h-${pos}`} x1={EXT_MIN} y1={pos} x2={0} y2={pos} stroke="#E24B4A" strokeWidth={0.4} strokeOpacity={0.5} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX} y2={pos} stroke="#1A3D28" strokeWidth={0.4} strokeDasharray="1.5,1.5" />
+          <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX} y2={pos} stroke="#E24B4A" strokeWidth={0.4} strokeOpacity={0.5} strokeDasharray="1.5,1.5" />
         ))}
 
         {/* Strike-zone interior */}
@@ -181,11 +191,36 @@ export function StrikeZoneGrid({
 
         {/* Strike-zone boundary -- separates it from the ball-zone ring */}
         <rect x={0} y={0} width={100} height={100} fill="none" stroke="#2ECC71" strokeWidth={1} opacity={0.85} />
-      </svg>
 
-      {!isHeatMap && !!flashKey && (
-        <div key={flashKey} className="pitch-flash-overlay pointer-events-none absolute inset-0" style={{ backgroundColor: "#2ECC71" }} />
-      )}
+        {/* Fix 5 (v2): pitch confirmation flash -- a gold-stroked duplicate
+            of the strike zone's own grid lines, laid exactly on top and
+            keyed by flashKey so it remounts (restarting the CSS animation)
+            on every ball/strike/foul/HBP. Only its opacity animates
+            (0->1->0->1->0, see .grid-line-flash in globals.css) -- the
+            real lines underneath are never recolored, so there's no way
+            for this to get "stuck" showing gold. pointer-events: none (via
+            the Tailwind class) so it can never intercept a tap, even
+            mid-flash. Scoped to the strike zone's own lines, not the
+            ball-zone ring's dividers -- those just got their own red
+            styling above and flashing them gold too would muddy that. */}
+        {!isHeatMap && !!flashKey && (
+          <g key={flashKey} className="grid-line-flash pointer-events-none">
+            {INNER_LINES.map((pos) => (
+              <line key={`flash-v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#F0C060" strokeWidth={0.4} />
+            ))}
+            {INNER_LINES.map((pos) => (
+              <line key={`flash-h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#F0C060" strokeWidth={0.4} />
+            ))}
+            {THIRDS.map((pos) => (
+              <line key={`flash-V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#F0C060" strokeWidth={0.8} />
+            ))}
+            {THIRDS.map((pos) => (
+              <line key={`flash-H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#F0C060" strokeWidth={0.8} />
+            ))}
+            <rect x={0} y={0} width={100} height={100} fill="none" stroke="#F0C060" strokeWidth={1} />
+          </g>
+        )}
+      </svg>
 
       {isHeatMap
         ? heatMapPitches

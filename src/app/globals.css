@@ -28,22 +28,41 @@ body {
   box-shadow: 0 0 8px 2px rgba(0, 255, 127, 0.55);
 }
 
-/* Fix 5: strike zone grid confirmation flash on ball/strike/foul/HBP --
-   150ms fade in to 40% opacity, 150ms fade back out, 300ms total. Applied
-   to a fresh element (remounted via a changing `key`) each time so the
-   animation restarts on every pitch instead of needing JS to toggle a
-   class off and back on. */
-@keyframes pitch-flash {
+/* Fix 5 (v2): strike zone grid confirmation flash on ball/strike/foul/HBP
+   -- the grid LINES pulse gold twice (not a solid overlay over the whole
+   background): 0% normal -> 25% gold -> 50% normal -> 75% gold -> 100%
+   normal, two 150ms pulses over 300ms total. Implemented as a gold-
+   stroked duplicate of the grid's own lines, laid exactly on top, whose
+   *opacity* is what actually animates -- the "normal color" state is
+   simply this overlay being invisible, so the real lines underneath are
+   never touched or recolored.
+
+   `opacity: 0` is declared here on the class itself, not just inside the
+   keyframe's 0%/100% stops -- an earlier version only set it inside the
+   keyframe, so once the animation finished, the default
+   `animation-fill-mode: none` made the element revert to its *unanimated*
+   state, which had no opacity rule at all and therefore defaulted to
+   fully opaque (opacity: 1) -- the flash that never went away. Setting
+   the resting opacity here means "animation not running" and "animation
+   just finished" both resolve to the same invisible state. */
+@keyframes grid-line-flash {
   0% {
     opacity: 0;
   }
+  25% {
+    opacity: 1;
+  }
   50% {
-    opacity: 0.4;
+    opacity: 0;
+  }
+  75% {
+    opacity: 1;
   }
   100% {
     opacity: 0;
   }
 }
-.pitch-flash-overlay {
-  animation: pitch-flash 300ms ease-in-out;
+.grid-line-flash {
+  opacity: 0;
+  animation: grid-line-flash 300ms linear;
 }

@@ -855,6 +855,65 @@ the next batter's first pitch starts a new draft at-bat, the appeal
 window has implicitly passed, so there's no need to track a separate
 timeout for it.
 
+## Two more operator-screen fixes: flash rebuild and ball-zone styling
+
+Numbered per this request, not a continuation of the "Fix 1"/"Fix 2"
+labels above (those were a different batch) -- "Fix 1" here is the pitch
+flash, "Fix 2" is the ball-zone ring's color/size.
+
+### Fix 1: the pitch flash was getting stuck visible
+
+**Root cause, confirmed in the CSS, not guessed:** the previous flash
+overlay's `opacity` was only ever set *inside* `@keyframes pitch-flash`
+(0%/100% = 0). `animation-fill-mode` defaults to `none`, which means once
+an animation finishes, the element reverts to whatever it would look like
+*without* the animation applied at all -- and the `.pitch-flash-overlay`
+class itself never declared a resting `opacity`, so that fallback state
+was fully opaque (browsers default to `opacity: 1`). The flash didn't
+"fail to fade out" -- it faded out, the animation ended, and then the
+element snapped right back to opaque green, permanently, because nothing
+told it to rest at 0. This is why the fix now sets `opacity: 0` as the
+class's own base rule (`globals.css`, `.grid-line-flash`), not only inside
+the keyframe -- "not animating" and "just finished animating" both now
+resolve to the same invisible state, so this can't recur.
+
+Redesigned per the new spec at the same time: instead of a solid rect
+over the whole grid, a `<g>` of gold-stroked (`#F0C060`) duplicates of the
+strike zone's own lines (the fine 9x9 `INNER_LINES`, the bold `THIRDS`
+boundary lines, and the zone's boundary `<rect>`) sits exactly on top of
+the real ones inside the same `<svg>`, keyed by `flashKey` so each pitch
+remounts it and restarts the animation. Only that duplicate group's
+*opacity* animates (`0% -> 25% -> 50% -> 75% -> 100%` = `0 -> 1 -> 0 -> 1
+-> 0`, two 150ms pulses) -- the real lines are never recolored or
+touched, so "gold" is really just "the gold duplicate is momentarily
+visible on top." Scoped to the strike zone's own lines, not the
+ball-zone ring's dividers (those got their own red treatment in Fix 2
+below; flashing them gold too would fight that). `pointer-events-none` on
+the `<g>` (per spec) means it can never intercept a tap even mid-flash --
+`handleTap` is bound to the outer div, not this overlay.
+
+### Fix 2: ball-zone ring recolored red, widened 20%
+
+The ring's background rect changed from a flat dark fill (`#04120A`) to
+a translucent red (`rgba(226, 75, 74, 0.15)`), and its dashed dividers
+from the strike zone's own dark green (`#1A3D28`, which read as
+"unstyled" against a red background) to a semi-transparent red
+(`#E24B4A` at 0.5 stroke-opacity) -- reinforcing rather than fighting the
+new background, per "the visual distinction... must be immediately
+obvious at a glance." `RING` (the ring's thickness, in the same
+0-100-scaled units as the strike zone) went from `100/6` to `100/5` --
+`(100/5)/(100/6) = 6/5`, exactly a 20% increase, satisfying "at least
+20% bigger" with a clean fraction rather than an arbitrary multiplier.
+Because the whole grid is one `viewBox` mapped onto a fixed ~280px box,
+widening `RING`'s share of the total coordinate span directly grows the
+ring cells' actual on-screen pixel size too, not just their abstract
+coordinate-space size. Confirmed safe to change without a migration:
+`zoneIndexFromCoords` already returns `null` for anything outside 0-100
+(from the earlier ball-zone fix), and no shipped feature buckets pitches
+by *which* of the 16 ring cells they landed in yet -- so the exact
+ring-cell center coordinate was never load-bearing the way the strike
+zone's own 0-100 meaning is, and moving it costs nothing.
+
 ## Auth flow
 
 1. `/login` -- client component, calls
