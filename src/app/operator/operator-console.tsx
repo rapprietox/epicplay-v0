@@ -15,7 +15,7 @@ import type {
   RunnerState,
   Runners,
 } from "@/lib/supabase/types";
-import { operatorReducer, UNDO_WINDOW_MS, advanceAllRunnersOneBase } from "@/lib/operator/reducer";
+import { operatorReducer, UNDO_WINDOW_MS } from "@/lib/operator/reducer";
 import { advanceOneRunner, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
 import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
 import {
@@ -77,6 +77,11 @@ interface DpWizardState {
   outType: OutType;
   firstFielding?: ResolvedFielder;
 }
+
+// Runner-actions consolidation: the reasons behind "Advance", replacing
+// the standalone Wild Pitch/Passed Ball/Balk/Error (all-runners) buttons
+// and the separate Stolen Base quick action -- see handleAdvanceReason.
+type AdvanceReason = "stolen_base" | "wild_pitch" | "passed_ball" | "balk" | "error" | "passed_on_hit" | "obstruction";
 
 export function OperatorConsole({
   game,
@@ -152,6 +157,11 @@ export function OperatorConsole({
   // "Picked Off" keeps its own unambiguous one-tap path unchanged (see
   // below), this is only for the generic case.
   const [outReasonPrompt, setOutReasonPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
+  // Runner-actions consolidation: "Advance" opens this reason menu instead
+  // of moving the runner immediately; "Error" as a reason needs a second
+  // step (advanceErrorFielding) to pick which fielder before it applies.
+  const [advanceReasonPrompt, setAdvanceReasonPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
+  const [advanceErrorFielding, setAdvanceErrorFielding] = useState<Base | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
@@ -449,80 +459,6 @@ export function OperatorConsole({
     syncRunners({ ...state.runners, [base]: runner });
   }
 
-  async function handleQuickEvent(eventType: "wild_pitch" | "passed_ball" | "balk" | "error") {
-    // Fix 3/6: a wild pitch or passed ball is *always* a ball -- unlike a
-    // balk (runners just advance, count is untouched), it also logs a real
-    // "ball" pitches row (zone/type unknown, no tap happened for it) so
-    // the count survives a reload the same way every other pitch does,
-    // not just a local counter bump that a resume would silently lose.
-    if (eventType === "wild_pitch" || eventType === "passed_ball") {
-      let atBatId: string;
-      try {
-        atBatId = await ensureDraftAtBat();
-      } catch (err) {
-        setBanner(err instanceof Error ? err.message : "Could not start at-bat -- check connection and try again");
-        return;
-      }
-      const pitchNumber = state.pendingPitches.length + 1;
-      const ballsAfter = Math.min(4, state.balls + 1);
-      dispatch({ type: "LOG_PITCH_LOCAL", outcome: "ball", swing: false });
-      void withOfflineRetry(`pitch-${atBatId}-${pitchNumber}`, () =>
-        logPitch({
-          gameId: game.id,
-          atBatId,
-          pitchNumber,
-          pitchType: null,
-          zoneX: null,
-          zoneY: null,
-          outcome: "ball",
-          swing: false,
-          isPitchingMode: state.mode === "pitching",
-        })
-      );
-
-      const advance = advanceAllRunnersOneBase(state.runners);
-      dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", result: advance });
-      const fielder = eventType === "wild_pitch" ? resolve("P") : resolve("C");
-      void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
-        logGameEvent(game.id, {
-          eventType,
-          inning: state.inning,
-          inningHalf: state.inningHalf,
-          mode: state.mode,
-          runsScored: advance.scored.length,
-          playerId: fielder?.playerId ?? null,
-          opponentPlayerId: fielder?.opponentPlayerId ?? null,
-        })
-      );
-
-      // The walk's own force-cascade applies on top of the wild
-      // pitch/passed ball's one-base advance, not the pre-advance runners.
-      if (ballsAfter >= 4) pickResult("walk", advance.runners);
-      return;
-    }
-
-    const result = advanceAllRunnersOneBase(state.runners);
-    dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", result });
-    // Balk is not a ball -- runners just advance, the count is untouched.
-    if (eventType === "balk") setSummaryFlash("Balk — all runners advance");
-    // balk is unambiguously on the pitcher. "error" has no single obvious
-    // fielder here (unlike Fix 6's picker, this all-runners quick action
-    // doesn't ask which position), so it's logged without attribution
-    // rather than guessing one.
-    const fielder = eventType === "balk" ? resolve("P") : null;
-    void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
-      logGameEvent(game.id, {
-        eventType,
-        inning: state.inning,
-        inningHalf: state.inningHalf,
-        mode: state.mode,
-        runsScored: result.scored.length,
-        playerId: fielder?.playerId ?? null,
-        opponentPlayerId: fielder?.opponentPlayerId ?? null,
-      })
-    );
-  }
-
   function applyRunnerAction(base: Base, action: RunnerQuickAction, scoreMethod?: ScoreMethod) {
     const runner = state.runners[base];
     if (!runner) return;
@@ -537,23 +473,11 @@ export function OperatorConsole({
     setRunnerActionMenu(null);
     setScoreMethodPrompt(null);
 
-    if (action === "advance" || action === "stolen_base" || action === "error_advance") {
+    if (action === "advance" || action === "stolen_base") {
       const advanced = advanceOneRunner(state.runners, base);
       syncRunners(advanced.runners);
       if (action === "stolen_base" && runner.type === "player" && runner.id) {
         void withOfflineRetry(`sb-${game.id}-${Date.now()}`, () => logStolenBase(game.id, runner.id!, state.inning));
-      }
-      if (action === "error_advance") {
-        // No fielder picker in this quick action -- logged without
-        // attribution rather than guessing a position.
-        void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
-          logGameEvent(game.id, {
-            eventType: "error",
-            inning: state.inning,
-            inningHalf: state.inningHalf,
-            mode: state.mode,
-          })
-        );
       }
       return;
     }
@@ -592,6 +516,127 @@ export function OperatorConsole({
       // ad-hoc context to credit it to.
       void withOfflineRetry(`score-${game.id}-${Date.now()}`, () => adjustScore(game.id, state.mode, 1));
     }
+  }
+
+  // Shared by every AdvanceReason branch below -- dispatches the same
+  // "advance" action applyRunnerAction's own advance path uses, but
+  // returns the computed AdvanceResult too, so callers can read
+  // .scored.length for a game_events runsScored field without
+  // recomputing advanceOneRunner a second time against stale state.
+  function advanceRunnerWithMethod(base: Base, method: ScoreMethod) {
+    dispatch({ type: "APPLY_RUNNER_ACTION", base, action: "advance", scoreMethod: method });
+    const advanced = advanceOneRunner(state.runners, base);
+    syncRunners(advanced.runners);
+    return advanced;
+  }
+
+  // Consolidated runner-advance flow: tapping "Advance" on a runner opens
+  // AdvanceReasonMenu instead of moving them immediately, and every
+  // standalone all-runners button this replaced (Wild Pitch/Passed
+  // Ball/Balk/Error) now applies to just the one tapped runner instead.
+  // Stolen Base moved here too, off its own RUNNER_QUICK_ACTIONS entry.
+  async function handleAdvanceReason(base: Base, reason: AdvanceReason, fielder?: ResolvedFielder) {
+    if (!state.runners[base]) return;
+    setAdvanceReasonPrompt(null);
+
+    if (reason === "stolen_base") {
+      applyRunnerAction(base, "stolen_base");
+      return;
+    }
+
+    if (reason === "wild_pitch" || reason === "passed_ball") {
+      // Always a ball -- logs a real "ball" pitches row (per the earlier
+      // wild-pitch/passed-ball fix) so the count survives a reload,
+      // rather than a local-only counter bump.
+      let atBatId: string;
+      try {
+        atBatId = await ensureDraftAtBat();
+      } catch (err) {
+        setBanner(err instanceof Error ? err.message : "Could not start at-bat -- check connection and try again");
+        return;
+      }
+      const pitchNumber = state.pendingPitches.length + 1;
+      const ballsAfter = Math.min(4, state.balls + 1);
+      dispatch({ type: "LOG_PITCH_LOCAL", outcome: "ball", swing: false });
+      void withOfflineRetry(`pitch-${atBatId}-${pitchNumber}`, () =>
+        logPitch({
+          gameId: game.id,
+          atBatId,
+          pitchNumber,
+          pitchType: null,
+          zoneX: null,
+          zoneY: null,
+          outcome: "ball",
+          swing: false,
+          isPitchingMode: state.mode === "pitching",
+        })
+      );
+      const advanced = advanceRunnerWithMethod(base, reason);
+      const eventFielder = reason === "wild_pitch" ? resolve("P") : resolve("C");
+      void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType: reason,
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          runsScored: advanced.scored.length,
+          playerId: eventFielder?.playerId ?? null,
+          opponentPlayerId: eventFielder?.opponentPlayerId ?? null,
+        })
+      );
+      // The walk's own force-cascade applies on top of this runner's own
+      // advance, not the pre-advance positions.
+      if (ballsAfter >= 4) pickResult("walk", advanced.runners);
+      return;
+    }
+
+    if (reason === "balk") {
+      // Not a ball -- the count is untouched, only the runner moves.
+      const advanced = advanceRunnerWithMethod(base, "balk");
+      setSummaryFlash("Balk — runner advances");
+      const fielderP = resolve("P");
+      void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType: "balk",
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          runsScored: advanced.scored.length,
+          playerId: fielderP?.playerId ?? null,
+          opponentPlayerId: fielderP?.opponentPlayerId ?? null,
+        })
+      );
+      return;
+    }
+
+    if (reason === "error") {
+      // Unlike the old all-runners Error button and the removed
+      // "Error Advance" quick action, this one now asks which fielder --
+      // AdvanceReasonMenu routes here only after FieldingPositionPicker
+      // has already resolved one.
+      if (!fielder) return;
+      const advanced = advanceRunnerWithMethod(base, "error");
+      void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType: "error",
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          runsScored: advanced.scored.length,
+          playerId: fielder.playerId,
+          opponentPlayerId: fielder.opponentPlayerId,
+        })
+      );
+      return;
+    }
+
+    // "passed_on_hit" (the plain, silent advance the old generic
+    // "Advance" always meant -- still an RBI if it scores the runner,
+    // same as a batted-ball advance always has been) and "obstruction"
+    // (a decreed advance, nobody's batted-ball action -- no RBI, and no
+    // game_events type exists for it, so nothing is logged, same
+    // treatment as "no DB changes" leaves it).
+    advanceRunnerWithMethod(base, reason === "passed_on_hit" ? "hit" : "obstruction");
   }
 
   // Fix 2 (this batch): the out still counts immediately via the same
@@ -649,8 +694,8 @@ export function OperatorConsole({
   // the at-bat -- reuses the same "out" runner-action path (removes the
   // runner, increments outs, which the always-rendered ThreeOutsModal
   // reacts to on its own if this is out #3) and additionally logs its own
-  // game_events row. No fielder picker here (the spec didn't ask for one),
-  // same "log without a guessed attribution" precedent as error_advance.
+  // game_events row. No fielder picker here (the spec didn't ask for one)
+  // -- logged without a guessed attribution rather than assuming one.
   function handleTagUpViolation(base: Base) {
     const runner = state.runners[base];
     setTagUpPrompt(false);
@@ -1189,10 +1234,17 @@ export function OperatorConsole({
                 base={runnerActionMenu}
                 runner={state.runners[runnerActionMenu]!}
                 onAction={(a) => {
-                  // Fix 2: generic "Out" asks why first; every other action
-                  // (including the separate "Picked Off") is unchanged.
+                  // "Out" asks why first; "Advance" now opens the
+                  // consolidated reason menu instead of moving the runner
+                  // immediately -- every other action ("Scored", "Picked
+                  // Off") is unchanged.
                   if (a === "out") {
                     setOutReasonPrompt({ base: runnerActionMenu, runner: state.runners[runnerActionMenu]! });
+                    setRunnerActionMenu(null);
+                    return;
+                  }
+                  if (a === "advance") {
+                    setAdvanceReasonPrompt({ base: runnerActionMenu, runner: state.runners[runnerActionMenu]! });
                     setRunnerActionMenu(null);
                     return;
                   }
@@ -1209,13 +1261,34 @@ export function OperatorConsole({
                 onClose={() => setOutReasonPrompt(null)}
               />
             )}
+            {advanceReasonPrompt && (
+              <AdvanceReasonMenu
+                base={advanceReasonPrompt.base}
+                runner={advanceReasonPrompt.runner}
+                onSelect={(reason) => {
+                  if (reason === "error") {
+                    setAdvanceErrorFielding(advanceReasonPrompt.base);
+                    setAdvanceReasonPrompt(null);
+                    return;
+                  }
+                  void handleAdvanceReason(advanceReasonPrompt.base, reason);
+                }}
+                onClose={() => setAdvanceReasonPrompt(null)}
+              />
+            )}
+            {advanceErrorFielding && (
+              <FieldingPositionPicker
+                title="Who committed the error?"
+                onSelect={(f) => {
+                  setAdvanceErrorFielding(null);
+                  void handleAdvanceReason(advanceErrorFielding, "error", f);
+                }}
+                resolve={resolve}
+              />
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            <QuickButton label="Wild Pitch" onClick={() => void handleQuickEvent("wild_pitch")} />
-            <QuickButton label="Balk" onClick={() => void handleQuickEvent("balk")} />
-            <QuickButton label="Passed Ball" onClick={() => void handleQuickEvent("passed_ball")} />
-            <QuickButton label="Error (all runners)" onClick={() => void handleQuickEvent("error")} />
             <QuickButton
               label="Pickoff"
               onClick={() => setPickoffWizard({ step: "base" })}
@@ -1706,13 +1779,14 @@ function OpponentRunnerInput({
   );
 }
 
+// "Stolen Base" and "Error Advance" were removed from here -- both are
+// now reasons under "Advance" (AdvanceReasonMenu) instead of their own
+// top-level entries, per the runner-actions consolidation.
 const RUNNER_QUICK_ACTIONS: { action: RunnerQuickAction; label: string }[] = [
   { action: "advance", label: "Advance" },
   { action: "scored", label: "Scored" },
   { action: "out", label: "Out" },
-  { action: "stolen_base", label: "Stolen Base" },
   { action: "picked_off", label: "Picked Off" },
-  { action: "error_advance", label: "Error Advance" },
 ];
 
 function RunnerQuickActionMenu({
@@ -1745,6 +1819,54 @@ function RunnerQuickActionMenu({
       </div>
       <button onClick={onClose} className="mt-2 w-full text-xs text-foreground/50">
         Close
+      </button>
+    </div>
+  );
+}
+
+// Runner-actions consolidation: the one place every runner advance now
+// flows through, replacing the standalone Wild Pitch/Passed Ball/Balk/
+// Error (all-runners) buttons and the separate Stolen Base quick action.
+const ADVANCE_REASONS: { value: AdvanceReason; label: string }[] = [
+  { value: "stolen_base", label: "Stolen Base" },
+  { value: "wild_pitch", label: "Wild Pitch" },
+  { value: "passed_ball", label: "Passed Ball" },
+  { value: "balk", label: "Balk" },
+  { value: "error", label: "Error" },
+  { value: "passed_on_hit", label: "Passed on Hit" },
+  { value: "obstruction", label: "Obstruction" },
+];
+
+function AdvanceReasonMenu({
+  base,
+  runner,
+  onSelect,
+  onClose,
+}: {
+  base: Base;
+  runner: RunnerState;
+  onSelect: (reason: AdvanceReason) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="w-full max-w-xs rounded-md border border-accent-primary/40 bg-background p-3">
+      <p className="mb-2 text-xs text-foreground/50">
+        {runner.jersey ? `#${runner.jersey} ` : ""}
+        {runner.name} on {base} advances — why?
+      </p>
+      <div className="grid grid-cols-2 gap-1.5">
+        {ADVANCE_REASONS.map((r) => (
+          <button
+            key={r.value}
+            onClick={() => onSelect(r.value)}
+            className="min-h-[44px] rounded border border-border px-2 text-xs font-medium text-white hover:border-accent-primary"
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+      <button onClick={onClose} className="mt-2 w-full text-xs text-foreground/50">
+        Cancel
       </button>
     </div>
   );

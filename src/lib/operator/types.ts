@@ -10,12 +10,29 @@ import type {
   Runners,
 } from "@/lib/supabase/types";
 
-export type RunnerQuickAction = "advance" | "scored" | "out" | "stolen_base" | "picked_off" | "error_advance";
+// "error_advance" was removed (this batch's runner-actions consolidation)
+// -- an error advance now goes through "advance" with scoreMethod "error"
+// instead of its own action, since a picked fielder is now captured too
+// (see AdvanceReasonMenu in operator-console.tsx), which the old
+// unattributed error_advance path never supported.
+export type RunnerQuickAction = "advance" | "scored" | "out" | "stolen_base" | "picked_off";
 export type Base = "first" | "second" | "third";
 
 // How a runner reached home -- drives RBI eligibility (Fix 1/4). Only "hit",
 // "sac_fly", and "forced_walk_hbp" credit the batter with an RBI.
-export type ScoreMethod = "hit" | "wild_pitch" | "passed_ball" | "balk" | "error" | "sac_fly" | "forced_walk_hbp";
+// "stolen_base"/"obstruction" added for the consolidated Advance-reason
+// menu -- neither is a batted-ball or forced-walk event, so neither
+// should credit an RBI, same reasoning as wild_pitch/passed_ball/balk/error.
+export type ScoreMethod =
+  | "hit"
+  | "wild_pitch"
+  | "passed_ball"
+  | "balk"
+  | "error"
+  | "sac_fly"
+  | "forced_walk_hbp"
+  | "stolen_base"
+  | "obstruction";
 
 export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
   hit: true,
@@ -25,6 +42,8 @@ export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
   passed_ball: false,
   balk: false,
   error: false,
+  stolen_base: false,
+  obstruction: false,
 };
 
 export const SCORE_METHOD_LABELS: Record<ScoreMethod, string> = {
@@ -35,6 +54,8 @@ export const SCORE_METHOD_LABELS: Record<ScoreMethod, string> = {
   error: "Error",
   sac_fly: "Sacrifice fly",
   forced_walk_hbp: "Walk/HBP forced in",
+  stolen_base: "Stolen base",
+  obstruction: "Obstruction",
 };
 
 // wild_pitch/passed_ball/balk/error map onto the existing game_events

@@ -96,7 +96,6 @@ export type OperatorAction =
   | { type: "UNDO_LOCAL" }
   | { type: "CLEAR_LAST_CONFIRMED" }
   | { type: "SET_RUNNER"; base: Base; runner: RunnerState | null }
-  | { type: "ADVANCE_ALL_RUNNERS_LOCAL"; result: { runners: Runners; scored: RunnerState[] } }
   | { type: "SET_PITCHER"; playerId: string | null }
   | { type: "SET_OPPONENT_BATTER_NAME"; name: string }
   | { type: "ACK_PITCH_COUNT"; level: 75 | 85 | 100 }
@@ -104,15 +103,6 @@ export type OperatorAction =
   | { type: "SET_SCORE"; ourScore: number; opponentScore: number }
   | { type: "SET_PANEL"; panel: "substitution" | "endGame" | "postGame"; open: boolean }
   | { type: "MARK_SAVED" };
-
-export function advanceAllRunnersOneBase(runners: Runners): { runners: Runners; scored: RunnerState[] } {
-  const scored: RunnerState[] = [];
-  if (runners.third) scored.push(runners.third);
-  return {
-    runners: { third: runners.second ?? null, second: runners.first ?? null, first: null },
-    scored,
-  };
-}
 
 export function operatorReducer(state: OperatorState, action: OperatorAction): OperatorState {
   switch (action.type) {
@@ -248,9 +238,15 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           dirty: true,
         };
       }
-      // advance / stolen_base / error_advance all move the runner one base
+      // advance / stolen_base move the runner one base. Method defaults to
+      // "hit" (a runner passed up further because of the batter's own
+      // batted ball, awarding an RBI) but the caller can override it --
+      // needed now that "Advance" is the single consolidated entry point
+      // for wild pitch/passed ball/balk/error too, none of which should
+      // award an RBI if they happen to score the runner from 3rd.
       const advanced = advanceOneRunner(state.runners, action.base);
-      const newlyScored: ScoredRunner[] = advanced.scored.map((r) => ({ runner: r, method: "hit" as ScoreMethod }));
+      const method = action.scoreMethod ?? "hit";
+      const newlyScored: ScoredRunner[] = advanced.scored.map((r) => ({ runner: r, method }));
       const nextScored = newlyScored.length > 0 ? [...state.scoredThisAtBat, ...newlyScored] : state.scoredThisAtBat;
       return {
         ...state,
@@ -466,9 +462,6 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
 
     case "SET_RUNNER":
       return { ...state, runners: { ...state.runners, [action.base]: action.runner }, dirty: true };
-
-    case "ADVANCE_ALL_RUNNERS_LOCAL":
-      return { ...state, runners: action.result.runners, dirty: true };
 
     case "SET_PITCHER":
       return { ...state, currentPitcherId: action.playerId, pitchCountForCurrentPitcher: 0, pitchCountAck75: false, pitchCountAck85: false, pitchCountAck100: false, dirty: true };

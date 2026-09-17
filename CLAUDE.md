@@ -1174,6 +1174,75 @@ separate `stolen_bases` table, per the Sprint 2 design; allowing the
 value in this constraint costs nothing and matches the request's own
 SQL verbatim).
 
+## Runner-actions consolidation: everything flows through tapping the runner
+
+The standalone all-runners quick-action buttons (Wild Pitch, Passed Ball,
+Balk, and Error) are gone. Tapping "Advance" on an occupied base now
+opens `AdvanceReasonMenu` ("Why did the runner advance?") instead of
+moving them immediately -- **Stolen Base moved here too**, off its own
+`RUNNER_QUICK_ACTIONS` entry, and **"Error Advance" was removed outright**
+(not folded in as a separate entry) since the new "Error" reason
+subsumes it with a capability it never had: a fielder picker. The
+quick-actions panel is down to Pickoff / Intentional Walk (IBB, a pill
+under the strike zone grid, moved there in an earlier fix) / HBP (same) /
+Substitution.
+
+**One inconsistency in the request, resolved in favor of its own final
+state.** It listed exactly four buttons to remove (Wild Pitch, Passed
+Ball, Balk, Stolen Base) but Stolen Base was never a standalone panel
+button to begin with (only Wild Pitch/Passed Ball/Balk/Error were) --
+and its own "the only buttons remaining should be..." list omits "Error
+(all runners)" from the *keep* list, which means it has to go too even
+though it's absent from the explicit *remove* list. Went with the more
+specific, definitive final-state list: all four all-runners buttons
+(including Error) are gone, and Stolen Base's *actual* prior home (a
+`RUNNER_QUICK_ACTIONS` entry) was removed too, in favor of its new home
+as an Advance reason -- matching the request's evident intent even
+though its own two lists didn't quite agree with each other.
+
+Per-runner behavior for the four folded-in reasons, replacing what the
+all-runners buttons used to do for *every* occupied base at once:
+- **Wild Pitch / Passed Ball**: still always a ball (logs a real `pitches`
+  row exactly like the all-runners version did, for the same
+  reload-survives-a-resume reason -- see the earlier wild-pitch/passed-
+  ball fix), still triggers the walk's own force-cascade on top of this
+  runner's advance if it's ball four. Now scoped to the one tapped
+  runner instead of every base advancing together.
+- **Balk**: still not a ball, count untouched, pitcher-attributed.
+- **Error**: now asks *which fielder* via the existing
+  `FieldingPositionPicker` (reused, not rebuilt) before applying --
+  neither the old all-runners Error button nor the old "Error Advance"
+  quick action ever had a picker; both logged without attribution. This
+  is a genuinely new capability, not just a relocation.
+- **Passed on Hit** / **Obstruction**: two reasons the request added that
+  don't map onto anything that already existed. "Passed on Hit" is
+  exactly what the *old* generic "Advance" already silently did (a
+  runner moving up because of how the batted ball was fielded) --
+  same "hit" scoring method, same RBI-if-it-scores-them behavior, just
+  now with a name. "Obstruction" has no `game_events` type (the request
+  said no database changes, and none exists for this) -- moves the
+  runner silently, same as Passed on Hit, but tagged with a `ScoreMethod`
+  that denies an RBI if it scores them (a decreed advance isn't the
+  batter's doing).
+
+**Incidental correctness fix, needed for the above to actually work:**
+`APPLY_RUNNER_ACTION`'s generic advance branch (`reducer.ts`) hardcoded
+every scored runner's method to `"hit"` regardless of *why* they
+advanced -- harmless before this fix (the only three actions reaching
+that branch were "advance" itself, "stolen_base", and "error_advance,"
+and nobody had checked whether stolen-base/error-advance runs should
+skip the RBI). It stopped being harmless the moment "Advance" became the
+single entry point for wild_pitch/passed_ball/balk/error too, all of
+which must *not* award an RBI when they score a runner from third. Fixed
+by reading `action.scoreMethod ?? "hit"` instead of a hardcoded literal
+-- `applyRunnerAction`/`handleAdvanceReason` already threaded the right
+`ScoreMethod` through the dispatch, the reducer just wasn't listening to
+it yet. Two new `ScoreMethod` values (`stolen_base`, `obstruction`) exist
+purely for this RBI-eligibility bookkeeping -- neither has a
+`SCORE_METHOD_EVENT` mapping (stolen bases log via the separate
+`stolen_bases` table through `logStolenBase`; obstruction logs nothing),
+so this cost zero database changes, consistent with the request.
+
 ## Auth flow
 
 1. `/login` -- client component, calls
