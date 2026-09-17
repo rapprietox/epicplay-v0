@@ -9,10 +9,12 @@ export function FieldDiagram({
   tap: { x: number; y: number } | null;
   onTap: (x: number, y: number) => void;
 }) {
-  const svgRef = useRef<SVGSVGElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
 
-  function handleClick(e: React.MouseEvent<SVGSVGElement>) {
-    const rect = svgRef.current?.getBoundingClientRect();
+  // Unchanged from the old SVG version -- same 0-100 coordinate math, same
+  // rounding, just read off a div's rect instead of an <svg>'s.
+  function handleClick(e: React.MouseEvent<HTMLDivElement>) {
+    const rect = ref.current?.getBoundingClientRect();
     if (!rect) return;
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
@@ -20,29 +22,28 @@ export function FieldDiagram({
   }
 
   return (
-    <svg
-      ref={svgRef}
-      viewBox="0 0 100 100"
+    <div
+      ref={ref}
       onClick={handleClick}
-      className="w-full max-w-[360px] cursor-crosshair rounded-md border border-border bg-background"
+      role="button"
+      aria-label="Field diagram -- tap where the ball landed"
+      className="relative aspect-square w-full max-w-[360px] cursor-crosshair overflow-hidden rounded-md border border-border bg-background"
+      style={{
+        backgroundImage: "url('/field-diagram.jpg')",
+        backgroundSize: "cover",
+        backgroundPosition: "center top",
+      }}
     >
-      {/* Outfield grass */}
-      <path
-        d="M 50 92 L 8 50 A 60 60 0 0 1 92 50 Z"
-        fill="#2D5A1B"
-        stroke="#1A3D28"
-        strokeWidth="0.5"
-      />
-      {/* Infield grass */}
-      <path d="M 50 92 L 28 70 A 32 32 0 0 1 72 70 Z" fill="#3A7A25" />
-      <path d="M 50 92 L 8 50 M 50 92 L 92 50" stroke="#C8F0D5" strokeWidth="0.4" opacity="0.4" />
-      <rect x="35" y="35" width="24" height="24" fill="#A9814B" transform="rotate(45 50 62)" opacity="0.85" />
-      <circle cx="50" cy="62" r="1.6" fill="#C8F0D5" />
-      <path d="M 47.5 92 L 52.5 92 L 52.5 89.5 L 50 87.5 L 47.5 89.5 Z" fill="#C8F0D5" />
+      {/* Subtle dark tint so the gold tap marker below reads clearly
+          against a busy photo background. */}
+      <div className="pointer-events-none absolute inset-0" style={{ background: "rgba(0, 0, 0, 0.15)" }} />
 
       {tap && (
-        <circle cx={tap.x} cy={tap.y} r="2" fill="#F0C060" stroke="#030A06" strokeWidth="0.5" />
+        <span
+          className="pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
+          style={{ left: `${tap.x}%`, top: `${tap.y}%`, backgroundColor: "#F0C060", borderColor: "#030A06" }}
+        />
       )}
-    </svg>
+    </div>
   );
 }

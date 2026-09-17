@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
+import { StadiumBackground } from "@/components/stadium-background";
 import { RosterSection } from "./roster-section";
 import { SeasonImportSection } from "./season-import-section";
 import { NextGamePanel } from "./next-game-panel";
@@ -93,7 +94,8 @@ export default async function CoachPage() {
     });
 
   return (
-    <main className="min-h-screen bg-background px-6 py-8">
+    <main className="min-h-screen px-6 py-8">
+      <StadiumBackground />
       <RealtimeRefresh teamId={teamId} />
       <header className="flex items-center justify-between border-b border-border pb-4">
         <div>

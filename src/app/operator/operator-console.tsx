@@ -58,6 +58,7 @@ import { BaserunnerDiamond } from "./baserunner-diamond";
 import { SubstitutionPanel } from "./substitution-panel";
 import { PitchCountModal } from "./pitch-count-modal";
 import { PostGameSummary } from "./post-game-summary";
+import { StadiumBackground } from "@/components/stadium-background";
 
 type Game = Database["public"]["Tables"]["games"]["Row"];
 type Player = Database["public"]["Tables"]["players"]["Row"];
@@ -830,7 +831,8 @@ export function OperatorConsole({
   const runningAccuracyPercent = Math.round(runningAccuracy(state.accuracyRatioSum, state.accuracyAtBatCount) * 100);
 
   return (
-    <div className="min-h-screen bg-background pb-24 text-foreground">
+    <div className="min-h-screen pb-24 text-foreground">
+      <StadiumBackground />
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="flex rounded-md border border-border p-1 text-xs">
