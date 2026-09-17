@@ -33,9 +33,11 @@ import {
   resultToScoreMethod,
   type Base,
   type RunnerQuickAction,
+  type ScoredRunner,
   type ScoreMethod,
 } from "@/lib/operator/types";
 import { atBatAccuracyRatio, runningAccuracy } from "@/lib/pitch-accuracy";
+import { formatAvg, type BattingLine } from "@/lib/stats";
 import { loadOperatorStateLocal, saveOperatorStateLocal } from "@/lib/operator/local-storage";
 import { withOfflineRetry, onQueueChange, pendingCount } from "@/lib/operator/sync-queue";
 import { buildInitialStateFromServer } from "./initial-state";
@@ -91,6 +93,7 @@ export function OperatorConsole({
   draftAtBat,
   opponentPlayers,
   allGamePitches,
+  seasonBattingLines,
 }: {
   game: Game;
   players: Player[];
@@ -99,6 +102,11 @@ export function OperatorConsole({
   draftAtBat: (AtBat & { pitches: Pitch[] }) | null;
   opponentPlayers: OpponentPlayer[];
   allGamePitches: Pick<Pitch, "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome">[];
+  // Fix 3 layout (batter card "season stats"): keyed by player id, across
+  // every game this team has played, not just this one -- a plain
+  // object (not a Map) since that's what survives the RSC server ->
+  // client prop serialization boundary cleanly.
+  seasonBattingLines: Record<string, BattingLine>;
 }) {
   const router = useRouter();
   // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
@@ -162,6 +170,14 @@ export function OperatorConsole({
   // step (advanceErrorFielding) to pick which fielder before it applies.
   const [advanceReasonPrompt, setAdvanceReasonPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
   const [advanceErrorFielding, setAdvanceErrorFielding] = useState<Base | null>(null);
+  // Fix 1: the ordered (third -> second -> first) queue of pre-existing
+  // runners still awaiting an explicit hit-confirmation decision.
+  // hitRunnerConfirmActive distinguishes "queue legitimately empty because
+  // there were no runners to ask about" from "queue just drained" -- only
+  // the latter should place the batter (see the useEffect above).
+  const [hitRunnerConfirmActive, setHitRunnerConfirmActive] = useState(false);
+  const [hitRunnerQueue, setHitRunnerQueue] = useState<Base[]>([]);
+  const [hitRunnerNoStep, setHitRunnerNoStep] = useState(false);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
@@ -333,6 +349,15 @@ export function OperatorConsole({
     if (hitType === "hr" && state.pendingHitType !== hitType) pickResult("hr");
   }
 
+  // Fix 1: single/double/triple/HR never auto-score or auto-advance a
+  // pre-existing runner -- every one of them gets an explicit "did they
+  // score?" decision (handleHitRunnerDecision) instead of accepting
+  // suggestRunnerAdvance's guess. Scoped to hits specifically, per the
+  // request; walk/hbp/error/fc/outs keep the existing suggest-then-review
+  // mechanism below unchanged (those already show a reviewable, not
+  // silently-applied, suggestion).
+  const HIT_RESULTS_NEED_RUNNER_CONFIRM = new Set<AtBatResult>(["single", "double", "triple", "hr"]);
+
   // baseRunners defaults to the current state, but Fix 3/6 (wild
   // pitch/passed ball landing as the 4th ball) needs to compute the
   // resulting walk's force-cascade on top of runners already moved by the
@@ -343,6 +368,23 @@ export function OperatorConsole({
       setDpWizard({ step: "runner", outType: "force" });
       return;
     }
+
+    if (HIT_RESULTS_NEED_RUNNER_CONFIRM.has(result)) {
+      const preExisting = (["third", "second", "first"] as Base[]).filter((b) => baseRunners[b]);
+      if (preExisting.length > 0) {
+        // Mark the result decided (so the flow moves past "result") but
+        // leave runners/scored exactly as they are -- the queue below is
+        // what's now solely responsible for changing either, one runner
+        // at a time, and the batter isn't placed until it drains (placing
+        // them now could collide with a not-yet-resolved runner sitting
+        // on the batter's own target base).
+        dispatch({ type: "SET_RESULT", result, suggestion: baseRunners, scored: [], hasMovement: false });
+        setHitRunnerConfirmActive(true);
+        setHitRunnerQueue(preExisting);
+        return;
+      }
+    }
+
     const batter = currentBatterRunner();
     const { runners: suggestion, scored } = suggestRunnerAdvance(baseRunners, batter, result);
     const method = resultToScoreMethod(result);
@@ -351,6 +393,59 @@ export function OperatorConsole({
     dispatch({ type: "SET_RESULT", result, suggestion, scored: taggedScored, hasMovement });
     if (hasMovement) syncRunners(suggestion);
   }
+
+  // Where the batter ends up for a hit -- HR scores them, everything else
+  // is a fixed base. Not ambiguous, so never goes through the queue.
+  function battersTargetBase(result: AtBatResult): Base | "home" {
+    if (result === "single") return "first";
+    if (result === "double") return "second";
+    if (result === "triple") return "third";
+    return "home";
+  }
+
+  // One runner's explicit decision from the hitRunners queue.
+  function handleHitRunnerDecision(base: Base, decision: "scored" | "stay" | "advance") {
+    const runner = state.runners[base];
+    setHitRunnerNoStep(false);
+    setHitRunnerQueue((q) => q.filter((b) => b !== base));
+    if (!runner) return;
+
+    if (decision === "stay") return;
+
+    if (decision === "scored") {
+      const nextRunners = { ...state.runners, [base]: null };
+      dispatch({ type: "APPLY_HIT_RUNNER_DECISION", runners: nextRunners, scoredAdd: [{ runner, method: "hit" }] });
+      syncRunners(nextRunners);
+      return;
+    }
+
+    // advance one base (never offered for third -- that's "scored" instead)
+    const advanced = advanceOneRunner(state.runners, base);
+    const scoredAdd: ScoredRunner[] = advanced.scored.map((r) => ({ runner: r, method: "hit" as ScoreMethod }));
+    dispatch({ type: "APPLY_HIT_RUNNER_DECISION", runners: advanced.runners, scoredAdd });
+    syncRunners(advanced.runners);
+  }
+
+  // Fires once every pre-existing runner has an explicit decision --
+  // places the batter (deterministic, no question needed) and flips on
+  // the same "Confirm & Continue" review step every other result already
+  // gets, so a hit's RBI count is never final without one last explicit
+  // tap. Runs as an effect (not inline in handleHitRunnerDecision) so it
+  // reads state.runners/scoredThisAtBat *after* React has committed the
+  // last decision's dispatch, not a stale same-tick snapshot.
+  useEffect(() => {
+    if (!hitRunnerConfirmActive || hitRunnerQueue.length > 0) return;
+    setHitRunnerConfirmActive(false);
+    const result = state.suggestedResult;
+    if (!result) return;
+    const batter = currentBatterRunner();
+    const targetBase = battersTargetBase(result);
+    const finalRunners = targetBase === "home" ? state.runners : { ...state.runners, [targetBase]: batter };
+    const finalScored = targetBase === "home" ? [...state.scoredThisAtBat, { runner: batter, method: "hit" as ScoreMethod }] : state.scoredThisAtBat;
+    dispatch({ type: "SET_RESULT", result, suggestion: finalRunners, scored: finalScored, hasMovement: true });
+    syncRunners(finalRunners);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hitRunnerQueue.length, hitRunnerConfirmActive]);
 
   async function handleConfirm() {
     const result = state.suggestedResult;
@@ -819,18 +914,20 @@ export function OperatorConsole({
   // tracked before this fix (awaitingResult/suggestedResult/fieldTap/
   // pendingHitType/pendingFielding/runnersPendingConfirmation) -- this is
   // purely a view-layer derivation, no new state machine was needed.
-  type FlowStep = "pitch" | "field" | "hitType" | "result" | "fielding" | "runnerConfirm";
-  const flowStep: FlowStep = !state.awaitingResult
-    ? "pitch"
-    : state.suggestedResult === null
-      ? !state.fieldTap
-        ? "field"
-        : !state.pendingHitType
-          ? "hitType"
-          : "result"
-      : showFieldingPicker
-        ? "fielding"
-        : "runnerConfirm";
+  type FlowStep = "pitch" | "field" | "hitType" | "result" | "hitRunners" | "fielding" | "runnerConfirm";
+  const flowStep: FlowStep = hitRunnerQueue.length > 0
+    ? "hitRunners"
+    : !state.awaitingResult
+      ? "pitch"
+      : state.suggestedResult === null
+        ? !state.fieldTap
+          ? "field"
+          : !state.pendingHitType
+            ? "hitType"
+            : "result"
+        : showFieldingPicker
+          ? "fielding"
+          : "runnerConfirm";
 
   // Once nothing is left to fill in, confirm automatically instead of
   // making the operator tap a separate "Confirm At-Bat" button -- walks,
@@ -875,350 +972,311 @@ export function OperatorConsole({
 
   const runningAccuracyPercent = Math.round(runningAccuracy(state.accuracyRatioSum, state.accuracyAtBatCount) * 100);
 
+  // Fix 3 layout: the right panel shows exactly one thing at a time in
+  // its middle slot -- a runner-related popup (highest priority, since
+  // those need an explicit answer before anything else matters), an
+  // active "what happened after contact" flow step, or the diamond as
+  // the resting default. This replaces the old design's two *simultaneous*
+  // panels (flow steps on the left, diamond+popups always visible on the
+  // right) with one that never shows two conflicting things at once,
+  // which is also what makes a strict two-panel, no-scroll layout
+  // possible -- there's nowhere to put a second simultaneous panel.
+  type RightPanelMode =
+    | "tagUp"
+    | "runnerPicker"
+    | "runnerAction"
+    | "outReason"
+    | "advanceReason"
+    | "advanceError"
+    | "flow"
+    | "diamond";
+  const FLOW_STEPS_IN_RIGHT_PANEL = new Set<FlowStep>(["field", "hitType", "result", "hitRunners", "fielding", "runnerConfirm"]);
+  const rightPanelMode: RightPanelMode = tagUpPrompt
+    ? "tagUp"
+    : runnerPicker
+      ? "runnerPicker"
+      : runnerActionMenu
+        ? "runnerAction"
+        : outReasonPrompt
+          ? "outReason"
+          : advanceReasonPrompt
+            ? "advanceReason"
+            : advanceErrorFielding
+              ? "advanceError"
+              : FLOW_STEPS_IN_RIGHT_PANEL.has(flowStep)
+                ? "flow"
+                : "diamond";
+
+  const battingHandBadge = atBatBattingHand ?? battingPlayerInfo?.batting_hand ?? "R";
+
   return (
-    <div className="min-h-screen pb-24 text-foreground">
+    <div className="fixed inset-0 flex flex-col overflow-hidden text-foreground">
       <StadiumBackground />
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="flex rounded-md border border-border p-1 text-xs">
-            {(["hitting", "pitching"] as const).map((m) => (
-              <button
-                key={m}
-                onClick={() => dispatch({ type: "SET_MODE", mode: m })}
-                className={`rounded px-4 py-1.5 font-semibold uppercase tracking-wide transition ${
-                  state.mode === m ? "bg-accent-primary text-white" : "text-foreground/50"
-                }`}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-          <p className="font-heading text-2xl font-bold text-white">
-            {state.inningHalf === "top" ? "Top" : "Bot"} {state.inning}
-          </p>
+
+      {/* TOP BAR -- 52px, always visible */}
+      <header className="z-10 flex h-[52px] shrink-0 items-center justify-between gap-2 border-b-2 border-accent-primary/40 bg-surface/90 px-3">
+        <div className="flex rounded-md border border-border p-1 text-xs">
+          {(["hitting", "pitching"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => dispatch({ type: "SET_MODE", mode: m })}
+              className={`min-h-[36px] rounded px-3 font-heading font-semibold uppercase tracking-wide transition ${
+                state.mode === m
+                  ? m === "hitting"
+                    ? "bg-accent-green text-background"
+                    : "bg-accent-amber text-background"
+                  : "text-foreground/50"
+              }`}
+            >
+              {m}
+            </button>
+          ))}
         </div>
-        <div className="flex items-center gap-4">
-          {state.accuracyAtBatCount > 0 && (
-            <span className={`text-xs ${runningAccuracyPercent < 70 ? "text-accent-amber" : "text-foreground/50"}`}>
-              Logging: {runningAccuracyPercent}% accurate
-            </span>
-          )}
-          {pendingSync > 0 && (
-            <span className="rounded-full bg-accent-amber/20 px-3 py-1 text-xs text-accent-amber">
-              {pendingSync} syncing…
-            </span>
-          )}
-          <p className="font-heading text-xl font-bold text-white">
-            {game.home_away === "home" ? game.opponent_name : "Us"}{" "}
-            <span className="text-accent-green">{state.opponentScore}</span> &ndash;{" "}
-            <span className="text-accent-green">{state.ourScore}</span>{" "}
-            {game.home_away === "home" ? "Us" : game.opponent_name}
-          </p>
-          <button
-            onClick={() => setLeaveConfirmOpen(true)}
-            className="text-xs text-foreground/40 hover:text-white"
-          >
+
+        <p className="font-heading truncate text-sm font-bold text-white">
+          {state.inningHalf === "top" ? "Top" : "Bot"} {state.inning}
+          <span className="mx-1.5 text-foreground/30">·</span>
+          {game.home_away === "home" ? game.opponent_name : "Us"} <span className="text-accent-green">{state.opponentScore}</span>
+          {" – "}
+          <span className="text-accent-green">{state.ourScore}</span> {game.home_away === "home" ? "Us" : game.opponent_name}
+        </p>
+
+        <div className="flex items-center gap-3">
+          <div className="font-heading flex items-baseline gap-1 text-2xl font-bold leading-none">
+            <span className="text-accent-green">{state.balls}</span>
+            <span className="text-sm text-foreground/30">·</span>
+            <span className="text-accent-red">{state.strikes}</span>
+            <span className="text-sm text-foreground/30">·</span>
+            <span className="text-accent-amber">{state.outs}</span>
+          </div>
+          <button onClick={() => setLeaveConfirmOpen(true)} className="min-h-[36px] px-1 text-[10px] text-foreground/40 hover:text-white">
             ← Dashboard
           </button>
         </div>
       </header>
 
-      <BoxScoreDashboard state={state} />
+      {/* Transient/occasional banners float over the top of the panels
+          instead of reserving permanent height for something usually not
+          shown -- the 52px/48px top/bottom bars leave no room to spare. */}
+      <div className="pointer-events-none absolute inset-x-0 top-[52px] z-20 flex flex-col items-center gap-1 px-2 pt-1">
+        {summaryFlash && (
+          <div className="glossy pointer-events-auto rounded-md border border-accent-green/50 bg-accent-green/15 px-3 py-1 text-center">
+            <p className="font-heading text-xs font-semibold text-accent-green">{summaryFlash}</p>
+          </div>
+        )}
+        {pendingSync > 0 && (
+          <span className="pointer-events-auto rounded-full bg-accent-amber/20 px-3 py-1 text-[10px] text-accent-amber">{pendingSync} syncing…</span>
+        )}
+        {state.showLowAccuracyWarning && (
+          <div className="pointer-events-auto rounded-md bg-accent-amber/15 px-3 py-1 text-[10px] text-accent-amber">Low pitch detail — heat map accuracy is reduced</div>
+        )}
+        {state.mode === "pitching" && state.pitchCountForCurrentPitcher >= 85 && (
+          <div className="pointer-events-auto rounded-md bg-accent-red/15 px-3 py-1 text-[10px] font-semibold text-accent-red">High pitch count</div>
+        )}
+        {state.mode === "pitching" && state.pitchCountForCurrentPitcher >= 75 && state.pitchCountForCurrentPitcher < 85 && (
+          <div className="pointer-events-auto rounded-md bg-accent-amber/15 px-3 py-1 text-[10px] font-semibold text-accent-amber">Approaching pitch limit</div>
+        )}
+        {banner && <div className="pointer-events-auto rounded-md bg-accent-red/15 px-3 py-1 text-[10px] text-accent-red">{banner}</div>}
+      </div>
 
-      {state.showLowAccuracyWarning && (
-        <div className="bg-accent-amber/10 px-4 py-2 text-center text-xs text-accent-amber">
-          Low pitch detail — heat map accuracy is reduced
-        </div>
-      )}
-      {state.mode === "pitching" && state.pitchCountForCurrentPitcher >= 85 && (
-        <div className="bg-accent-red/10 px-4 py-2 text-center text-xs font-semibold text-accent-red">
-          High pitch count
-        </div>
-      )}
-      {state.mode === "pitching" && state.pitchCountForCurrentPitcher >= 75 && state.pitchCountForCurrentPitcher < 85 && (
-        <div className="bg-accent-amber/10 px-4 py-2 text-center text-xs font-semibold text-accent-amber">
-          Approaching pitch limit
-        </div>
-      )}
-      {banner && <div className="bg-accent-red/10 px-4 py-2 text-center text-xs text-accent-red">{banner}</div>}
+      {/* TWO EQUAL HALVES is the tablet layout (>=768px, grid-cols-2, per
+          spec); below that the panels stack as two equal-height rows
+          instead -- fitting a 320px-minimum zone plus flanking ellipses
+          inside a genuine 50%-of-390px column is not achievable (roughly
+          420px needed just for that row's tap-target minimums), so
+          "emergency fallback" gets each panel the full viewport width and
+          half the height instead of a half-width column. grid-rows-2
+          (equal 1fr rows) keeps one panel's overflow from starving the
+          other's visible space when stacked -- overflow-hidden alone,
+          without an explicit row size, lets row content grow to whatever
+          it needs and only clips the *combined* result. */}
+      <div className="grid flex-1 grid-cols-1 grid-rows-2 overflow-hidden md:grid-cols-2 md:grid-rows-1">
+        {/* LEFT PANEL -- pitching/hitting the ball. Nothing else. */}
+        <div className="flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
+          <div className="flex shrink-0 items-center justify-between">
+            <p className="text-[10px] uppercase tracking-wide text-foreground/40">
+              {sessionHeatMapOpen ? "Session heat map" : "Strike zone — tap to log a pitch"}
+            </p>
+            <button
+              onClick={() => setSessionHeatMapOpen((v) => !v)}
+              className="min-h-[32px] rounded-full border border-border px-2.5 text-[10px] font-medium text-foreground/70 hover:border-accent-primary hover:text-white"
+            >
+              {sessionHeatMapOpen ? "Back to Logging" : "Heat Map"}
+            </button>
+          </div>
 
-      <div className="grid grid-cols-1 gap-6 p-4 md:grid-cols-2">
-        {/* LEFT COLUMN -- the sequential pitch-logging conversation */}
-        <div className="flex flex-col gap-4">
-          <div className="glossy glow-green rounded-lg border border-accent-primary/40 bg-card p-4">
+          {/* L ellipse / zone / R ellipse -- this row is the dominant
+              element of the panel, per spec ("takes up 70% of panel
+              height"); flex-1 gives it whatever's left after the two
+              slim header/footer rows above and below it. */}
+          <div className="flex flex-1 items-center justify-center gap-2 overflow-hidden py-1">
+            {state.mode === "hitting" && !sessionHeatMapOpen ? (
+              <EllipseButton label="L" selected={atBatBattingHand === "L"} onClick={() => setAtBatBattingHand("L")} />
+            ) : (
+              <div className="w-9 shrink-0" />
+            )}
+            <div className="flex h-full flex-1 items-center justify-center overflow-hidden">
+              <StrikeZoneGrid
+                selectedZone={state.selectedZone}
+                lastPitchZone={state.lastPitchZone}
+                pendingPitches={state.pendingPitches}
+                heatMapPitches={sessionHeatMapOpen ? state.gamePitchLog : undefined}
+                onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
+                flashKey={flashKey}
+                disabled={flowStep !== "pitch" || (!sessionHeatMapOpen && state.mode === "hitting" && atBatBattingHand === null)}
+                popupContent={
+                  !sessionHeatMapOpen && state.selectedZone
+                    ? pitchTypeStepDone ? (
+                        <PitchOutcomePopup
+                          zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
+                          battingHand={state.mode === "hitting" ? atBatBattingHand : null}
+                          onPick={handlePitchOutcome}
+                          onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                        />
+                      ) : (
+                        <PitchTypePopup
+                          onPick={(t) => {
+                            dispatch({ type: "SELECT_PITCH_TYPE", pitchType: t });
+                            setPitchTypeStepDone(true);
+                          }}
+                          onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                        />
+                      )
+                    : undefined
+                }
+              />
+            </div>
+            {state.mode === "hitting" && !sessionHeatMapOpen ? (
+              <EllipseButton label="R" selected={atBatBattingHand === "R"} onClick={() => setAtBatBattingHand("R")} />
+            ) : (
+              <div className="w-9 shrink-0" />
+            )}
+          </div>
+
+          {state.mode === "hitting" && !sessionHeatMapOpen && atBatBattingHand === null && (
+            <p className="shrink-0 truncate text-center text-[10px] text-accent-amber">Select batter&apos;s stance to activate the zone</p>
+          )}
+          {sessionHeatMapOpen ? (
+            <div className="flex shrink-0 flex-wrap justify-center gap-3 text-[10px] text-foreground/50">
+              <LegendDot color="#24A058" label="Ball" />
+              <LegendDot color="#E24B4A" label="Strike" />
+              <LegendDot color="#EF9F27" label="Foul" />
+            </div>
+          ) : (
+            state.pendingPitches.length > 0 && (
+              <p className="shrink-0 truncate text-center text-[10px] text-foreground/50">
+                {state.pendingPitches
+                  .map((p, i) => `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`)
+                  .join(", ")}
+              </p>
+            )
+          )}
+
+          {!sessionHeatMapOpen && (
+            <div className="mt-1 flex shrink-0 justify-center gap-2">
+              <button
+                onClick={() => setIbbConfirmOpen(true)}
+                className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
+                style={{ borderColor: "#EF9F27", color: "#EF9F27" }}
+              >
+                IBB
+              </button>
+              <button
+                onClick={() => void handleDirectHbp()}
+                className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
+                style={{ borderColor: "#FF4444", color: "#FF4444" }}
+              >
+                HBP
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT PANEL -- what happens after contact. */}
+        <div className="flex flex-col overflow-hidden p-2">
+          {/* Current batter card */}
+          <div className="glossy flex shrink-0 items-center gap-3 rounded-lg border-l-4 border-accent-green bg-card p-2.5">
             {state.mode === "hitting" ? (
               <>
-                <p className="text-xs uppercase tracking-wide text-foreground/40">
-                  Batting {state.battingOrderPosition} of 9
-                </p>
-                <p className="font-heading flex items-baseline gap-2 text-3xl font-bold text-white">
-                  {battingPlayerInfo ? `#${battingPlayerInfo.jersey_number ?? "—"} ${battingPlayerInfo.name}` : "—"}
-                  {battingPlayerInfo && (
-                    <span className="rounded border border-accent-primary/50 px-1.5 py-0.5 text-xs font-semibold text-accent-primary">
-                      {battingPlayerInfo.batting_hand ?? "R"}
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 border-accent-gold bg-surface font-heading text-lg font-bold text-white">
+                  {battingPlayerInfo?.jersey_number ?? "—"}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-heading truncate text-[22px] font-bold leading-tight text-accent-gold">
+                    {battingPlayerInfo?.name ?? "—"}
+                  </p>
+                  <div className="flex items-center gap-2 text-[11px] text-foreground/60">
+                    <span>
+                      #{battingPlayerInfo?.jersey_number ?? "—"} · {battingPlayerInfo?.position ?? "—"}
                     </span>
+                    <span className="rounded border border-accent-primary/50 px-1 text-[10px] font-semibold text-accent-primary">
+                      {battingHandBadge}
+                    </span>
+                  </div>
+                  {battingPlayerInfo && seasonBattingLines[battingPlayerInfo.id] && (
+                    <p className="font-mono text-[10px] text-foreground/50">
+                      AVG {formatAvg(seasonBattingLines[battingPlayerInfo.id].avg)} · HR {seasonBattingLines[battingPlayerInfo.id].hr} · RBI{" "}
+                      {seasonBattingLines[battingPlayerInfo.id].rbi}
+                    </p>
                   )}
-                </p>
+                </div>
               </>
             ) : (
-              <>
-                <p className="text-xs uppercase tracking-wide text-foreground/40">Opposing batter</p>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] uppercase tracking-wide text-foreground/40">Opposing batter</p>
                 <input
                   value={state.opponentBatterName}
                   onChange={(e) => dispatch({ type: "SET_OPPONENT_BATTER_NAME", name: e.target.value })}
                   list="opponent-batters"
                   placeholder="Type or select name"
-                  className="font-heading w-full border-b border-border bg-transparent text-3xl font-bold text-white outline-none focus:border-accent-primary"
+                  className="font-heading w-full border-b border-border bg-transparent text-lg font-bold text-accent-gold outline-none focus:border-accent-primary"
                 />
                 <datalist id="opponent-batters">
                   {opponentPlayers.map((p) => (
                     <option key={p.id} value={p.name} />
                   ))}
                 </datalist>
-                <div className="mt-3 flex items-center justify-between text-xs">
+                <div className="mt-1 flex items-center justify-between text-[10px]">
                   <button onClick={() => setPitcherPickerOpen(true)} className="text-accent-primary hover:underline">
                     Pitcher: {currentPitcher ? currentPitcher.name : "Select…"}
                   </button>
                   <span className={pitchCountColor}>
-                    {state.pendingPitches.length} this at-bat · {state.pitchCountForCurrentPitcher} total
+                    {state.pendingPitches.length} this AB · {state.pitchCountForCurrentPitcher} total
                   </span>
                 </div>
-              </>
+              </div>
             )}
           </div>
 
-          <div className="glossy grid grid-cols-3 gap-3 rounded-lg border border-border bg-surface p-4 text-center">
-            <CountBlock label="Balls" value={state.balls} />
-            <CountBlock label="Strikes" value={state.strikes} />
-            <CountBlock label="Outs" value={state.outs} />
-          </div>
-
-          {summaryFlash && (
-            <div className="glossy rounded-lg border border-accent-green/50 bg-accent-green/10 px-4 py-2 text-center">
-              <p className="font-heading text-sm font-semibold text-accent-green">{summaryFlash}</p>
-            </div>
-          )}
-
-          {tagUpPrompt && (
-            <div className="glossy rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
-              <p className="text-xs text-accent-amber">Did any runner leave early and get thrown out?</p>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {(["first", "second", "third"] as Base[])
-                  .filter((b) => state.runners[b])
-                  .map((b) => (
-                    <button
-                      key={b}
-                      onClick={() => handleTagUpViolation(b)}
-                      className="min-h-[40px] rounded-md border border-accent-amber/60 px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-amber/20"
-                    >
-                      {state.runners[b]!.name} ({b}) — Out, left early
-                    </button>
-                  ))}
-                <button
-                  onClick={() => setTagUpPrompt(false)}
-                  className="min-h-[40px] rounded-md border border-border px-3 py-1.5 text-xs text-foreground/60"
-                >
-                  No
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div key={flowStep} className="flex flex-col items-center gap-3 transition-opacity duration-200">
-            {flowStep === "pitch" && (
-              <>
-                <div className="flex w-full max-w-[280px] items-center justify-between">
-                  <p className="text-xs uppercase tracking-wide text-foreground/40">
-                    {sessionHeatMapOpen ? "Session heat map" : "Strike zone — tap to log a pitch"}
-                  </p>
+          {/* Middle: exactly one of a runner popup / active flow step /
+              the diamond -- see rightPanelMode above. */}
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 overflow-hidden py-1">
+            {rightPanelMode === "tagUp" && (
+              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
+                <p className="text-xs text-accent-amber">Did any runner leave early and get thrown out?</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {(["first", "second", "third"] as Base[])
+                    .filter((b) => state.runners[b])
+                    .map((b) => (
+                      <button
+                        key={b}
+                        onClick={() => handleTagUpViolation(b)}
+                        className="min-h-[40px] rounded-md border border-accent-amber/60 px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-amber/20"
+                      >
+                        {state.runners[b]!.name} ({b}) — Out, left early
+                      </button>
+                    ))}
                   <button
-                    onClick={() => setSessionHeatMapOpen((v) => !v)}
-                    className="rounded-full border border-border px-3 py-1 text-[11px] font-medium text-foreground/70 hover:border-accent-primary hover:text-white"
+                    onClick={() => setTagUpPrompt(false)}
+                    className="min-h-[40px] rounded-md border border-border px-3 py-1.5 text-xs text-foreground/60"
                   >
-                    {sessionHeatMapOpen ? "Back to Logging" : "Session Heat Map"}
+                    No
                   </button>
                 </div>
-
-                {state.mode === "hitting" && !sessionHeatMapOpen && (
-                  <BatterHandSelector value={atBatBattingHand} onChange={setAtBatBattingHand} />
-                )}
-
-                <StrikeZoneGrid
-                  selectedZone={state.selectedZone}
-                  lastPitchZone={state.lastPitchZone}
-                  pendingPitches={state.pendingPitches}
-                  heatMapPitches={sessionHeatMapOpen ? state.gamePitchLog : undefined}
-                  onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
-                  flashKey={flashKey}
-                  disabled={!sessionHeatMapOpen && state.mode === "hitting" && atBatBattingHand === null}
-                  popupContent={
-                    !sessionHeatMapOpen && state.selectedZone
-                      ? pitchTypeStepDone ? (
-                          <PitchOutcomePopup
-                            zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
-                            battingHand={state.mode === "hitting" ? atBatBattingHand : null}
-                            onPick={handlePitchOutcome}
-                            onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
-                          />
-                        ) : (
-                          <PitchTypePopup
-                            onPick={(t) => {
-                              dispatch({ type: "SELECT_PITCH_TYPE", pitchType: t });
-                              setPitchTypeStepDone(true);
-                            }}
-                            onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
-                          />
-                        )
-                      : undefined
-                  }
-                />
-
-                {sessionHeatMapOpen ? (
-                  <div className="flex w-full max-w-[280px] flex-wrap justify-center gap-3 text-[11px] text-foreground/50">
-                    <LegendDot color="#24A058" label="Ball" />
-                    <LegendDot color="#E24B4A" label="Strike" />
-                    <LegendDot color="#EF9F27" label="Foul" />
-                  </div>
-                ) : (
-                  state.pendingPitches.length > 0 && (
-                    <p className="w-full max-w-[280px] text-xs leading-relaxed text-foreground/50">
-                      {state.pendingPitches
-                        .map(
-                          (p, i) =>
-                            `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`
-                        )
-                        .join(", ")}
-                    </p>
-                  )
-                )}
-
-                {!sessionHeatMapOpen && (
-                  <div className="flex w-full max-w-[280px] justify-center gap-2">
-                    <button
-                      onClick={() => setIbbConfirmOpen(true)}
-                      className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
-                      style={{ borderColor: "#EF9F27", color: "#EF9F27" }}
-                    >
-                      IBB — Intentional Walk
-                    </button>
-                    <button
-                      onClick={() => void handleDirectHbp()}
-                      className="min-h-[36px] rounded-full border border-border px-3 text-xs font-semibold text-foreground/70 transition hover:border-accent-primary hover:text-white"
-                    >
-                      HBP
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-
-            {flowStep === "field" && (
-              <>
-                <p className="font-heading text-center text-lg font-bold text-white">Tap where the ball landed</p>
-                <FieldDiagram tap={state.fieldTap} onTap={(x, y) => dispatch({ type: "SET_FIELD_TAP", x, y })} />
-              </>
-            )}
-
-            {flowStep === "hitType" && (
-              <div className="w-full max-w-[320px]">
-                <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">What kind of hit?</p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {(Object.keys(HIT_TYPE_LABELS) as HitType[]).map((ht) => (
-                    <button
-                      key={ht}
-                      onClick={() => handleHitTypeTap(ht)}
-                      className="min-h-[48px] rounded-full border-2 border-accent-primary px-4 text-sm font-semibold text-white transition hover:bg-accent-primary/20"
-                    >
-                      {HIT_TYPE_LABELS[ht]}
-                    </button>
-                  ))}
-                </div>
               </div>
             )}
 
-            {flowStep === "result" && state.pendingHitType && (
-              <div className="w-full max-w-[320px]">
-                <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">
-                  {HIT_TYPE_LABELS[state.pendingHitType]} — result
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {HIT_TYPE_RESULT_OPTIONS[state.pendingHitType].map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => pickResult(r)}
-                      className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-foreground/70 transition hover:border-accent-gold hover:text-white"
-                    >
-                      {RESULT_LABELS[r]}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  onClick={() => dispatch({ type: "SET_HIT_TYPE", hitType: null })}
-                  className="mt-2 text-xs text-foreground/40 hover:text-white"
-                >
-                  ← change hit type
-                </button>
-              </div>
-            )}
-
-            {flowStep === "fielding" && (
-              <FieldingPositionPicker
-                title="Who made the play?"
-                onSelect={(f) => dispatch({ type: "SET_FIELDING", position: f.position, playerId: f.playerId, opponentPlayerId: f.opponentPlayerId })}
-                resolve={resolve}
-              />
-            )}
-
-            {flowStep === "runnerConfirm" && state.suggestedResult && (
-              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-gold/40 bg-surface p-4 text-center">
-                <p className="font-heading text-lg font-bold text-white">{RESULT_LABELS[state.suggestedResult]}</p>
-                {state.runnersPendingConfirmation ? (
-                  <>
-                    <p className="mt-1 text-xs text-accent-amber">Suggested runner movement — review on the diamond, right column</p>
-                    <div className="mt-3 flex items-start justify-center gap-6">
-                      <div>
-                        <p className="text-xs uppercase tracking-wide text-foreground/40">RBI</p>
-                        <p className="font-heading mt-1 text-lg font-bold text-white">{state.pendingRbi}</p>
-                        <p className="mt-0.5 text-[10px] text-foreground/40">Auto -- not editable</p>
-                      </div>
-                      <div>
-                        <p className="text-xs uppercase tracking-wide text-foreground/40">Runs scoring</p>
-                        <p className="font-heading mt-1 text-sm text-white">
-                          {state.scoredThisAtBat.length > 0
-                            ? `${state.scoredThisAtBat.length} — ${state.scoredThisAtBat.map((s) => s.runner.name).join(", ")}`
-                            : "None"}
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => dispatch({ type: "CONFIRM_RUNNERS_SUGGESTION" })}
-                      className="mt-4 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-white"
-                    >
-                      Confirm &amp; Continue
-                    </button>
-                  </>
-                ) : (
-                  <p className="mt-2 text-xs text-foreground/40">Confirming…</p>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN -- persistent game state, not part of the sequential flow */}
-        <div className="flex flex-col gap-4">
-          <div className="glossy flex flex-col items-center gap-2 rounded-lg border border-border bg-surface p-4">
-            {state.runnersPendingConfirmation && (
-              <div className="w-full rounded-md border border-accent-amber/50 bg-accent-amber/10 p-2 text-center">
-                <p className="text-xs text-accent-amber">Suggested runner movement — confirm in the flow panel, left column</p>
-              </div>
-            )}
-            <BaserunnerDiamond
-              runners={state.runners}
-              pending={state.runnersPendingConfirmation}
-              onBaseTap={(b) => (state.runners[b] ? setRunnerActionMenu(b) : setRunnerPicker(b))}
-            />
-            {runnerPicker && (
+            {rightPanelMode === "runnerPicker" && runnerPicker && (
               <RunnerPicker
                 base={runnerPicker}
                 mode={state.mode}
@@ -1229,12 +1287,13 @@ export function OperatorConsole({
                 onClose={() => setRunnerPicker(null)}
               />
             )}
-            {runnerActionMenu && state.runners[runnerActionMenu] && (
+
+            {rightPanelMode === "runnerAction" && runnerActionMenu && state.runners[runnerActionMenu] && (
               <RunnerQuickActionMenu
                 base={runnerActionMenu}
                 runner={state.runners[runnerActionMenu]!}
                 onAction={(a) => {
-                  // "Out" asks why first; "Advance" now opens the
+                  // "Out" asks why first; "Advance" opens the
                   // consolidated reason menu instead of moving the runner
                   // immediately -- every other action ("Scored", "Picked
                   // Off") is unchanged.
@@ -1253,7 +1312,8 @@ export function OperatorConsole({
                 onClose={() => setRunnerActionMenu(null)}
               />
             )}
-            {outReasonPrompt && (
+
+            {rightPanelMode === "outReason" && outReasonPrompt && (
               <OutReasonMenu
                 base={outReasonPrompt.base}
                 runner={outReasonPrompt.runner}
@@ -1261,7 +1321,8 @@ export function OperatorConsole({
                 onClose={() => setOutReasonPrompt(null)}
               />
             )}
-            {advanceReasonPrompt && (
+
+            {rightPanelMode === "advanceReason" && advanceReasonPrompt && (
               <AdvanceReasonMenu
                 base={advanceReasonPrompt.base}
                 runner={advanceReasonPrompt.runner}
@@ -1276,7 +1337,8 @@ export function OperatorConsole({
                 onClose={() => setAdvanceReasonPrompt(null)}
               />
             )}
-            {advanceErrorFielding && (
+
+            {rightPanelMode === "advanceError" && advanceErrorFielding && (
               <FieldingPositionPicker
                 title="Who committed the error?"
                 onSelect={(f) => {
@@ -1286,20 +1348,177 @@ export function OperatorConsole({
                 resolve={resolve}
               />
             )}
+
+            {rightPanelMode === "flow" && (
+              <>
+                {flowStep === "field" && (
+                  <>
+                    <p className="font-heading text-center text-base font-bold text-white">Tap where the ball landed</p>
+                    <FieldDiagram tap={state.fieldTap} onTap={(x, y) => dispatch({ type: "SET_FIELD_TAP", x, y })} />
+                  </>
+                )}
+
+                {flowStep === "hitType" && (
+                  <div className="w-full max-w-[320px]">
+                    <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">What kind of hit?</p>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      {(Object.keys(HIT_TYPE_LABELS) as HitType[]).map((ht) => (
+                        <button
+                          key={ht}
+                          onClick={() => handleHitTypeTap(ht)}
+                          className="min-h-[48px] rounded-full border-2 border-accent-primary px-4 text-sm font-semibold text-white transition hover:bg-accent-primary/20"
+                        >
+                          {HIT_TYPE_LABELS[ht]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {flowStep === "result" && state.pendingHitType && (
+                  <div className="w-full max-w-[320px]">
+                    <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">
+                      {HIT_TYPE_LABELS[state.pendingHitType]} — result
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {HIT_TYPE_RESULT_OPTIONS[state.pendingHitType].map((r) => (
+                        <button
+                          key={r}
+                          onClick={() => pickResult(r)}
+                          className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-foreground/70 transition hover:border-accent-gold hover:text-white"
+                        >
+                          {RESULT_LABELS[r]}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => dispatch({ type: "SET_HIT_TYPE", hitType: null })}
+                      className="mt-2 text-xs text-foreground/40 hover:text-white"
+                    >
+                      ← change hit type
+                    </button>
+                  </div>
+                )}
+
+                {flowStep === "hitRunners" && state.suggestedResult && hitRunnerQueue[0] && state.runners[hitRunnerQueue[0]] && (
+                  <HitRunnerConfirmPanel
+                    base={hitRunnerQueue[0]}
+                    runner={state.runners[hitRunnerQueue[0]]!}
+                    runners={state.runners}
+                    targetBase={battersTargetBase(state.suggestedResult)}
+                    showBaseChoice={hitRunnerNoStep}
+                    onNo={() => setHitRunnerNoStep(true)}
+                    onDecide={(decision) => handleHitRunnerDecision(hitRunnerQueue[0], decision)}
+                  />
+                )}
+
+                {flowStep === "fielding" && (
+                  <FieldingPositionPicker
+                    title="Who made the play?"
+                    onSelect={(f) => dispatch({ type: "SET_FIELDING", position: f.position, playerId: f.playerId, opponentPlayerId: f.opponentPlayerId })}
+                    resolve={resolve}
+                  />
+                )}
+
+                {flowStep === "runnerConfirm" && state.suggestedResult && (
+                  <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-gold/40 bg-surface p-4 text-center">
+                    <p className="font-heading text-lg font-bold text-white">{RESULT_LABELS[state.suggestedResult]}</p>
+                    {state.runnersPendingConfirmation ? (
+                      <>
+                        <p className="mt-1 text-xs text-accent-amber">Suggested runner movement — review below</p>
+                        <div className="mt-3 flex items-start justify-center gap-6">
+                          <div>
+                            <p className="text-xs uppercase tracking-wide text-foreground/40">RBI</p>
+                            <p className="font-heading mt-1 text-lg font-bold text-white">{state.pendingRbi}</p>
+                            <p className="mt-0.5 text-[10px] text-foreground/40">Auto -- not editable</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-wide text-foreground/40">Runs scoring</p>
+                            <p className="font-heading mt-1 text-sm text-white">
+                              {state.scoredThisAtBat.length > 0
+                                ? `${state.scoredThisAtBat.length} — ${state.scoredThisAtBat.map((s) => s.runner.name).join(", ")}`
+                                : "None"}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => dispatch({ type: "CONFIRM_RUNNERS_SUGGESTION" })}
+                          className="mt-4 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-white"
+                        >
+                          Confirm &amp; Continue
+                        </button>
+                      </>
+                    ) : (
+                      <p className="mt-2 text-xs text-foreground/40">Confirming…</p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {rightPanelMode === "diamond" && (
+              <BaserunnerDiamond
+                runners={state.runners}
+                pending={state.runnersPendingConfirmation}
+                onBaseTap={(b) => (state.runners[b] ? setRunnerActionMenu(b) : setRunnerPicker(b))}
+              />
+            )}
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          {/* Quick actions -- compact, secondary. Everything else now
+              flows from tapping the runner directly (see rightPanelMode). */}
+          <div className="flex shrink-0 gap-2">
             <QuickButton
               label="Pickoff"
               onClick={() => setPickoffWizard({ step: "base" })}
-              className="col-span-2"
+              className="glossy flex-1 justify-start border-l-4 border-l-accent-primary pl-3 text-left"
             />
             <QuickButton
               label="Substitution"
               onClick={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: true })}
-              className="col-span-2"
+              className="glossy flex-1 justify-start border-l-4 border-l-accent-gold pl-3 text-left"
             />
           </div>
+        </div>
+      </div>
+
+      {/* BOTTOM BAR -- 48px, always visible */}
+      <div className="z-10 flex h-[48px] shrink-0 items-center justify-between gap-2 border-t-2 border-accent-primary/40 bg-surface/90 px-3">
+        <button
+          onClick={confirmEndInning}
+          className="min-h-[40px] rounded-md bg-accent-amber px-3 text-xs font-semibold text-background"
+        >
+          End Inning
+        </button>
+
+        {state.accuracyAtBatCount > 0 && (
+          <span className={`truncate text-[10px] ${runningAccuracyPercent < 70 ? "text-accent-amber" : "text-foreground/50"}`}>
+            Logging: {runningAccuracyPercent}% accurate
+          </span>
+        )}
+
+        <div className="flex items-center gap-2">
+          {undoActive && (
+            <button
+              onClick={handleUndo}
+              className="relative min-h-[40px] overflow-hidden rounded-md bg-accent-amber px-3 text-xs font-semibold text-background"
+            >
+              <span
+                className="absolute inset-0 bg-black/20"
+                style={{
+                  width: `${(1 - undoRemaining / UNDO_WINDOW_MS) * 100}%`,
+                  backgroundColor: undoRemaining < 10000 ? "rgba(224,85,79,0.5)" : undefined,
+                }}
+              />
+              <span className="relative">Undo ({Math.ceil(undoRemaining / 1000)}s)</span>
+            </button>
+          )}
+          <button
+            onClick={() => dispatch({ type: "SET_PANEL", panel: "endGame", open: true })}
+            className="min-h-[40px] rounded-md bg-accent-red px-3 text-xs font-semibold text-white"
+          >
+            End Game
+          </button>
         </div>
       </div>
 
@@ -1442,31 +1661,6 @@ export function OperatorConsole({
           onEndInning={confirmEndInning}
         />
       )}
-
-      <div className="fixed inset-x-0 bottom-0 z-30 flex items-center justify-between gap-3 border-t border-border bg-surface px-4 py-3">
-        <button
-          onClick={() => dispatch({ type: "SET_PANEL", panel: "endGame", open: true })}
-          className="min-h-[48px] rounded-md border border-accent-red/50 px-4 text-sm font-medium text-accent-red"
-        >
-          End Game
-        </button>
-
-        {undoActive && (
-          <button
-            onClick={handleUndo}
-            className="relative min-h-[48px] overflow-hidden rounded-md bg-accent-amber px-4 text-sm font-semibold text-background"
-          >
-            <span
-              className="absolute inset-0 bg-black/20"
-              style={{
-                width: `${(1 - undoRemaining / UNDO_WINDOW_MS) * 100}%`,
-                backgroundColor: undoRemaining < 10000 ? "rgba(224,85,79,0.5)" : undefined,
-              }}
-            />
-            <span className="relative">Undo ({Math.ceil(undoRemaining / 1000)}s)</span>
-          </button>
-        )}
-      </div>
     </div>
   );
 }
@@ -1480,37 +1674,17 @@ function LegendDot({ color, label }: { color: string; label: string }) {
   );
 }
 
-function CountBlock({ label, value }: { label: string; value: number }) {
-  return (
-    <div>
-      <p className="font-heading text-5xl font-bold text-white">{value}</p>
-      <p className="mt-1 text-[11px] uppercase tracking-wide text-foreground/40">{label}</p>
-    </div>
-  );
-}
-
 // Fix 1: step 1 of the zone-tap popup -- asked before the outcome menu,
 // per spec. "Unknown" logs pitch_type as null (already how an unset pitch
 // type has always been recorded -- nothing new needed there) with no
 // separate "penalty" flag to track, since none of the pitch-type-keyed
 // stats (Strike Rate by pitch type, etc.) treat a null pitch_type as
 // anything but "excluded from that breakdown," which is already correct.
-// Fix 1/4: two tall thin ovals side by side ("L"/"R") above the strike
-// zone grid, always tappable (not just at at-bat start, per Fix 4) --
-// this is a live per-at-bat override, not a write to the player's
-// profile, so there's no confirmation and no server round-trip either.
-function BatterHandSelector({ value, onChange }: { value: BattingHand | null; onChange: (hand: BattingHand) => void }) {
-  return (
-    <div className="flex w-full max-w-[280px] flex-col items-center gap-1.5">
-      <div className="flex items-center gap-4">
-        <EllipseButton label="L" selected={value === "L"} onClick={() => onChange("L")} />
-        <EllipseButton label="R" selected={value === "R"} onClick={() => onChange("R")} />
-      </div>
-      {value === null && <p className="text-[10px] text-accent-amber">Select batter&apos;s stance to activate the zone</p>}
-    </div>
-  );
-}
-
+// Fix 1/4 (this batch): two tall thin ovals ("L"/"R"), now rendered
+// directly flanking the strike zone in the new two-panel layout instead
+// of a wrapper component sitting above it -- always tappable (not just
+// at at-bat start, per Fix 4), a live per-at-bat override, not a write to
+// the player's profile, so no confirmation and no server round-trip.
 function EllipseButton({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
   return (
     <button
@@ -1827,6 +2001,88 @@ function RunnerQuickActionMenu({
 // Runner-actions consolidation: the one place every runner advance now
 // flows through, replacing the standalone Wild Pitch/Passed Ball/Balk/
 // Error (all-runners) buttons and the separate Stolen Base quick action.
+// Fix 1: one runner at a time from the hitRunners queue -- "Stay" is
+// hidden if this runner's current base is exactly where the batter is
+// headed (they can't share it), "Advance" (always exactly one base, not
+// an open-ended picker) is hidden if the next base up is already spoken
+// for, by the batter's target or by an already-resolved lead runner who
+// stayed put. "Scored" is always offered -- sometimes it's the only
+// option left, which is correct (nowhere else for them to go).
+const NEXT_BASE: Record<Base, Base | null> = { first: "second", second: "third", third: null };
+
+function HitRunnerConfirmPanel({
+  base,
+  runner,
+  runners,
+  targetBase,
+  showBaseChoice,
+  onNo,
+  onDecide,
+}: {
+  base: Base;
+  runner: RunnerState;
+  runners: Runners;
+  targetBase: Base | "home";
+  showBaseChoice: boolean;
+  onNo: () => void;
+  onDecide: (decision: "scored" | "stay" | "advance") => void;
+}) {
+  const canStay = base !== targetBase;
+  const nextBase = NEXT_BASE[base];
+  const canAdvance = nextBase !== null && nextBase !== targetBase && !runners[nextBase];
+
+  return (
+    <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-gold/40 bg-surface p-4 text-center">
+      <p className="text-xs uppercase tracking-wide text-foreground/40">Runner on {base}</p>
+      <p className="font-heading mt-1 text-lg font-bold text-white">{runner.name}</p>
+      <p className="mt-1 text-sm text-foreground/70">Did they score?</p>
+
+      {!showBaseChoice ? (
+        <div className="mt-3 flex gap-2">
+          <button
+            onClick={() => onDecide("scored")}
+            className="min-h-[48px] flex-1 rounded-md bg-accent-green px-4 text-sm font-semibold text-white"
+          >
+            Yes, scored
+          </button>
+          <button
+            onClick={onNo}
+            className="min-h-[48px] flex-1 rounded-md border border-border px-4 text-sm font-medium text-foreground/70 hover:border-accent-primary hover:text-white"
+          >
+            No
+          </button>
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-col gap-2">
+          <p className="text-xs text-foreground/50">Which base did they end up on?</p>
+          {canStay && (
+            <button
+              onClick={() => onDecide("stay")}
+              className="min-h-[48px] rounded-md border border-border px-4 text-sm font-medium text-white hover:border-accent-primary"
+            >
+              Stay at {base}
+            </button>
+          )}
+          {canAdvance && nextBase && (
+            <button
+              onClick={() => onDecide("advance")}
+              className="min-h-[48px] rounded-md border border-border px-4 text-sm font-medium text-white hover:border-accent-primary"
+            >
+              Advance to {nextBase}
+            </button>
+          )}
+          <button
+            onClick={() => onDecide("scored")}
+            className="min-h-[48px] rounded-md border border-accent-green/50 px-4 text-sm font-medium text-accent-green hover:bg-accent-green/10"
+          >
+            Actually, scored
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const ADVANCE_REASONS: { value: AdvanceReason; label: string }[] = [
   { value: "stolen_base", label: "Stolen Base" },
   { value: "wild_pitch", label: "Wild Pitch" },
@@ -1958,35 +2214,15 @@ function ScoreMethodMenu({
   );
 }
 
-function BoxScoreDashboard({ state }: { state: { hitsThisInning: number; runsThisInning: number; errorsThisInning: number; kThisInning: number; hitsGame: number; runsGame: number; errorsGame: number; kGame: number; lobGame: number } }) {
-  return (
-    <div className="grid grid-cols-1 gap-1 border-b border-border bg-surface/60 px-4 py-1.5 text-xs sm:grid-cols-2">
-      <div className="flex items-center gap-3">
-        <span className="w-20 shrink-0 uppercase tracking-wide text-foreground/40">This inning</span>
-        <BoxStat label="H" value={state.hitsThisInning} />
-        <BoxStat label="R" value={state.runsThisInning} />
-        <BoxStat label="E" value={state.errorsThisInning} />
-        <BoxStat label="K" value={state.kThisInning} />
-      </div>
-      <div className="flex items-center gap-3">
-        <span className="w-20 shrink-0 uppercase tracking-wide text-foreground/40">Game</span>
-        <BoxStat label="H" value={state.hitsGame} />
-        <BoxStat label="R" value={state.runsGame} />
-        <BoxStat label="E" value={state.errorsGame} />
-        <BoxStat label="K" value={state.kGame} />
-        <BoxStat label="LOB" value={state.lobGame} />
-      </div>
-    </div>
-  );
-}
-
-function BoxStat({ label, value }: { label: string; value: number }) {
-  return (
-    <span className="text-white">
-      <span className="text-foreground/40">{label}</span> {value}
-    </span>
-  );
-}
+// BoxScoreDashboard (H/R/E/K/LOB) was dropped from the layout in this
+// batch's Fix 3 overhaul -- the request's explicit 52px top bar / 48px
+// bottom bar budget, with the middle strictly split into the two panels,
+// leaves no third bar to put it in without either breaking "no scrolling"
+// or silently growing the chrome past what was specified. The data
+// itself is untouched (state.hitsGame etc. still accumulate normally);
+// only this always-visible summary of it is gone. Worth restoring as a
+// deliberate addition later (a toggle, or folded into a panel) if it's
+// missed in practice.
 
 function FieldingPositionPicker({
   title,

@@ -1243,6 +1243,135 @@ purely for this RBI-eligibility bookkeeping -- neither has a
 `stolen_bases` table through `logStolenBase`; obstruction logs nothing),
 so this cost zero database changes, consistent with the request.
 
+## Hit-runner confirmation, a full two-panel layout overhaul, and a war-room color pass
+
+Three requests in one batch, built in the requested order: Fix 1 (runner
+confirmation -- data accuracy), Fix 3 (layout), Fix 2 (colors, folded
+partly into the Fix 3 rewrite since both touched the same JSX).
+
+### Fix 1: hits never auto-score or auto-advance a pre-existing runner
+
+Scoped to exactly what was asked -- single/double/triple/HR. Walk/hbp/
+error/fc/outs keep the pre-existing suggest-then-review mechanism
+(`suggestRunnerAdvance` + the "Confirm & Continue" panel), since those
+already show a *reviewable*, not silently-applied, suggestion; only hits
+were said to need a harder stop. `pickResult` special-cases hits when
+`baseRunners` has anyone on base: it marks the result decided (so the
+flow moves off "result") but leaves `runners`/`scoredThisAtBat`
+completely untouched, and queues the occupied bases (`hitRunnerQueue`,
+ordered third -> second -> first) for `HitRunnerConfirmPanel` to ask about
+one at a time -- "Did they score?" first, then (on "No") "Which base did
+they end up on?" with only the options that don't collide with the
+batter's own eventual base or an already-resolved lead runner (computed
+fresh from `state.runners` each render, which is safe because each
+question's render only happens *after* React has committed the previous
+answer's dispatch -- effects and renders naturally sequence this, no
+manual same-tick state tracking needed). "Stay" is hidden when it would
+put this runner on the batter's target base; "Advance" is always exactly
+one base (not an open-ended base picker) and hidden when the next base up
+is already spoken for; "Scored" is always offered, and is sometimes the
+only option left -- correct, not a bug, when there's genuinely nowhere
+else for them to go.
+
+The batter's own placement is deliberately deferred until the queue
+fully drains (a `useEffect` on `hitRunnerQueue.length` reaching 0, gated
+by `hitRunnerConfirmActive` so it can't fire when there was never a queue
+to begin with) -- placing them immediately would risk colliding with a
+not-yet-resolved runner still sitting on the batter's target base. A new
+`APPLY_HIT_RUNNER_DECISION` reducer action applies one runner's decision
+without touching `suggestedResult`/`awaitingResult`/
+`runnersPendingConfirmation`, so nothing mid-queue can trigger the
+"Confirm & Continue" panel or the auto-confirm effect early; once the
+queue empties, the *existing* `SET_RESULT` dispatch (with `hasMovement:
+true`) hands off to that same review step every other result already
+gets -- so a hit's final RBI count is still never final without one last
+explicit tap, exactly matching "always a suggestion, never automatic"
+even for the batter's own placement.
+
+Per spec, a HR still asks about every pre-existing runner too (even
+though real baseball never lets the answer be anything but "yes, scored"
+on a clean home run) -- "must work for ALL runners on ALL bases on ANY
+hit" was explicit enough that special-casing HR out of the queue would
+have contradicted the request's own words for a trivial simplification.
+
+### Fix 3: two equal halves, top/bottom chrome bars
+
+**One real contradiction in the request, resolved in favor of "no
+scrolling" and documented rather than silently picked.** "Strike zone...
+minimum 320px wide" plus flanking ellipses (each needs the 48px tap-
+target minimum the request separately requires) needs roughly 420px of
+width for that one row alone -- which cannot fit in a genuine 50%-width
+column at the request's own second test width (390px iPhone; even half
+of the 768px iPad target is tight). Resolved by treating "TWO EQUAL
+HALVES" as the >=768px layout (`md:grid-cols-2`) and stacking the panels
+as two equal-height rows below that (`grid-rows-2 md:grid-rows-1`) --
+"emergency fallback" reads as "this width isn't the primary target
+anyway," so giving the zone the *full* narrow-viewport width instead of a
+cramped half-width column is a more usable outcome, not a lesser-effort
+one. The explicit row sizing (not just `overflow-hidden`) matters here --
+without it, stacked panels size to their own content and only the
+*combined* overflow gets clipped, which could silently starve one panel
+of all its visible height instead of splitting it fairly.
+
+**Content that used to show simultaneously in two always-visible columns
+now shares one slot, one thing at a time (`rightPanelMode` in
+`operator-console.tsx`).** The old design had flow steps (field/hit
+type/result/etc.) on the left and the diamond plus every runner popup
+always visible on the right; a strict two-panel no-scroll layout has
+nowhere to put a second simultaneous panel, so `rightPanelMode` picks
+exactly one thing for the right panel's middle section by priority:
+tag-up prompt > runner picker > runner action menu > out-reason menu >
+advance-reason menu > error-fielding picker > the active post-contact
+flow step (field/hitType/result/hitRunners/fielding/runnerConfirm) >
+the diamond as the resting default. The left panel, per spec, now shows
+*only* the zone (flanked by the L/R handedness ellipses, `EllipseButton`,
+no longer a separate `BatterHandSelector` wrapper) and the IBB/HBP
+pills -- it's disabled (dimmed, taps inert) whenever `flowStep !== "pitch"`,
+so it can't be tapped while a post-contact step is being resolved in the
+other panel.
+
+**Season stats needed a new data fetch, not a schema change.**
+`page.tsx` now also fetches every confirmed at-bat across the *team's*
+games (not just this one) and runs them through the existing
+`computeBattingLines` (passing `[]` for stolen bases -- irrelevant to
+AVG/HR/RBI) to build `seasonBattingLines`, passed to `OperatorConsole` as
+a plain `Record<string, BattingLine>` rather than a `Map` (simpler to
+guarantee survives the server/client prop boundary).
+
+**`BoxScoreDashboard` (H/R/E/K/LOB) was dropped, not relocated.** The
+request's chrome is fully specified -- a 52px top bar, a 48px bottom bar,
+and the rest split strictly into two panels -- with no third bar named
+anywhere for it, and adding one back would have meant either breaking
+"no scrolling" or growing the chrome past what was asked for. The
+underlying counters in `OperatorState` are untouched; only this
+always-visible summary of them is gone. Flagged as a deliberate trade-off,
+not an oversight -- worth a deliberate re-add (a toggle, or folded into
+a panel) if it's missed in practice.
+
+The back button (previously a `page.tsx`-rendered `fixed` overlay,
+already fixed in an earlier batch for overlapping the mode toggle) is now
+the top bar's rightmost item, next to the B-S-O display.
+
+### Fix 2: colors
+
+Applied both as direct hex values where the request gave them and as
+this app's existing accent tokens where a value already matched one
+(e.g. `#2ECC71`/`#F0C060` are already `accent.green`/`accent.gold`).
+Strike zone cells: `#0A1F0D` background (was `#071A0E`), `#2ECC71`
+border (already correct, unchanged), `#F0C060` gold glow + fill on the
+selected cell (was green). Ball zone: `#1F0A0A` solid background (was a
+translucent red tint), `#FF4444` border and dividers (was the darker
+`#E24B4A`), plus a new bright-red outer boundary rect the ring never had
+before. Runner dots (`baserunner-diamond.tsx`): now an actual gold
+(`#F0C060`) circle with the jersey number in dark text inside it and a
+glow, layered on top of the existing base-square (still green/amber,
+glows when occupied) -- previously the jersey number was a small text
+label *below* a colored diamond-shaped base marker, not inside a dot at
+all. HITTING/PITCHING toggle, B-S-O numbers, End Inning/End Game, and the
+batter card's green-left-border/gold-name treatment were all applied
+directly as part of the Fix 3 rewrite above, since both changes touched
+the exact same JSX.
+
 ## Auth flow
 
 1. `/login` -- client component, calls

@@ -18,7 +18,7 @@ export function BaserunnerDiamond({
   onBaseTap: (base: "first" | "second" | "third") => void;
 }) {
   return (
-    <svg viewBox="0 0 100 100" className="w-full max-w-[220px]">
+    <svg viewBox="0 0 100 100" className="h-full w-full max-w-[280px]">
       <path
         d="M 50 90 L 78 62 L 50 34 L 22 62 Z"
         fill="none"
@@ -28,6 +28,11 @@ export function BaserunnerDiamond({
       {(["first", "second", "third"] as const).map((base) => {
         const pos = BASE_POS[base];
         const runner = runners[base];
+        // Bases glow when occupied -- amber while a suggested movement is
+        // still pending review, green once confirmed. The runner dot
+        // (gold, jersey number in dark text, its own glow) is a separate
+        // layer on top -- the base square is "is this base occupied,"
+        // the dot is "who exactly."
         const fill = runner ? (pending ? "#EF9F27" : "#2ECC71") : "#0A2214";
         return (
           <g key={base} onClick={() => onBaseTap(base)} className="cursor-pointer">
@@ -41,13 +46,26 @@ export function BaserunnerDiamond({
               stroke={fill}
               strokeWidth="1"
               className={runner && pending ? "animate-pulse" : undefined}
-              style={runner && !pending ? { filter: "drop-shadow(0 0 4px #00FF7F)" } : undefined}
+              style={runner && !pending ? { filter: "drop-shadow(0 0 5px #2ECC71)" } : undefined}
             />
             {runner && (
-              <text x={pos.x} y={pos.y + 14} textAnchor="middle" fontSize="6" fill="#C8F0D5">
-                {runner.jersey ? `#${runner.jersey} ` : ""}
-                {runner.name.length > 12 ? `${runner.name.slice(0, 11)}…` : runner.name}
-              </text>
+              <>
+                <circle
+                  cx={pos.x}
+                  cy={pos.y}
+                  r="6.5"
+                  fill="#F0C060"
+                  stroke="#030A06"
+                  strokeWidth="0.6"
+                  style={{ filter: "drop-shadow(0 0 6px rgba(240, 192, 96, 0.9))" }}
+                />
+                <text x={pos.x} y={pos.y + 2.2} textAnchor="middle" fontSize="6.5" fontWeight="bold" fill="#030A06">
+                  {runner.jersey ?? "•"}
+                </text>
+                <text x={pos.x} y={pos.y + 13} textAnchor="middle" fontSize="5.5" fill="#C8F0D5">
+                  {runner.name.length > 12 ? `${runner.name.slice(0, 11)}…` : runner.name}
+                </text>
+              </>
             )}
           </g>
         );

@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
 import { getOrCreateGameState } from "./actions";
 import { OperatorConsole } from "./operator-console";
+import { computeBattingLines } from "@/lib/stats";
 
 export default async function OperatorPage({
   searchParams,
@@ -80,6 +81,20 @@ export default async function OperatorPage({
           )
       : { data: [] };
 
+  // Season stats for the batter card (Fix 3 layout) -- across every game
+  // this team has played, not just this one; stolen bases aren't needed
+  // for AVG/HR/RBI so [] is passed rather than a real fetch for it.
+  const { data: teamGames } = await supabase.from("games").select("id").eq("team_id", teamId);
+  const teamGameIds = (teamGames ?? []).map((g) => g.id);
+  const { data: seasonAtBats } = teamGameIds.length
+    ? await supabase
+        .from("at_bats")
+        .select("player_id, result, rbi, runs_scored")
+        .in("game_id", teamGameIds)
+        .not("confirmed_at", "is", null)
+    : { data: [] };
+  const seasonBattingLines = computeBattingLines(seasonAtBats ?? [], []);
+
   return (
     <OperatorConsole
       game={game}
@@ -89,6 +104,7 @@ export default async function OperatorPage({
       draftAtBat={draftAtBat}
       opponentPlayers={opponentPlayers ?? []}
       allGamePitches={allGamePitches ?? []}
+      seasonBattingLines={Object.fromEntries(seasonBattingLines)}
     />
   );
 }

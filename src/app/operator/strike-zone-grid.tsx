@@ -165,34 +165,35 @@ export function StrikeZoneGrid({
       role={isHeatMap ? undefined : "button"}
       aria-disabled={disabled}
       aria-label={isHeatMap ? "Session heat map -- this game's pitch locations" : "Strike zone and ball zones -- tap to mark pitch location"}
-      className={`glossy relative aspect-square w-full max-w-[280px] min-h-[280px] overflow-hidden rounded-md border-2 border-border bg-surface ${
+      className={`glossy relative aspect-square h-full w-full max-w-[420px] overflow-hidden rounded-md border-2 border-border bg-surface ${
         isHeatMap ? "" : disabled ? "opacity-40" : "cursor-pointer"
       }`}
     >
       <svg viewBox={`${EXT_MIN} ${EXT_MIN} ${EXT_SPAN} ${EXT_SPAN}`} preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full">
-        {/* Ball-zone ring: translucent red background, immediately
-            distinct at a glance from the strike zone's green -- per spec. */}
-        <rect x={EXT_MIN} y={EXT_MIN} width={EXT_SPAN} height={EXT_SPAN} fill="rgba(226, 75, 74, 0.15)" />
-        <rect x={0} y={0} width={100} height={100} fill="#071A0E" />
+        {/* Ball zone: deep red background, bright red border/dividers --
+            per the "colors more impressive" pass. Immediately distinct
+            at a glance from the strike zone's green. */}
+        <rect x={EXT_MIN} y={EXT_MIN} width={EXT_SPAN} height={EXT_SPAN} fill="#1F0A0A" />
+        <rect x={0} y={0} width={100} height={100} fill="#0A1F0D" />
 
         {/* Ring cell dividers, continuing the strike-zone column/row
-            boundaries out into the ring -- subtle dashed red lines (not
-            the strike zone's green/dark-green) reinforcing the same
-            distinction. DIVIDERS covers all 4 boundary positions
-            (0/33.33/66.67/100) so every ring cell (including corners)
-            gets a full edge. */}
+            boundaries out into the ring. DIVIDERS covers all 4 boundary
+            positions (0/33.33/66.67/100) so every ring cell (including
+            corners) gets a full edge. */}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN} x2={pos} y2={0} stroke="#E24B4A" strokeWidth={0.4} strokeOpacity={0.5} strokeDasharray="1.5,1.5" />
+          <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN} x2={pos} y2={0} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX} stroke="#E24B4A" strokeWidth={0.4} strokeOpacity={0.5} strokeDasharray="1.5,1.5" />
+          <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-h-${pos}`} x1={EXT_MIN} y1={pos} x2={0} y2={pos} stroke="#E24B4A" strokeWidth={0.4} strokeOpacity={0.5} strokeDasharray="1.5,1.5" />
+          <line key={`ring-h-${pos}`} x1={EXT_MIN} y1={pos} x2={0} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX} y2={pos} stroke="#E24B4A" strokeWidth={0.4} strokeOpacity={0.5} strokeDasharray="1.5,1.5" />
+          <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}
+        {/* Outer boundary of the ball-zone ring itself */}
+        <rect x={EXT_MIN} y={EXT_MIN} width={EXT_SPAN} height={EXT_SPAN} fill="none" stroke="#FF4444" strokeWidth={0.8} opacity={0.9} />
 
         {/* Strike-zone interior */}
         {INNER_LINES.map((pos) => (
@@ -208,8 +209,9 @@ export function StrikeZoneGrid({
           <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
         ))}
 
-        {/* Strike-zone boundary -- separates it from the ball-zone ring */}
-        <rect x={0} y={0} width={100} height={100} fill="none" stroke="#2ECC71" strokeWidth={1} opacity={0.85} />
+        {/* Strike-zone boundary -- bright green, separates it from the
+            ball-zone ring */}
+        <rect x={0} y={0} width={100} height={100} fill="none" stroke="#2ECC71" strokeWidth={1} opacity={0.9} />
 
         {/* Fix 5 (v2): pitch confirmation flash -- a gold-stroked duplicate
             of the strike zone's own grid lines, laid exactly on top and
@@ -263,8 +265,14 @@ export function StrikeZoneGrid({
 
       {!isHeatMap && selectedZone && (
         <span
-          className="glow-green pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent-green bg-accent-green/40"
-          style={{ left: `${toPct(selectedZone.x)}%`, top: `${toPct(selectedZone.y)}%` }}
+          className="pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
+          style={{
+            left: `${toPct(selectedZone.x)}%`,
+            top: `${toPct(selectedZone.y)}%`,
+            borderColor: "#F0C060",
+            backgroundColor: "rgba(240, 192, 96, 0.4)",
+            boxShadow: "0 0 10px 2px rgba(240, 192, 96, 0.8)",
+          }}
         />
       )}
       {!isHeatMap && lastPitchZone && (
