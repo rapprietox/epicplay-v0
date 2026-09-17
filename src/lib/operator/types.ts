@@ -52,7 +52,7 @@ export const SCORE_METHOD_EVENT: Partial<Record<ScoreMethod, "wild_pitch" | "pas
 // off the batter's own result (single/double/triple/hr -> hit;
 // walk/hbp -> forced; error/fc -> no RBI, same as a manual "Error" pick).
 export function resultToScoreMethod(result: AtBatResult): ScoreMethod {
-  if (result === "walk" || result === "hbp") return "forced_walk_hbp";
+  if (result === "walk" || result === "intentional_walk" || result === "hbp") return "forced_walk_hbp";
   if (result === "error" || result === "fc") return "error";
   return "hit";
 }
@@ -204,6 +204,7 @@ export const RESULT_IS_OUT: Record<AtBatResult, boolean> = {
   error: false,
   fc: false,
   double_play: true,
+  intentional_walk: false,
 };
 
 export const RESULT_LABELS: Record<AtBatResult, string> = {
@@ -220,6 +221,7 @@ export const RESULT_LABELS: Record<AtBatResult, string> = {
   error: "Error",
   fc: "FC",
   double_play: "Double Play",
+  intentional_walk: "Intentional Walk",
 };
 
 // Results where the ball was put in play and an out was recorded --

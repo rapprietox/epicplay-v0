@@ -26,7 +26,8 @@ export type AtBatResult =
   | "hbp"
   | "error"
   | "fc"
-  | "double_play";
+  | "double_play"
+  | "intentional_walk";
 export type HitType = "groundball" | "linedrive" | "flyball" | "bunt" | "popup" | "hr";
 export type PitchType = "fastball" | "curveball" | "changeup" | "slider" | "2seam" | "other";
 export type PitchOutcome = "strike" | "ball" | "foul" | "hbp" | "inplay";
@@ -39,7 +40,8 @@ export type GameEventType =
   | "error"
   | "pickoff_out"
   | "pickoff_attempt"
-  | "tag_up_violation";
+  | "tag_up_violation"
+  | "intentional_walk";
 export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";

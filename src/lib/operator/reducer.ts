@@ -93,6 +93,7 @@ export type OperatorAction =
   | { type: "APPLY_RUNNER_ACTION"; base: Base; action: RunnerQuickAction; scoreMethod?: ScoreMethod }
   | { type: "CONFIRM_LOCAL"; atBatId: string; outsRecorded: number; accuracyRatio: number }
   | { type: "CONFIRM_DOUBLE_PLAY"; atBatId: string; secondAtBatId: string; removedBase: Base; accuracyRatio: number }
+  | { type: "CONFIRM_INTENTIONAL_WALK"; atBatId: string; runners: Runners; runsScored: number; runnersBeforeAtBat: Runners }
   | { type: "UNDO_LOCAL" }
   | { type: "CLEAR_LAST_CONFIRMED" }
   | { type: "SET_RUNNER"; base: Base; runner: RunnerState | null }
@@ -380,6 +381,52 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           runsScored: 0,
           outsRecorded: 2,
           runnersBeforeAtBat: state.runnersAtAtBatStart ?? {},
+          prevAccuracyRatioSum: state.accuracyRatioSum,
+          prevAccuracyAtBatCount: state.accuracyAtBatCount,
+          prevBoxScore,
+          deadline: Date.now() + UNDO_WINDOW_MS,
+        },
+        dirty: true,
+      };
+    }
+
+    case "CONFIRM_INTENTIONAL_WALK": {
+      // Bypasses pitch logging entirely (per spec), so unlike CONFIRM_LOCAL
+      // this never touches accuracyRatioSum/accuracyAtBatCount -- 0 pitches
+      // here is correct by design, not a logging lapse, and folding it into
+      // the running accuracy average would unfairly ding the operator for
+      // something they were never supposed to log pitch-by-pitch.
+      const nextBattingOrder =
+        state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+      const runsDelta = state.mode === "hitting" ? action.runsScored : 0;
+      const prevBoxScore = {
+        hitsThisInning: state.hitsThisInning,
+        runsThisInning: state.runsThisInning,
+        errorsThisInning: state.errorsThisInning,
+        kThisInning: state.kThisInning,
+        hitsGame: state.hitsGame,
+        runsGame: state.runsGame,
+        errorsGame: state.errorsGame,
+        kGame: state.kGame,
+      };
+      return {
+        ...state,
+        runners: action.runners,
+        ourScore: state.mode === "hitting" ? state.ourScore + action.runsScored : state.ourScore,
+        opponentScore: state.mode === "pitching" ? state.opponentScore + action.runsScored : state.opponentScore,
+        battingOrderPosition: nextBattingOrder,
+        pitchCountForCurrentPitcher:
+          state.mode === "pitching" ? state.pitchCountForCurrentPitcher + 4 : state.pitchCountForCurrentPitcher,
+        runsThisInning: state.runsThisInning + runsDelta,
+        runsGame: state.runsGame + runsDelta,
+        runnersPendingConfirmation: false,
+        lastConfirmed: {
+          atBatId: action.atBatId,
+          secondAtBatId: null,
+          mode: state.mode,
+          runsScored: action.runsScored,
+          outsRecorded: 0,
+          runnersBeforeAtBat: action.runnersBeforeAtBat,
           prevAccuracyRatioSum: state.accuracyRatioSum,
           prevAccuracyAtBatCount: state.accuracyAtBatCount,
           prevBoxScore,

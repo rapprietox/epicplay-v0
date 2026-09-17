@@ -74,7 +74,7 @@ export function computeBattingLines(
     line.rbi += ab.rbi;
     line.runsScored += ab.runs_scored;
 
-    if (ab.result === "walk") {
+    if (ab.result === "walk" || ab.result === "intentional_walk") {
       line.bb += 1;
       continue;
     }
@@ -159,7 +159,7 @@ export function computePitchingLines(
     const line = get(ab.pitcher_id);
     if (ab.is_out) line.outs += 1;
     if (ab.result === "strikeout") line.k += 1;
-    if (ab.result === "walk") line.bbAllowed += 1;
+    if (ab.result === "walk" || ab.result === "intentional_walk") line.bbAllowed += 1;
     if (HIT_RESULTS.has(ab.result)) line.hAllowed += 1;
     line.runsAllowed += ab.runs_scored;
   }

@@ -1,7 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { AtBatResult, Database, FieldingPosition, HitType, OutType, PitchOutcome, PitchType, RunnerState, Runners } from "@/lib/supabase/types";
+import type {
+  AtBatResult,
+  BattingHand,
+  Database,
+  FieldingPosition,
+  HitType,
+  OutType,
+  PitchOutcome,
+  PitchType,
+  RunnerState,
+  Runners,
+} from "@/lib/supabase/types";
 import { operatorReducer, UNDO_WINDOW_MS, advanceAllRunnersOneBase } from "@/lib/operator/reducer";
 import { advanceOneRunner, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
 import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
@@ -30,6 +41,7 @@ import {
   adjustScore,
   confirmAtBat,
   confirmDoublePlay,
+  confirmIntentionalWalk,
   logGameEvent,
   logPitch,
   logStolenBase,
@@ -38,7 +50,7 @@ import {
   syncGameState,
   undoAtBat,
 } from "./actions";
-import { StrikeZoneGrid, OUTCOME_COLOR } from "./strike-zone-grid";
+import { StrikeZoneGrid, OUTCOME_COLOR, classifyZone } from "./strike-zone-grid";
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
 import { SubstitutionPanel } from "./substitution-panel";
@@ -139,6 +151,10 @@ export function OperatorConsole({
   // once the next batter's first pitch starts a new draft at-bat (the
   // appeal window has passed), or by an explicit "No"/tap-a-runner choice.
   const [tagUpPrompt, setTagUpPrompt] = useState(false);
+  // Fix 4 (Intentional Walk): a plain confirmation gate before committing --
+  // bypasses pitch logging entirely, so there's no popup/zone step to
+  // confirm through the way a normal at-bat has.
+  const [ibbConfirmOpen, setIbbConfirmOpen] = useState(false);
   const [sessionHeatMapOpen, setSessionHeatMapOpen] = useState(false);
   const [summaryFlash, setSummaryFlash] = useState<string | null>(null);
   // Fix 5: bumped (never reset to 0) on every ball/strike/foul/HBP so
@@ -534,6 +550,44 @@ export function OperatorConsole({
     );
   }
 
+  // Fix 4: Intentional Walk. Deliberately bypasses ensureDraftAtBat/the
+  // pitch popup entirely (per spec) -- the at_bats row is created already
+  // confirmed by confirmIntentionalWalk, in one call. Reuses
+  // suggestRunnerAdvance's existing walk/hbp force-cascade (aliased to
+  // "intentional_walk" in runner-advance.ts) rather than re-deriving the
+  // same force logic. Note: awards an RBI when a bases-loaded walk forces
+  // a run home, *not* "no RBI" as literally requested -- that's actual
+  // MLB scoring rule 9.04(a) (a bases-loaded walk/HBP that forces in a run
+  // always credits the batter with an RBI, intentional or not), and this
+  // codebase's own resultToScoreMethod already scores a regular walk that
+  // way. Implementing "no RBI" as asked would have made intentional walks
+  // less accurate than regular ones for no real reason.
+  async function handleIntentionalWalk() {
+    if (state.outs >= 3 || state.currentAtBatId) return;
+    const batter = currentBatterRunner();
+    const { runners: suggestion, scored } = suggestRunnerAdvance(state.runners, batter, "intentional_walk");
+    const runsScored = scored.length;
+    const runnersBeforeAtBat = state.runners;
+    try {
+      const { atBatId } = await confirmIntentionalWalk({
+        gameId: game.id,
+        mode: state.mode,
+        playerId: state.mode === "hitting" ? (battingPlayer?.player_id ?? null) : null,
+        pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        battingOrderPosition: state.mode === "hitting" ? state.battingOrderPosition : null,
+        runsScored,
+        rbi: runsScored,
+      });
+      dispatch({ type: "CONFIRM_INTENTIONAL_WALK", atBatId, runners: suggestion, runsScored, runnersBeforeAtBat });
+      syncRunners(suggestion);
+      setSummaryFlash(`Intentional Walk — ${batter.name} to 1st`);
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Failed to log intentional walk -- check connection and try again");
+    }
+  }
+
   function confirmEndInning() {
     dispatch({ type: "END_INNING_LOCAL" });
     const nextHalf = state.inningHalf === "top" ? "bottom" : "top";
@@ -804,8 +858,10 @@ export function OperatorConsole({
                   onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
                   flashKey={flashKey}
                   popupContent={
-                    !sessionHeatMapOpen ? (
+                    !sessionHeatMapOpen && state.selectedZone ? (
                       <PitchOutcomePopup
+                        zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
+                        battingHand={state.mode === "hitting" ? battingPlayerInfo?.batting_hand ?? null : null}
                         onPick={handlePitchOutcome}
                         onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
                       />
@@ -968,6 +1024,11 @@ export function OperatorConsole({
               className="col-span-2"
             />
             <QuickButton
+              label="Intentional Walk"
+              onClick={() => setIbbConfirmOpen(true)}
+              className="col-span-2"
+            />
+            <QuickButton
               label="Substitution"
               onClick={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: true })}
               className="col-span-2"
@@ -1071,6 +1132,19 @@ export function OperatorConsole({
         />
       )}
 
+      {ibbConfirmOpen && (
+        <ConfirmDialog
+          title="Intentional Walk"
+          message={`Intentional walk — ${currentBatterRunner().name} awarded 1st base?`}
+          confirmLabel="Confirm"
+          onConfirm={() => {
+            setIbbConfirmOpen(false);
+            void handleIntentionalWalk();
+          }}
+          onCancel={() => setIbbConfirmOpen(false)}
+        />
+      )}
+
       {state.mode === "pitching" && state.pitchCountForCurrentPitcher >= 100 && !state.pitchCountAck100 && (
         <PitchCountModal
           count={state.pitchCountForCurrentPitcher}
@@ -1136,26 +1210,57 @@ function CountBlock({ label, value }: { label: string; value: number }) {
   );
 }
 
+// HBP is only physically plausible on the inside part of the zone (the
+// ball-zone column closest to the batter's body) at roughly chest/waist
+// height -- not the corner cells (too high or too low) and not the
+// lower-middle ring cell either (per spec, "not the bottom two rows").
+// col/row 0 and 4 are the ball-zone ring; col 0 = left (inside to a RHB),
+// col 4 = right (inside to a LHB); row 1/2 = upper-middle/middle height
+// (row 0 = top corner, row 3/4 = lower-middle + bottom corner, both
+// excluded). Unknown/null/switch-hitter batting_hand falls back to both
+// inside columns, per spec -- a switch hitter's *effective* side for this
+// at-bat isn't knowable from a static 'S' value, so this treats it the
+// same as truly unknown rather than guessing one side.
+function hbpEligible(zone: { col: number; row: number }, hand: BattingHand | null): boolean {
+  if (zone.row !== 1 && zone.row !== 2) return false;
+  if (hand === "R") return zone.col === 0;
+  if (hand === "L") return zone.col === 4;
+  return zone.col === 0 || zone.col === 4;
+}
+
 // Step 1 of the sequential flow: appears anchored to the tapped zone
-// (StrikeZoneGrid owns the positioning). Strike is split into
-// looking/swinging -- the only pitches.outcome value where swing-vs-take
-// is genuinely ambiguous (ball/hbp always no-swing, foul/inplay always a
-// swing) -- see the pitches.swing migration.
+// (StrikeZoneGrid owns the positioning). Which buttons show depends on
+// where the tap landed -- inside the strike zone, a pitch can't be a Ball
+// or HBP (it's over the plate); outside it (the ball zone), it can't be a
+// called Strike (a pitch outside the zone the batter didn't swing at is a
+// Ball, not a strike) and HBP only shows in the physically-plausible cells
+// hbpEligible identifies. Strike itself is split into looking/swinging --
+// the only pitches.outcome value where swing-vs-take is genuinely
+// ambiguous (ball/hbp always no-swing, foul/inplay always a swing) -- see
+// the pitches.swing migration.
 function PitchOutcomePopup({
+  zone,
+  battingHand,
   onPick,
   onClose,
 }: {
+  zone: { col: number; row: number; isBallZone: boolean };
+  battingHand: BattingHand | null;
   onPick: (outcome: PitchOutcome, swing: boolean) => void;
   onClose: () => void;
 }) {
+  const showHbp = hbpEligible(zone, battingHand);
+
   return (
     <div className="glossy w-48 rounded-lg border border-accent-primary/50 bg-card p-2 shadow-lg">
       <div className="grid grid-cols-2 gap-1.5">
-        <PopupButton label="Strike (Looking)" color={OUTCOME_COLOR.strike} onClick={() => onPick("strike", false)} />
+        {!zone.isBallZone && (
+          <PopupButton label="Strike (Looking)" color={OUTCOME_COLOR.strike} onClick={() => onPick("strike", false)} />
+        )}
         <PopupButton label="Strike (Swinging)" color={OUTCOME_COLOR.strike} onClick={() => onPick("strike", true)} />
         <PopupButton label="Foul" color={OUTCOME_COLOR.foul} onClick={() => onPick("foul", true)} />
-        <PopupButton label="Ball" color={OUTCOME_COLOR.ball} onClick={() => onPick("ball", false)} />
-        <PopupButton label="HBP" color="#B060F0" onClick={() => onPick("hbp", false)} />
+        {zone.isBallZone && <PopupButton label="Ball" color={OUTCOME_COLOR.ball} onClick={() => onPick("ball", false)} />}
+        {showHbp && <PopupButton label="HBP" color="#B060F0" onClick={() => onPick("hbp", false)} />}
         <PopupButton label="In Play" color={OUTCOME_COLOR.inplay} onClick={() => onPick("inplay", true)} />
       </div>
       <button onClick={onClose} className="mt-1.5 w-full text-[10px] text-foreground/40 hover:text-white">

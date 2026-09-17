@@ -41,6 +41,7 @@ export function suggestRunnerAdvance(current: Runners, batter: RunnerState, resu
       return { runners: {}, scored };
     }
     case "walk":
+    case "intentional_walk":
     case "hbp": {
       const first: RunnerState | null = batter;
       let second: RunnerState | null | undefined = current.second;

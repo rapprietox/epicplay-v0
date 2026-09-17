@@ -21,7 +21,7 @@ interface RawPitch {
   outcome: PitchOutcome;
 }
 
-const NOT_AB_RESULTS = new Set<AtBatResult>(["walk", "hbp"]);
+const NOT_AB_RESULTS = new Set<AtBatResult>(["walk", "intentional_walk", "hbp"]);
 
 export function HitterExtendedStats({
   countAtBats,

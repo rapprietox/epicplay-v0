@@ -914,6 +914,96 @@ by *which* of the 16 ring cells they landed in yet -- so the exact
 ring-cell center coordinate was never load-bearing the way the strike
 zone's own 0-100 meaning is, and moving it costs nothing.
 
+## Smart contextual pitch-outcome menus, and Intentional Walk
+
+### Fix 1/2: the outcome popup now filters by zone
+
+`classifyZone(x, y)` (exported from `strike-zone-grid.tsx`, factored out
+of `snapTap`'s existing cell math rather than duplicated) returns
+`{col, row, isBallZone}` on the same 0-4 grid the ring geometry already
+uses. `PitchOutcomePopup` (`operator-console.tsx`) now takes the tapped
+zone's classification and conditionally renders buttons: inside the
+strike zone, Ball and Strike-Looking's opposite number (a called ball)
+don't exist, so **Strike (Looking) shows only when `!isBallZone`, Ball
+shows only when `isBallZone`** -- the two are exact mirror-image
+conditions on the same boolean, matching "a pitch in the zone can't be a
+ball, a pitch outside it that wasn't swung at can't be a called strike."
+Strike (Swinging), Foul, and In Play are unconditional -- all three are
+possible in either zone (a batter can chase and make contact/foul off/
+swing-and-miss a pitch anywhere). There was no separate "Intentional
+Ball" button to remove -- it was never built, so Fix 1's request to
+remove it was a no-op.
+
+### Fix 3: HBP only in the physically plausible cells
+
+`hbpEligible(zone, battingHand)` gates the HBP button on **both** the
+inside column (`col === 0` for a RHB, `col === 4` for a LHB -- per the
+request's own explicit left/right mapping, not re-derived from a
+camera-angle assumption) **and** row 1 or 2 (upper-middle/middle height;
+row 0 is the top corner cell, rows 3/4 are the lower-middle and bottom
+corner cells, both excluded per "not top row, not bottom two rows" in the
+request's own "Specifically" clarification, which is more precise than
+its looser first-pass wording and is what got implemented). `battingHand`
+comes from the current batter's `players.batting_hand` when `mode ===
+"hitting"`; during `mode === "pitching"` (an opponent is batting) it's
+always `null` since `opponent_players` has no hand column, which
+correctly falls through to the same "show both inside columns" fallback
+the request specifies for unknown/null. A switch hitter (`'S'`) is
+treated the same as unknown for this same reason -- their *effective*
+side for this specific at-bat isn't recoverable from a static `'S'`
+value, so guessing either side would be worse than falling back to both.
+
+### Fix 4: Intentional Walk
+
+**Two explicit "no database changes needed" + "logged as
+'intentional_walk' in at_bats" instructions directly contradicted each
+other**, the same way the earlier pickoff request did -- `at_bats.result`
+and `game_events.event_type` didn't have that value in either check
+constraint, so `20260917130001_intentional_walk.sql` adds it to both.
+The at_bats row is inserted **already confirmed** by a new
+`confirmIntentionalWalk` server action -- no draft row, no pitches ever
+attached, exactly matching "do not require tapping the zone grid...
+bypasses pitch logging entirely." That action also bumps
+`game_state.pitch_count_for_current_pitcher` by 4 server-side when
+`mode === 'pitching'` (skipped when `mode === 'hitting'`, since this app
+never tracks the opposing pitcher's count) and inserts the
+`game_events` row, all in one call rather than three round-trips.
+
+Force-advance reuses `suggestRunnerAdvance` -- `runner-advance.ts` now
+aliases `case "intentional_walk"` onto the exact same `case "walk":
+case "hbp":` cascade rather than re-deriving "walk the bases forward"
+logic a second time. A new `CONFIRM_INTENTIONAL_WALK` reducer action
+mirrors `CONFIRM_LOCAL`'s box-score/battingOrder/lastConfirmed bookkeeping
+closely, but **deliberately never touches `accuracyRatioSum`/
+`accuracyAtBatCount`** -- `pitch-accuracy.ts`'s `MIN_EXPECTED_PITCHES` now
+maps `intentional_walk` to `0` (with `atBatAccuracyRatio` short-circuiting
+to a perfect `1` when expected is `0`, avoiding a `0/0` `NaN`), since 0
+pitches logged here is correct by design, not the operator falling
+behind -- folding it into the running "Logging: N% accurate" average the
+normal way would unfairly punish exactly the behavior this fix asks for.
+
+**Deliberately did not implement "no RBI" as literally requested.** A
+bases-loaded intentional walk that forces a runner home from third *does*
+credit the batter with an RBI under real MLB scoring (rule 9.04(a): a
+run scored on a bases-loaded walk or HBP always earns an RBI, intentional
+or not) -- and this codebase's own `resultToScoreMethod` already scores a
+*regular* bases-loaded walk that exact way (`forced_walk_hbp` awards
+RBI). Implementing the request's literal "no RBI" would have made an
+intentional walk score *less* accurately than a regular one for no
+baseball-rules reason, so `rbi` is computed the same way here
+(`scored.length`, 0 or 1) instead. `stats.ts`
+(`computeBattingLines`/`computePitchingLines`), `heat-map.ts`'s
+zone-batting-average exclusion, and `hitter-extended-stats.tsx`'s
+`NOT_AB_RESULTS` all now treat `"intentional_walk"` exactly like
+`"walk"` -- not an AB, counts as a walk everywhere a regular walk does.
+
+Guarded against firing mid-at-bat (`state.currentAtBatId` already set,
+i.e. pitches have already been logged this plate appearance) -- merging
+"a few real pitches, then converted to an intentional walk" into one
+coherent record was judged out of scope; the operator needs to decide
+*before* the first pitch, which matches how intentional walks are
+signaled in real games anyway (before the pitcher throws, not mid at-bat).
+
 ## Auth flow
 
 1. `/login` -- client component, calls

@@ -39,7 +39,7 @@ export function computeZoneBattingLines(atBats: AtBatWithZone[]): ZoneBattingLin
   const lines = emptyZoneLines();
   for (const ab of atBats) {
     if (ab.zoneIndex === null) continue;
-    if (ab.result === "walk" || ab.result === "hbp") continue; // not AB, no zone-BA signal
+    if (ab.result === "walk" || ab.result === "intentional_walk" || ab.result === "hbp") continue; // not AB, no zone-BA signal
     const line = lines[ab.zoneIndex];
     line.ab += 1;
     if (HIT_RESULTS.has(ab.result)) line.h += 1;

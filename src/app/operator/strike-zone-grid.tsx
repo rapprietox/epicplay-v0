@@ -62,13 +62,24 @@ function cellIndex(v: number): number {
   return GRID_BOUNDS.length - 2;
 }
 
+// Which of the 5x5 grid's cells a coordinate falls in -- col/row each land
+// in 0-4 (1-3 is the strike zone's own thirds, 0/4 are the outer ball-zone
+// ring). Exported so the pitch-outcome popup (operator-console.tsx) can
+// filter which outcomes make sense for a given tap (Fix: Ball/HBP don't
+// exist inside the strike zone; Strike-looking doesn't exist outside it;
+// HBP only in specific inside-column/mid-height ring cells) without
+// duplicating this grid's own geometry.
+export function classifyZone(x: number, y: number): { col: number; row: number; isBallZone: boolean } {
+  const col = cellIndex(x);
+  const row = cellIndex(y);
+  return { col, row, isBallZone: col === 0 || col === 4 || row === 0 || row === 4 };
+}
+
 // Ball-zone taps snap to the center of whichever of the 16 ring cells was
 // tapped (no need for 9x9 precision out there); strike-zone taps keep the
 // existing fine snap.
 function snapTap(x: number, y: number): { x: number; y: number } {
-  const col = cellIndex(x);
-  const row = cellIndex(y);
-  const isBallZone = col === 0 || col === 4 || row === 0 || row === 4;
+  const { col, row, isBallZone } = classifyZone(x, y);
   if (!isBallZone) return { x: snapToGrid(x), y: snapToGrid(y) };
   const cx = Math.round((GRID_BOUNDS[col] + GRID_BOUNDS[col + 1]) / 2 * 100) / 100;
   const cy = Math.round((GRID_BOUNDS[row] + GRID_BOUNDS[row + 1]) / 2 * 100) / 100;

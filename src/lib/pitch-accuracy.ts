@@ -18,6 +18,11 @@ import type { AtBatResult } from "@/lib/supabase/types";
 const MIN_EXPECTED_PITCHES: Partial<Record<AtBatResult, number>> = {
   walk: 4,
   strikeout: 3,
+  // Intentional walks deliberately bypass pitch-by-pitch logging entirely
+  // (no popup, no zone taps) -- 0 pitches is correct by design here, not
+  // under-logging, so this must never be scored against the operator's
+  // accuracy percentage the way a real walk logged with 0 pitches would be.
+  intentional_walk: 0,
 };
 
 export function expectedMinPitches(result: AtBatResult): number {
@@ -26,6 +31,7 @@ export function expectedMinPitches(result: AtBatResult): number {
 
 export function atBatAccuracyRatio(result: AtBatResult, loggedPitchCount: number): number {
   const expected = expectedMinPitches(result);
+  if (expected === 0) return 1;
   return Math.min(1, loggedPitchCount / expected);
 }
 

@@ -309,6 +309,78 @@ export async function confirmDoublePlay(input: ConfirmDoublePlayInput): Promise<
   return { secondAtBatId: secondRow.id };
 }
 
+export interface ConfirmIntentionalWalkInput {
+  gameId: string;
+  mode: AtBatMode;
+  playerId: string | null;
+  pitcherId: string | null;
+  inning: number;
+  inningHalf: InningHalf;
+  battingOrderPosition: number | null;
+  runsScored: number;
+  rbi: number;
+}
+
+// Bypasses the draft-at-bat lifecycle entirely (per spec: "do not require
+// tapping the zone grid") -- the at_bats row is created already confirmed,
+// with no pitches ever attached. Also bumps the pitcher's pitch count by 4
+// server-side (mirroring the 4 balls a real intentional walk represents)
+// in the same call, rather than a second round-trip.
+export async function confirmIntentionalWalk(input: ConfirmIntentionalWalkInput): Promise<{ atBatId: string }> {
+  const { supabase, game } = await requireOperatorGame(input.gameId);
+
+  const { data, error } = await supabase
+    .from("at_bats")
+    .insert({
+      game_id: input.gameId,
+      mode: input.mode,
+      player_id: input.playerId,
+      pitcher_id: input.pitcherId,
+      inning: input.inning,
+      inning_half: input.inningHalf,
+      batting_order_position: input.battingOrderPosition,
+      result: "intentional_walk",
+      rbi: input.rbi,
+      runs_scored: input.runsScored,
+      is_out: false,
+      confirmed_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(error?.message ?? "Failed to log intentional walk");
+
+  await supabase.from("game_events").insert({
+    game_id: input.gameId,
+    inning: input.inning,
+    inning_half: input.inningHalf,
+    event_type: "intentional_walk",
+    player_id: input.mode === "pitching" ? input.pitcherId : null,
+  });
+
+  if (input.runsScored > 0) {
+    const update =
+      input.mode === "hitting"
+        ? { our_score: game.our_score + input.runsScored }
+        : { opponent_score: game.opponent_score + input.runsScored };
+    await supabase.from("games").update(update).eq("id", input.gameId);
+  }
+
+  if (input.mode === "pitching") {
+    const { data: gs } = await supabase
+      .from("game_state")
+      .select("pitch_count_for_current_pitcher")
+      .eq("game_id", input.gameId)
+      .single();
+    await supabase
+      .from("game_state")
+      .update({ pitch_count_for_current_pitcher: (gs?.pitch_count_for_current_pitcher ?? 0) + 4 })
+      .eq("game_id", input.gameId);
+  }
+
+  revalidatePath("/operator");
+  return { atBatId: data.id };
+}
+
 export async function undoAtBat(input: {
   gameId: string;
   atBatId: string;
