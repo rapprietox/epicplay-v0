@@ -165,7 +165,7 @@ export function StrikeZoneGrid({
       role={isHeatMap ? undefined : "button"}
       aria-disabled={disabled}
       aria-label={isHeatMap ? "Session heat map -- this game's pitch locations" : "Strike zone and ball zones -- tap to mark pitch location"}
-      className={`glossy relative aspect-square h-full w-full max-w-[420px] overflow-hidden rounded-md border-2 border-border bg-surface ${
+      className={`glossy relative aspect-square h-full w-full max-w-[220px] overflow-hidden rounded-md border-2 border-border bg-surface ${
         isHeatMap ? "" : disabled ? "opacity-40" : "cursor-pointer"
       }`}
     >

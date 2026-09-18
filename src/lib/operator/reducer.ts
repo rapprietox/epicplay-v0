@@ -85,7 +85,7 @@ export type OperatorAction =
   | { type: "START_DRAFT_LOCAL"; atBatId: string }
   | { type: "LOG_PITCH_LOCAL"; outcome: PitchOutcome; swing: boolean }
   | { type: "SET_RESULT"; result: AtBatResult; suggestion: Runners; scored: ScoredRunner[]; hasMovement: boolean }
-  | { type: "APPLY_HIT_RUNNER_DECISION"; runners: Runners; scoredAdd: ScoredRunner[] }
+  | { type: "APPLY_HIT_RUNNER_DECISION"; runners: Runners; scoredAdd: ScoredRunner[]; scoredSet?: ScoredRunner[] }
   | { type: "SET_HIT_TYPE"; hitType: HitType | null }
   | { type: "SET_FIELD_TAP"; x: number; y: number }
   | { type: "SET_FIELDING"; position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null }
@@ -205,7 +205,10 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
     // separate from SET_RESULT means a runner mid-queue never triggers
     // the "Confirm & Continue" panel or the auto-confirm effect early.
     case "APPLY_HIT_RUNNER_DECISION": {
-      const nextScored = action.scoredAdd.length > 0 ? [...state.scoredThisAtBat, ...action.scoredAdd] : state.scoredThisAtBat;
+      // scoredSet (Fix 3's undo-auto-score) replaces the whole list --
+      // needed to *remove* an entry, which plain appending can't do.
+      const nextScored =
+        action.scoredSet ?? (action.scoredAdd.length > 0 ? [...state.scoredThisAtBat, ...action.scoredAdd] : state.scoredThisAtBat);
       return {
         ...state,
         runners: action.runners,

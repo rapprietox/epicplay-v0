@@ -14,6 +14,7 @@ import type {
   PitchType,
   RunnerState,
   Runners,
+  SubReason,
 } from "@/lib/supabase/types";
 import { operatorReducer, UNDO_WINDOW_MS } from "@/lib/operator/reducer";
 import { advanceOneRunner, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
@@ -84,6 +85,18 @@ interface DpWizardState {
 // the standalone Wild Pitch/Passed Ball/Balk/Error (all-runners) buttons
 // and the separate Stolen Base quick action -- see handleAdvanceReason.
 type AdvanceReason = "stolen_base" | "wild_pitch" | "passed_ball" | "balk" | "error" | "passed_on_hit" | "obstruction";
+
+// Fix 3 (smart hit defaults): one dismissible-within-3s banner per
+// auto-scored runner. `base`/`runner` are the *pre-hit* position and
+// identity, captured at decision time -- that's exactly what undoing
+// needs to put back.
+interface AutoScoreBanner {
+  id: string;
+  base: Base;
+  runner: RunnerState;
+  result: AtBatResult;
+  deadline: number;
+}
 
 export function OperatorConsole({
   game,
@@ -178,6 +191,11 @@ export function OperatorConsole({
   const [hitRunnerConfirmActive, setHitRunnerConfirmActive] = useState(false);
   const [hitRunnerQueue, setHitRunnerQueue] = useState<Base[]>([]);
   const [hitRunnerNoStep, setHitRunnerNoStep] = useState(false);
+  // Fix 3: stacked auto-score undo banners. Pruned (not just hidden) as
+  // `now` ticks past each one's deadline -- `now` already updates every
+  // 250ms for the existing 30s Undo bar, reused here rather than adding a
+  // second timer for the same purpose.
+  const [autoScoreBanners, setAutoScoreBanners] = useState<AutoScoreBanner[]>([]);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
@@ -226,6 +244,19 @@ export function OperatorConsole({
   useEffect(() => {
     if (state.currentAtBatId) setTagUpPrompt(false);
   }, [state.currentAtBatId]);
+
+  // Fix 3: banners reference a specific at-bat's runners -- once that
+  // at-bat's id changes (confirmed, or a new one starts), any leftover
+  // banner is stale regardless of whether its own 3s already elapsed.
+  useEffect(() => {
+    setAutoScoreBanners([]);
+  }, [state.currentAtBatId]);
+
+  useEffect(() => {
+    if (autoScoreBanners.length === 0) return;
+    if (autoScoreBanners.every((b) => b.deadline > now)) return;
+    setAutoScoreBanners((bs) => bs.filter((b) => b.deadline > now));
+  }, [now, autoScoreBanners]);
 
   const battingPlayer = useMemo(
     () => (state.mode === "hitting" ? lineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
@@ -349,14 +380,26 @@ export function OperatorConsole({
     if (hitType === "hr" && state.pendingHitType !== hitType) pickResult("hr");
   }
 
-  // Fix 1: single/double/triple/HR never auto-score or auto-advance a
-  // pre-existing runner -- every one of them gets an explicit "did they
-  // score?" decision (handleHitRunnerDecision) instead of accepting
-  // suggestRunnerAdvance's guess. Scoped to hits specifically, per the
-  // request; walk/hbp/error/fc/outs keep the existing suggest-then-review
-  // mechanism below unchanged (those already show a reviewable, not
-  // silently-applied, suggestion).
+  // Fix 1 (an earlier batch) originally asked every pre-existing runner
+  // "did they score?" unconditionally on any hit. This batch's Fix 3
+  // replaces that with smart per-runner defaults -- most combinations are
+  // resolved automatically (with a 3s undo banner for anything that
+  // actually changed the runner's fate), and only the genuinely
+  // ambiguous ones ("second + single," "first + double") still go
+  // through the explicit ask queue below. HR/triple always auto-score
+  // every runner regardless of base, checked first since it overrides
+  // the base-specific rules that follow.
   const HIT_RESULTS_NEED_RUNNER_CONFIRM = new Set<AtBatResult>(["single", "double", "triple", "hr"]);
+
+  type RunnerHitDecision = { kind: "autoScore" } | { kind: "autoAdvance"; toBase: Base } | { kind: "ask" };
+
+  function decideRunnerOnHit(base: Base, result: AtBatResult): RunnerHitDecision {
+    if (result === "hr" || result === "triple") return { kind: "autoScore" };
+    if (base === "third") return { kind: "autoScore" };
+    if (base === "second") return result === "double" ? { kind: "autoScore" } : { kind: "ask" };
+    // base === "first"
+    return result === "single" ? { kind: "autoAdvance", toBase: "second" } : { kind: "ask" };
+  }
 
   // baseRunners defaults to the current state, but Fix 3/6 (wild
   // pitch/passed ball landing as the 4th ball) needs to compute the
@@ -372,15 +415,42 @@ export function OperatorConsole({
     if (HIT_RESULTS_NEED_RUNNER_CONFIRM.has(result)) {
       const preExisting = (["third", "second", "first"] as Base[]).filter((b) => baseRunners[b]);
       if (preExisting.length > 0) {
-        // Mark the result decided (so the flow moves past "result") but
-        // leave runners/scored exactly as they are -- the queue below is
-        // what's now solely responsible for changing either, one runner
-        // at a time, and the batter isn't placed until it drains (placing
-        // them now could collide with a not-yet-resolved runner sitting
-        // on the batter's own target base).
+        // Mark the result decided (so the flow moves past "result") --
+        // runners/scored change below as each pre-existing runner's
+        // decision is applied, not through suggestRunnerAdvance's guess.
         dispatch({ type: "SET_RESULT", result, suggestion: baseRunners, scored: [], hasMovement: false });
+
+        let nextRunners = baseRunners;
+        const autoScored: ScoredRunner[] = [];
+        const banners: AutoScoreBanner[] = [];
+        const askQueue: Base[] = [];
+
+        for (const base of preExisting) {
+          const runner = nextRunners[base]!;
+          const decision = decideRunnerOnHit(base, result);
+          if (decision.kind === "autoScore") {
+            nextRunners = { ...nextRunners, [base]: null };
+            autoScored.push({ runner, method: "hit" });
+            banners.push({ id: `${base}-${Date.now()}-${Math.random()}`, base, runner, result, deadline: Date.now() + 3000 });
+          } else if (decision.kind === "autoAdvance") {
+            nextRunners = { ...nextRunners, [base]: null, [decision.toBase]: runner };
+          } else {
+            askQueue.push(base);
+          }
+        }
+
+        if (nextRunners !== baseRunners) {
+          dispatch({ type: "APPLY_HIT_RUNNER_DECISION", runners: nextRunners, scoredAdd: autoScored });
+          syncRunners(nextRunners);
+        }
+        if (banners.length > 0) setAutoScoreBanners((bs) => [...bs, ...banners]);
+
+        // Setting these unconditionally (even with an empty queue) is what
+        // triggers the drain effect below to place the batter immediately
+        // when nothing needs asking -- it fires on hitRunnerConfirmActive
+        // *changing*, not just on the queue being non-empty.
         setHitRunnerConfirmActive(true);
-        setHitRunnerQueue(preExisting);
+        setHitRunnerQueue(askQueue);
         return;
       }
     }
@@ -392,6 +462,30 @@ export function OperatorConsole({
     const hasMovement = scored.length > 0 || JSON.stringify(suggestion) !== JSON.stringify(baseRunners);
     dispatch({ type: "SET_RESULT", result, suggestion, scored: taggedScored, hasMovement });
     if (hasMovement) syncRunners(suggestion);
+  }
+
+  // Fix 3: undo a single auto-scored runner within their 3s window --
+  // reference equality on `runner` (not an id lookup) is deliberate and
+  // safe, since the exact object captured in the banner at decision time
+  // is the same one still sitting in scoredThisAtBat; opponent runners
+  // (mode "pitching") have no id at all to match on otherwise.
+  function undoAutoScore(banner: AutoScoreBanner) {
+    setAutoScoreBanners((bs) => bs.filter((b) => b.id !== banner.id));
+    const nextScored = state.scoredThisAtBat.filter((s) => s.runner !== banner.runner);
+    const nextRunners = { ...state.runners, [banner.base]: banner.runner };
+    dispatch({ type: "APPLY_HIT_RUNNER_DECISION", runners: nextRunners, scoredAdd: [], scoredSet: nextScored });
+    syncRunners(nextRunners);
+  }
+
+  // Fix 3: HR/triple get their own wording (matching the spec's "Home
+  // run — all runners score" framing) since those score *every* runner
+  // together, not one specific base's ambiguity resolving in isolation;
+  // third/second get the literal "Runner on Nth scored" the spec gives.
+  function autoScoreBannerText(b: AutoScoreBanner): string {
+    if (b.result === "hr") return `Home run — ${b.runner.name} scores`;
+    if (b.result === "triple") return `Triple — ${b.runner.name} scores`;
+    const baseLabel = b.base === "third" ? "3rd" : b.base === "second" ? "2nd" : "1st";
+    return `Runner on ${baseLabel} scored — ${b.runner.name}`;
   }
 
   // Where the batter ends up for a hit -- HR scores them, everything else
@@ -552,6 +646,35 @@ export function OperatorConsole({
     dispatch({ type: "SET_RUNNER", base, runner });
     setRunnerPicker(null);
     syncRunners({ ...state.runners, [base]: runner });
+  }
+
+  // Fix 2: the substitution itself always got logged to `substitutions`
+  // correctly -- the bug was that a runner already on base kept showing
+  // the outgoing player's dot/jersey afterward, since nothing checked
+  // whether they were a baserunner at the moment of the sub. Reuses the
+  // existing SET_RUNNER action (the same one RunnerPicker already uses)
+  // rather than a new one -- swapping a base's occupant is exactly what
+  // that action already does.
+  function handleSubstitutionConfirm(playerOutId: string, playerInId: string, reason: SubReason) {
+    void withOfflineRetry(`sub-${game.id}-${Date.now()}`, () =>
+      saveSubstitution(game.id, { playerOutId, playerInId, reason, inning: state.inning, inningHalf: state.inningHalf })
+    );
+    dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
+
+    const occupiedBase = (["first", "second", "third"] as Base[]).find(
+      (b) => state.runners[b]?.type === "player" && state.runners[b]?.id === playerOutId
+    );
+    if (!occupiedBase) return;
+
+    const incoming = players.find((p) => p.id === playerInId);
+    const newRunner: RunnerState = {
+      type: "player",
+      id: playerInId,
+      name: incoming?.name ?? "Pinch runner",
+      jersey: incoming?.jersey_number ? String(incoming.jersey_number) : null,
+    };
+    dispatch({ type: "SET_RUNNER", base: occupiedBase, runner: newRunner });
+    syncRunners({ ...state.runners, [occupiedBase]: newRunner });
   }
 
   function applyRunnerAction(base: Base, action: RunnerQuickAction, scoreMethod?: ScoreMethod) {
@@ -1059,6 +1182,18 @@ export function OperatorConsole({
           instead of reserving permanent height for something usually not
           shown -- the 52px/48px top/bottom bars leave no room to spare. */}
       <div className="pointer-events-none absolute inset-x-0 top-[52px] z-20 flex flex-col items-center gap-1 px-2 pt-1">
+        {/* Fix 3: one per auto-scored runner, stacked (oldest on top,
+            each independently tappable-to-undo or self-expiring after
+            3s -- per spec: min 48px tall, green background, white text. */}
+        {autoScoreBanners.map((b) => (
+          <button
+            key={b.id}
+            onClick={() => undoAutoScore(b)}
+            className="pointer-events-auto min-h-[48px] w-full max-w-[380px] rounded-md bg-accent-green px-4 text-left text-sm font-semibold text-white shadow-lg"
+          >
+            {autoScoreBannerText(b)} — tap to undo
+          </button>
+        ))}
         {summaryFlash && (
           <div className="glossy pointer-events-auto rounded-md border border-accent-green/50 bg-accent-green/15 px-3 py-1 text-center">
             <p className="font-heading text-xs font-semibold text-accent-green">{summaryFlash}</p>
@@ -1105,15 +1240,19 @@ export function OperatorConsole({
             </button>
           </div>
 
-          {/* L ellipse / zone / R ellipse -- this row is the dominant
-              element of the panel, per spec ("takes up 70% of panel
-              height"); flex-1 gives it whatever's left after the two
-              slim header/footer rows above and below it. */}
+          {/* L batter card / zone / R batter card -- this row is the
+              dominant element of the panel, per spec ("takes up 70% of
+              panel height"); flex-1 gives it whatever's left after the
+              two slim header/footer rows above and below it. The batter
+              cards are taller than the zone (per spec, ~1.6x -- a
+              strike zone only covers knees to elbows, not a whole
+              body), using items-center so each row child keeps its own
+              height instead of being stretched to match the tallest. */}
           <div className="flex flex-1 items-center justify-center gap-2 overflow-hidden py-1">
             {state.mode === "hitting" && !sessionHeatMapOpen ? (
-              <EllipseButton label="L" selected={atBatBattingHand === "L"} onClick={() => setAtBatBattingHand("L")} />
+              <BatterStanceCard label="L" selected={atBatBattingHand === "L"} onClick={() => setAtBatBattingHand("L")} />
             ) : (
-              <div className="w-9 shrink-0" />
+              <div className="w-12 shrink-0" />
             )}
             <div className="flex h-full flex-1 items-center justify-center overflow-hidden">
               <StrikeZoneGrid
@@ -1147,9 +1286,9 @@ export function OperatorConsole({
               />
             </div>
             {state.mode === "hitting" && !sessionHeatMapOpen ? (
-              <EllipseButton label="R" selected={atBatBattingHand === "R"} onClick={() => setAtBatBattingHand("R")} />
+              <BatterStanceCard label="R" selected={atBatBattingHand === "R"} onClick={() => setAtBatBattingHand("R")} />
             ) : (
-              <div className="w-9 shrink-0" />
+              <div className="w-12 shrink-0" />
             )}
           </div>
 
@@ -1595,12 +1734,7 @@ export function OperatorConsole({
         <SubstitutionPanel
           players={players}
           onClose={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: false })}
-          onConfirm={(playerOutId, playerInId, reason) => {
-            void withOfflineRetry(`sub-${game.id}-${Date.now()}`, () =>
-              saveSubstitution(game.id, { playerOutId, playerInId, reason, inning: state.inning, inningHalf: state.inningHalf })
-            );
-            dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
-          }}
+          onConfirm={handleSubstitutionConfirm}
         />
       )}
 
@@ -1680,19 +1814,22 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 // separate "penalty" flag to track, since none of the pitch-type-keyed
 // stats (Strike Rate by pitch type, etc.) treat a null pitch_type as
 // anything but "excluded from that breakdown," which is already correct.
-// Fix 1/4 (this batch): two tall thin ovals ("L"/"R"), now rendered
-// directly flanking the strike zone in the new two-panel layout instead
-// of a wrapper component sitting above it -- always tappable (not just
-// at at-bat start, per Fix 4), a live per-at-bat override, not a write to
-// the player's profile, so no confirmation and no server round-trip.
-function EllipseButton({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
+// Batter handedness ("L"/"R") flanking the strike zone -- originally two
+// small ellipse buttons, redesigned in a later fix into a tall card (a
+// placeholder for a future left-/right-handed batter SVG silhouette),
+// taller than the zone itself since the zone only covers knees-to-elbows
+// while a batter's body is taller. Still the same live per-at-bat
+// handedness override underneath -- no confirmation, no server round-trip,
+// just a taller box around the same "L"/"R" tap target.
+function BatterStanceCard({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       aria-pressed={selected}
-      className={`flex h-16 w-9 items-center justify-center rounded-[50%] border-2 text-sm font-bold transition ${
-        selected ? "glow-green border-accent-green bg-accent-green/25 text-white" : "border-border bg-surface text-foreground/40"
+      className={`flex w-12 shrink-0 flex-col items-center justify-center rounded-md border-2 border-accent-green text-lg font-bold transition ${
+        selected ? "glow-green bg-accent-green/20 text-white" : "bg-card text-foreground/50"
       }`}
+      style={{ height: "min(100%, 352px)" }}
     >
       {label}
     </button>

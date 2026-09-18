@@ -1372,6 +1372,98 @@ batter card's green-left-border/gold-name treatment were all applied
 directly as part of the Fix 3 rewrite above, since both changes touched
 the exact same JSX.
 
+## Substitution/diamond sync, smart hit defaults, and a smaller strike zone with batter cards
+
+Built in the requested order: Fix 2 (substitution bug), Fix 3 (smart
+defaults -- this superseded the *previous* batch's Fix 1, see below),
+Fix 1 (layout).
+
+### Fix 2: a substitution now checks the diamond
+
+`handleSubstitutionConfirm` (`operator-console.tsx`) does what
+`SubstitutionPanel`'s `onConfirm` used to do (log the substitution,
+unchanged) plus one new check: is the outgoing player currently on any
+base? If so, that base's runner is swapped for the incoming player via
+the existing `SET_RUNNER` action -- the exact same action `RunnerPicker`
+already uses to assign a runner, reused rather than adding a new one,
+since "replace this base's occupant" is exactly what it already does.
+
+### Fix 3: smart per-runner defaults replace "always ask"
+
+**This directly supersedes the hit-runner-confirmation behavior from the
+immediately preceding batch, not a separate feature living alongside
+it.** That batch made every pre-existing runner get an explicit "did
+they score?" on any hit; this one keeps the *mechanism* (the same
+`hitRunnerQueue` / `HitRunnerConfirmPanel` blocking ask-flow, the same
+deferred batter placement once it drains) but only routes runners into
+it for the two combinations the request calls genuinely ambiguous
+("second + single," "first + double"). Every other combination
+resolves immediately via `decideRunnerOnHit`, in priority order: HR/
+triple always auto-score every runner regardless of base (checked
+first, overriding the base-specific rules below it); third base always
+auto-scores on any hit; second base auto-scores on a double; first base
+auto-advances to second on a single, silently -- no banner at all, since
+that's the near-universal default and not something worth an undo
+prompt for.
+
+Auto-scored runners (not the silent first-base-on-a-single case) each
+get their own `AutoScoreBanner`: applied to `runners`/`scoredThisAtBat`
+immediately via the existing `APPLY_HIT_RUNNER_DECISION` action, with a
+floating, tappable, 3-second-expiring banner offering to reverse just
+that one runner. Multiple banners stack naturally (one per auto-scored
+runner, rendered as a plain list in the same floating-banner area other
+transient notices already use) rather than needing special stacking
+logic. Expiry reuses the `now` state that already ticks every 250ms for
+the existing 30s at-bat Undo bar -- a banner just stops rendering once
+`now` passes its `deadline`, no second timer needed. Undoing
+(`undoAutoScore`) needed a new reducer capability: `scoredSet` on
+`APPLY_HIT_RUNNER_DECISION`, an optional full replacement for
+`scoredThisAtBat` (the existing `scoredAdd` can only append, never
+remove) -- matched by *reference*, not player id, since the exact
+runner object captured in the banner at decision time is the same one
+still sitting in the array, and opponent runners (`mode === "pitching"`)
+have no id to match on otherwise. Banners are cleared outright whenever
+`state.currentAtBatId` changes (a new at-bat starting, or this one
+confirming) -- both mean any leftover banner is stale regardless of
+whether its own 3 seconds already elapsed.
+
+The request's "Home run — all runners score" wording and the standalone
+"Runner on 3rd scored → tap to undo" wording describe the same banners
+from two different angles (what happened vs. how to undo it), not two
+separate banner types -- `autoScoreBannerText` folds both into one line
+per banner (`"Home run — <name> scores — tap to undo"` for HR/triple,
+`"Runner on 3rd scored — <name> — tap to undo"` otherwise), still one
+banner per runner even for a HR that scores several at once.
+
+### Fix 1: strike zone shrunk to 220px, flanked by batter stance cards
+
+`StrikeZoneGrid`'s own `max-w` went from `420px` (an earlier batch's
+"as large as reasonably possible" sizing) down to the requested `220px`
+-- a plain constant change, no other logic affected (ball zone ring,
+tap math, popups are all unchanged, just scaled down with the container).
+`EllipseButton` (the small oval L/R handedness picker from an earlier
+batch) became `BatterStanceCard`: same tap target, same live per-at-bat
+override underneath, but now a tall card (`w-12`, height `min(100%,
+352px)` -- 220 * 1.6, capped so it can never force an overflow on a
+panel shorter than that) with a green border, a big "L"/"R" placeholder
+letter standing in for a future batter-silhouette SVG. The row uses
+`items-center` (not the default stretch) specifically so the two taller
+cards and the shorter, `aspect-square`-constrained zone between them can
+each keep their own height instead of being forced to match -- that's
+what makes the zone read as vertically centered inside the row despite
+being shorter than its neighbors, without needing any absolute
+positioning or manual pixel math for the centering itself.
+
+One inexact part of the request, resolved in the more specific
+direction: "batter card height ≈ 1.6x strike zone height" and "the zone
+sits at roughly 35-65% of the card height" don't actually agree with
+each other algebraically (the second one implies a ~733px card for a
+220px zone, not 352px) -- went with the clean 1.6x ratio as the
+load-bearing number and treated "35-65%" as descriptive flavor text
+for *why* the card needs to be taller (a strike zone covers knees to
+elbows, not a whole body), not a second, independent constraint to hit
+precisely.
+
 ## Auth flow
 
 1. `/login` -- client component, calls
