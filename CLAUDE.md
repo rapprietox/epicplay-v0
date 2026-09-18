@@ -1766,6 +1766,26 @@ leaving it on the 0-2 check would have silently broken HBP eligibility
 again the moment the ring rows came back and `row` started reaching
 0/3/4 in cells that used to be (and are again) ring cells.
 
+**Correction, same day:** the fix above kept the container's total box
+size fixed at the immediately-preceding batch's 280x250 (`aspect-[28/25]`)
+and solved a new `RING_Y` to fit a same-thickness ring inside it --
+which meant the *green zone itself* shrank from 250px to 170px tall to
+make room, something the user had explicitly ruled out ("do NOT change
+any sizes... not the green zone dimensions"). The actual fix is simpler
+than that derivation: `RING_X=20`/`RING_Y=16` (the original 4:5-ratio
+batch's values, restored verbatim) and the container's original
+`aspect-[28/33]` (280x330 total) already produce an exactly-40px ring on
+*every* side around an untouched 200x250 zone -- there was never a real
+mathematical trade-off to make; the previous fix's trade-off existed
+only because it had pinned the wrong number (250, the ring-removed
+batch's *height-only* box) as the thing to hold constant, instead of the
+zone's own 200x250 size. `RING_X`/`RING_Y` and the aspect-ratio class
+are reverted to their exact original values; nothing else in
+`strike-zone-grid.tsx` or `operator-console.tsx` changed (the diamond
+size, popup sizing, and 1.8x batter cards from the two batches in
+between are untouched, and width-driven zone sizing + `items-center`
+stays, since those were requested separately and remain correct).
+
 ## Auth flow
 
 1. `/login` -- client component, calls

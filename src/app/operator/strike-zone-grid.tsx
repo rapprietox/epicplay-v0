@@ -32,34 +32,31 @@ const THIRDS = [100 / 3, (2 * 100) / 3];
 
 // A 16-cell outer "ball zone" ring around the original 9-cell strike
 // zone -- 3 zones each on the top/bottom/left/right edges plus 4
-// corners (a brief later fix removed the top/bottom rows entirely; this
-// restores them, same ring thickness, "no other changes" per that
-// request). Coordinates fall outside 0-100 rather than the 0-100 range
+// corners. Coordinates fall outside 0-100 rather than the 0-100 range
 // being redefined -- see the pitches_ball_zone_range migration for why
 // (existing zone_x/zone_y values must keep meaning what they always
 // have).
 //
-// RING_X is the ring's thickness in the same 0-100-scaled units as the
-// strike zone; a later fix widened it from 100/6 to 100/5 for bigger tap
-// targets. RING_Y is deliberately NOT the same raw unit value as RING_X
-// -- the container's total box size (280x250 at its max width, encoded
-// in the aspect-[28/25] class below) was required to stay exactly what
-// it already was with no top/bottom ring, so restoring the ring within
-// that *same* fixed box means the zone's own rendered height shrinks a
-// bit to make room. RING_Y is solved so the ring's *physical* (pixel)
-// thickness comes out equal on all four sides at that reference size --
-// same 40px the left/right ring has always been -- rather than just
-// reusing RING_X's raw number, which (since X and Y already scale
-// differently once stretched into a non-square box) would have made the
-// top/bottom ring visibly thinner than the sides.
+// RING_X/RING_Y are the ring's thickness in the same 0-100-scaled units
+// as the strike zone, one per axis so the *rendered* ring is an even
+// ~40px on every side even though the zone itself (per the 4:5-ratio
+// proportions fix) is not square: the grid's own container is sized
+// 200x250 (4:5) for the green zone, so 1 x-unit and 1 y-unit map to
+// different pixel counts (2px and 2.5px respectively at that target
+// size), and RING_X=20/RING_Y=16 is exactly what makes both work out to
+// ~40px once multiplied by those per-axis scales. **The zone's own
+// 200x250 size and the container's 280x330 total (aspect-[28/33] below)
+// are the fixed, load-bearing numbers -- an intervening batch briefly
+// shrank the zone to keep the *container* pinned at a since-reverted
+// 280x250 size while the ring was temporarily left/right-only; both the
+// zone and the ring's thinner-than-intended top/bottom were wrong
+// outcomes of that, not a design change, so this restores the original
+// 200x250 zone / 280x330 container / RING_Y=16 exactly.**
 const RING_X = 20;
+const RING_Y = 16;
 export const EXT_MIN_X = -RING_X;
 const EXT_MAX_X = 100 + RING_X;
 const EXT_SPAN_X = EXT_MAX_X - EXT_MIN_X;
-const REF_WIDTH = 280; // matches max-w-[280px] below
-const REF_HEIGHT = 250; // matches aspect-[28/25] at REF_WIDTH -- unchanged by this fix
-const RING_PX = RING_X * (REF_WIDTH / EXT_SPAN_X); // the left/right ring's actual physical thickness (40px)
-const RING_Y = (100 * RING_PX) / (REF_HEIGHT - 2 * RING_PX); // solved so top/bottom match that same 40px within the unchanged REF_HEIGHT
 export const EXT_MIN_Y = -RING_Y;
 const EXT_MAX_Y = 100 + RING_Y;
 const EXT_SPAN_Y = EXT_MAX_Y - EXT_MIN_Y;
@@ -179,7 +176,7 @@ export function StrikeZoneGrid({
       role="button"
       aria-disabled={disabled}
       aria-label="Strike zone and ball zones -- tap to mark pitch location"
-      className={`glossy relative w-full max-w-[280px] overflow-hidden rounded-md border-2 border-border bg-surface aspect-[28/25] ${
+      className={`glossy relative w-full max-w-[280px] overflow-hidden rounded-md border-2 border-border bg-surface aspect-[28/33] ${
         disabled ? "opacity-40" : "cursor-pointer"
       }`}
     >
