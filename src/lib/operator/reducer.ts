@@ -52,6 +52,7 @@ export function initialOperatorState(gameId: string): OperatorState {
     runnersPendingConfirmation: false,
     pendingFielding: null,
     pitchCountForCurrentPitcher: 0,
+    opponentPitchCount: 0,
     pitchCountAck75: false,
     pitchCountAck85: false,
     pitchCountAck100: false,
@@ -181,6 +182,15 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         suggestedResult,
         pitchCountForCurrentPitcher:
           state.mode === "pitching" ? state.pitchCountForCurrentPitcher + 1 : state.pitchCountForCurrentPitcher,
+        // Addition 2 (two-additions batch): the mirror-image counter for
+        // hitting mode -- every pitch logged while we're batting was
+        // thrown by the opponent's pitcher, so it counts toward their
+        // total for the top bar's "[opponent pitcher] · N pitches"
+        // readout. Never reset (we don't track opposing pitching
+        // changes), unlike pitchCountForCurrentPitcher which resets on
+        // SET_PITCHER -- "total pitches logged this game against our
+        // batters" is explicitly a whole-game figure, not per-pitcher.
+        opponentPitchCount: state.mode === "hitting" ? state.opponentPitchCount + 1 : state.opponentPitchCount,
         dirty: true,
       };
     }
@@ -436,6 +446,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         battingOrderPosition: nextBattingOrder,
         pitchCountForCurrentPitcher:
           state.mode === "pitching" ? state.pitchCountForCurrentPitcher + 4 : state.pitchCountForCurrentPitcher,
+        opponentPitchCount: state.mode === "hitting" ? state.opponentPitchCount + 4 : state.opponentPitchCount,
         runsThisInning: state.runsThisInning + runsDelta,
         runsGame: state.runsGame + runsDelta,
         runnersPendingConfirmation: false,

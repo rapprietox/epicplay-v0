@@ -13,7 +13,13 @@ export function buildInitialStateFromServer(
   game: GameRow,
   gs: GameStateRow,
   draft: (AtBatRow & { pitches: PitchRow[] }) | null,
-  allGamePitches: Pick<PitchRow, "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome">[] = []
+  allGamePitches: Pick<PitchRow, "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome">[] = [],
+  // Addition 2: there's no game_state column for this (no schema change
+  // for a display-only figure), so unlike pitchCountForCurrentPitcher it
+  // can't be read straight off `gs` -- the caller (page.tsx) computes it
+  // with its own query (pitches joined through at_bats.mode = 'hitting')
+  // and passes the result in here as a plain seed value.
+  opponentPitchCountSeed = 0
 ): OperatorState {
   const base = initialOperatorState(game.id);
 
@@ -72,6 +78,7 @@ export function buildInitialStateFromServer(
     awaitingResult,
     suggestedResult,
     pitchCountForCurrentPitcher: gs.pitch_count_for_current_pitcher,
+    opponentPitchCount: opponentPitchCountSeed,
     pitchCountAck75: gs.pitch_count_ack_75,
     pitchCountAck85: gs.pitch_count_ack_85,
     pitchCountAck100: gs.pitch_count_ack_100,

@@ -46,7 +46,8 @@ export type GameEventType =
   | "caught_stealing"
   | "rundown_out"
   | "runner_passed"
-  | "out_at_next_base";
+  | "out_at_next_base"
+  | "squeeze_play";
 export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";

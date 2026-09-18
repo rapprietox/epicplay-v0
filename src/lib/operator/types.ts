@@ -32,12 +32,19 @@ export type ScoreMethod =
   | "sac_fly"
   | "forced_walk_hbp"
   | "stolen_base"
-  | "obstruction";
+  | "obstruction"
+  // Addition 1 (two-additions batch): a runner on third breaking for
+  // home on the pitch, batter bunts them in. RBI-eligible like sac_fly
+  // (it's the same "batter's own action drove the run in" logic) but
+  // logs its own game_events row instead of being silently absorbed
+  // into the at-bat's own result the way sac_fly/hit/forced_walk_hbp do.
+  | "squeeze_play";
 
 export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
   hit: true,
   sac_fly: true,
   forced_walk_hbp: true,
+  squeeze_play: true,
   wild_pitch: false,
   passed_ball: false,
   balk: false,
@@ -56,17 +63,19 @@ export const SCORE_METHOD_LABELS: Record<ScoreMethod, string> = {
   forced_walk_hbp: "Walk/HBP forced in",
   stolen_base: "Stolen base",
   obstruction: "Obstruction",
+  squeeze_play: "Squeeze play",
 };
 
-// wild_pitch/passed_ball/balk/error map onto the existing game_events
-// enum for attribution logging; hit/sac_fly/forced_walk_hbp don't log a
-// separate event -- they're just how the batter's own at-bat result
-// already explains the run.
-export const SCORE_METHOD_EVENT: Partial<Record<ScoreMethod, "wild_pitch" | "passed_ball" | "balk" | "error">> = {
+// wild_pitch/passed_ball/balk/error/squeeze_play map onto the existing
+// game_events enum for attribution logging; hit/sac_fly/forced_walk_hbp
+// don't log a separate event -- they're just how the batter's own at-bat
+// result already explains the run.
+export const SCORE_METHOD_EVENT: Partial<Record<ScoreMethod, "wild_pitch" | "passed_ball" | "balk" | "error" | "squeeze_play">> = {
   wild_pitch: "wild_pitch",
   passed_ball: "passed_ball",
   balk: "balk",
   error: "error",
+  squeeze_play: "squeeze_play",
 };
 
 // Auto-implied score method for runners the suggestion engine advances
@@ -156,6 +165,14 @@ export interface OperatorState {
   pendingFielding: { position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null } | null;
 
   pitchCountForCurrentPitcher: number;
+  // Addition 2 (two-additions batch): the opponent's whole-game pitch
+  // total -- every pitch logged while mode === 'hitting' was thrown by
+  // their pitcher. Never reset per-pitcher (unlike
+  // pitchCountForCurrentPitcher on SET_PITCHER) since this app has no
+  // way to track opposing pitching changes at all; it's deliberately a
+  // running whole-game figure, matching "total pitches logged this game
+  // against our batters" literally.
+  opponentPitchCount: number;
   pitchCountAck75: boolean;
   pitchCountAck85: boolean;
   pitchCountAck100: boolean;

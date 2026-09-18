@@ -70,9 +70,10 @@ export default async function OperatorPage({
     ? await supabase.from("opponent_players").select("*").eq("opponent_id", game.opponent_id)
     : { data: [] };
 
-  const { data: gameAtBatIds } = await supabase.from("at_bats").select("id").eq("game_id", game.id);
+  const { data: gameAtBats } = await supabase.from("at_bats").select("id, mode").eq("game_id", game.id);
+  const gameAtBatIds = gameAtBats ?? [];
   const { data: allGamePitches } =
-    gameAtBatIds && gameAtBatIds.length > 0
+    gameAtBatIds.length > 0
       ? await supabase
           .from("pitches")
           .select("pitch_number, pitch_type, zone_x, zone_y, outcome")
@@ -81,6 +82,19 @@ export default async function OperatorPage({
             gameAtBatIds.map((a) => a.id)
           )
       : { data: [] };
+
+  // Addition 2 (two-additions batch): "total pitches logged this game
+  // against our batters" for the top bar -- every pitch attached to a
+  // hitting-mode at-bat was thrown by the opponent's pitcher. No
+  // game_state column for this (display-only, not worth a schema
+  // change), so it's just counted here and passed as a one-time seed;
+  // the reducer takes over incrementing it live from there (see
+  // opponentPitchCount in lib/operator/types.ts).
+  const hittingAtBatIds = gameAtBatIds.filter((a) => a.mode === "hitting").map((a) => a.id);
+  const { count: opponentPitchCountSeed } =
+    hittingAtBatIds.length > 0
+      ? await supabase.from("pitches").select("id", { count: "exact", head: true }).in("at_bat_id", hittingAtBatIds)
+      : { count: 0 };
 
   // Season stats for the batter card (Fix 3 layout) -- across every game
   // this team has played, not just this one; stolen bases aren't needed
@@ -107,6 +121,7 @@ export default async function OperatorPage({
       allGamePitches={allGamePitches ?? []}
       seasonBattingLines={Object.fromEntries(seasonBattingLines)}
       teamName={team?.name ?? "Us"}
+      opponentPitchCountSeed={opponentPitchCountSeed ?? 0}
     />
   );
 }

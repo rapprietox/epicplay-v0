@@ -110,6 +110,7 @@ export function OperatorConsole({
   allGamePitches,
   seasonBattingLines,
   teamName,
+  opponentPitchCountSeed,
 }: {
   game: Game;
   players: Player[];
@@ -127,6 +128,11 @@ export function OperatorConsole({
   // hardcoded "Us" the score display used everywhere it needed to name
   // our own side.
   teamName: string;
+  // Addition 2 (two-additions batch): one-time seed for
+  // state.opponentPitchCount, counted server-side (pitches joined
+  // through hitting-mode at-bats) since there's no game_state column to
+  // read it from directly -- the reducer increments it live from here.
+  opponentPitchCountSeed: number;
 }) {
   const router = useRouter();
   // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
@@ -145,7 +151,7 @@ export function OperatorConsole({
   // score text and React would throw a hydration mismatch the moment any
   // operator had an unsynced snapshot sitting in their browser.
   const [state, dispatch] = useReducer(operatorReducer, undefined, () =>
-    buildInitialStateFromServer(game, initialGameState, draftAtBat, allGamePitches)
+    buildInitialStateFromServer(game, initialGameState, draftAtBat, allGamePitches, opponentPitchCountSeed)
   );
 
   // Swapping in a recovered localStorage snapshot happens *after* mount
@@ -212,12 +218,30 @@ export function OperatorConsole({
   // game_events row (see CLAUDE.md). This one always does, and adds the
   // "attempted, runner safe" outcome that quick-action never had.
   const [pickoffWizard, setPickoffWizard] = useState<{ step: "base" | "result"; base?: Base } | null>(null);
-  // Fix 4: shown after a flyout at-bat confirms, offering to record a
-  // runner who left a base early and got doubled off on appeal -- a
-  // second, separate out from the fly out itself. Cleared automatically
-  // once the next batter's first pitch starts a new draft at-bat (the
-  // appeal window has passed), or by an explicit "No"/tap-a-runner choice.
-  const [tagUpPrompt, setTagUpPrompt] = useState(false);
+  // Addition 1 (two-additions batch): shown after a flyout/lineout
+  // at-bat confirms with runners on base and the inning still alive
+  // (outs < 3) -- asks what happened to each runner on the play, top
+  // base first (queue order: third, second, first). Supersedes the
+  // earlier, narrower "did anyone leave early" tag-up-only prompt: that
+  // was exactly this same trigger (flyouts + runners on base) but with
+  // only one of what are now four per-runner outcomes (Scored / Advanced
+  // / Held / Out-left-early) -- see SacFlyPanel below, which reuses
+  // handleTagUpViolation's own out-on-appeal logic verbatim for that
+  // fourth option rather than duplicating it. Cleared automatically once
+  // the next batter's first pitch starts a new draft at-bat (the window
+  // to decide has implicitly passed), or as each runner in the queue is
+  // resolved.
+  const [sacFlyQueue, setSacFlyQueue] = useState<Base[]>([]);
+  // Addition 1: "was this a squeeze play?" -- only ever prompted when a
+  // bunt confirms with the runner on third still actually on third
+  // (state.runners.third truthy at confirm time). A bunt *single*
+  // doesn't reach this at all: "single" is a HIT_RESULT, so the
+  // existing hit-runner-confirm/auto-score machinery (decideRunnerOnHit:
+  // "third base always auto-scores on any hit") already resolves that
+  // runner's third-base fate before handleConfirm ever runs, which is
+  // exactly what naturally excludes it here -- no separate check needed
+  // beyond "is anyone still on third."
+  const [squeezePrompt, setSqueezePrompt] = useState(false);
   // Fix 4 (Intentional Walk): a plain confirmation gate before committing --
   // bypasses pitch logging entirely, so there's no popup/zone step to
   // confirm through the way a normal at-bat has.
@@ -304,7 +328,10 @@ export function OperatorConsole({
   }, [summaryFlash]);
 
   useEffect(() => {
-    if (state.currentAtBatId) setTagUpPrompt(false);
+    if (state.currentAtBatId) {
+      setSacFlyQueue([]);
+      setSqueezePrompt(false);
+    }
   }, [state.currentAtBatId]);
 
   // Fix 3: banners reference a specific at-bat's runners -- once that
@@ -328,6 +355,14 @@ export function OperatorConsole({
     () => (battingPlayer ? players.find((p) => p.id === battingPlayer.player_id) : undefined),
     [battingPlayer, players]
   );
+
+  // Addition 2: the opponent's pitcher, if their lineup photo import
+  // happened to record one with position "P" -- opponent_players has no
+  // "who's pitching right now" concept (no live pitching-change tracking
+  // for the other team at all), so this is a static best-effort lookup,
+  // not something that updates mid-game the way our own currentPitcher
+  // does via SET_PITCHER.
+  const opponentPitcherInfo = useMemo(() => opponentPlayers.find((p) => p.position === "P"), [opponentPlayers]);
 
   // Fix 7 (six-fixes batch, appended after): "on deck" is just the next
   // slot in the batting order, wrapping from the last position back to
@@ -669,9 +704,19 @@ export function OperatorConsole({
     setSummaryFlash(
       [RESULT_LABELS[result], hitType ? HIT_TYPE_LABELS[hitType] : null, fielding?.position ?? null].filter(Boolean).join(" — ")
     );
-    // Fix 4: only offer the tag-up appeal when there's actually a runner
-    // left on base to appeal against.
-    if (result === "flyout" && Object.values(state.runners).some(Boolean)) setTagUpPrompt(true);
+    // Addition 1: sac-fly/tag-up decision queue -- fly out or line out,
+    // at least one runner still on base, and this out didn't end the
+    // inning (outs *after* this one < 3 -- a dead inning has no more
+    // baserunning to ask about). Queue order is top base first (third,
+    // second, first), per spec.
+    if ((result === "flyout" || result === "lineout") && state.outs + 1 < 3) {
+      const order: Base[] = ["third", "second", "first"];
+      const queue = order.filter((b) => state.runners[b]);
+      if (queue.length > 0) setSacFlyQueue(queue);
+    }
+    // Addition 1: squeeze-play prompt -- see squeezePrompt's own comment
+    // above for why "single" never reaches this.
+    if (hitType === "bunt" && state.runners.third) setSqueezePrompt(true);
 
     void withOfflineRetry(`confirm-${atBatId}`, async () => {
       await confirmAtBat({
@@ -1018,16 +1063,33 @@ export function OperatorConsole({
     }
   }
 
-  // Fix 4: an appeal-play out separate from the fly out that just ended
-  // the at-bat -- reuses the same "out" runner-action path (removes the
-  // runner, increments outs, which the always-rendered ThreeOutsModal
-  // reacts to on its own if this is out #3) and additionally logs its own
-  // game_events row. No fielder picker here (the spec didn't ask for one)
-  // -- logged without a guessed attribution rather than assuming one.
-  function handleTagUpViolation(base: Base) {
+  // Addition 1: one runner's outcome on a fly out/line out with the
+  // inning still alive -- popped from sacFlyQueue regardless of which
+  // way it's decided. "Scored" and "advance" both go through the same
+  // applyRunnerAction path every other runner move already uses;
+  // "scored" passes scoreMethod "sac_fly" directly (already a real
+  // ScoreMethod, already RBI-eligible per SCORE_METHOD_AWARDS_RBI -- no
+  // schema change needed, exactly the mechanism CLAUDE.md already
+  // documents for why "Sacrifice Fly" was never its own AtBatResult
+  // button). "out_early" is handleTagUpViolation's own former body,
+  // moved here verbatim (reuses the same out-on-appeal path + the same
+  // tag_up_violation game_events row) rather than duplicated.
+  type SacFlyDecision = "scored" | "advance" | "held" | "out_early";
+  function handleSacFlyDecision(base: Base, decision: SacFlyDecision) {
     const runner = state.runners[base];
-    setTagUpPrompt(false);
+    setSacFlyQueue((q) => q.filter((b) => b !== base));
     if (!runner) return;
+    if (decision === "held") return;
+    if (decision === "scored") {
+      applyRunnerAction(base, "scored", "sac_fly");
+      setSummaryFlash(`${runner.name} scores — sacrifice fly`);
+      return;
+    }
+    if (decision === "advance") {
+      applyRunnerAction(base, "advance");
+      setSummaryFlash(`${runner.name} advances to ${NEXT_BASE[base]}`);
+      return;
+    }
     applyRunnerAction(base, "out");
     setSummaryFlash(`${runner.name} — Out, left base early`);
     void withOfflineRetry(`tagup-${game.id}-${Date.now()}`, () =>
@@ -1038,6 +1100,23 @@ export function OperatorConsole({
         mode: state.mode,
       })
     );
+  }
+
+  // Addition 1: resolves the squeeze-play prompt. "Yes" reuses the exact
+  // same applyRunnerAction("scored", ...) path sac-fly's own "Scored"
+  // option uses -- squeeze_play is just another RBI-eligible ScoreMethod
+  // (SCORE_METHOD_AWARDS_RBI) that happens to also auto-log its own
+  // game_events row via SCORE_METHOD_EVENT, both already wired generically
+  // in applyRunnerAction, so no bespoke scoring/logging code was needed
+  // here beyond adding those two type-table entries. "No" leaves the
+  // bunt's own already-confirmed result (groundout/single/error/fc) as
+  // the complete record -- there's nothing left to do.
+  function handleSqueezeDecision(wasSqueeze: boolean) {
+    const runner = state.runners.third;
+    setSqueezePrompt(false);
+    if (!wasSqueeze || !runner) return;
+    applyRunnerAction("third", "scored", "squeeze_play");
+    setSummaryFlash(`${runner.name} scores — squeeze play`);
   }
 
   // Fix 4: Intentional Walk. Deliberately bypasses ensureDraftAtBat/the
@@ -1224,7 +1303,8 @@ export function OperatorConsole({
   // which is also what makes a strict two-panel, no-scroll layout
   // possible -- there's nowhere to put a second simultaneous panel.
   type RightPanelMode =
-    | "tagUp"
+    | "sacFly"
+    | "squeeze"
     | "runnerPicker"
     | "runnerAction"
     | "outReason"
@@ -1233,9 +1313,11 @@ export function OperatorConsole({
     | "flow"
     | "diamond";
   const FLOW_STEPS_IN_RIGHT_PANEL = new Set<FlowStep>(["field", "hitType", "result", "hitRunners", "fielding", "runnerConfirm"]);
-  const rightPanelMode: RightPanelMode = tagUpPrompt
-    ? "tagUp"
-    : runnerPicker
+  const rightPanelMode: RightPanelMode = sacFlyQueue.length > 0
+    ? "sacFly"
+    : squeezePrompt
+      ? "squeeze"
+      : runnerPicker
       ? "runnerPicker"
       : runnerActionMenu
         ? "runnerAction"
@@ -1312,21 +1394,21 @@ export function OperatorConsole({
           ))}
         </div>
 
-        {/* Fix 3 (three-fixes batch): inning + score used to live here,
-            redundant with the scoreboard (right panel) which already
-            shows both -- replaced with the one thing the scoreboard
-            *doesn't* say: who's currently up. Hitting mode's "AB N" is
-            the batting-order slot (state.battingOrderPosition), not a
-            true plate-appearance tally -- this app has no live per-game
-            at-bat counter for a specific player anywhere (seasonBattingLines
-            is season-wide, across every game, not this game alone), so
-            the batting-order position is what's actually available and
-            cheap to show; flagging this reading explicitly rather than
-            quietly presenting it as literal at-bat count. */}
-        <p className="truncate text-center font-mono text-[13px] text-foreground/60">
+        {/* Addition 2 (two-additions batch): replaces the previous
+            "HITTING — batter · AB N" readout with the pitcher on the
+            mound instead -- in hitting mode that's the *opponent's*
+            pitcher (opponentPitcherInfo, a best-effort lookup off their
+            lineup-photo-imported roster; "OPP. PITCHER" if none was
+            tagged position "P"), with state.opponentPitchCount for their
+            whole-game total; in pitching mode it's our own currentPitcher
+            with the existing pitchCountForCurrentPitcher, colored via
+            the same pitchCountColor thresholds (amber 75+, red 85+) the
+            pitching-mode batter-strip pitch count already uses, so both
+            readouts of that same number always agree. */}
+        <p className={`truncate text-center font-mono text-[13px] ${state.mode === "hitting" ? "text-foreground/60" : pitchCountColor}`}>
           {state.mode === "hitting"
-            ? `HITTING — ${battingPlayerInfo?.name ?? "—"} · AB ${state.battingOrderPosition}`
-            : `PITCHING — ${currentPitcher?.name ?? "—"} · ${state.pitchCountForCurrentPitcher} pitches`}
+            ? `${opponentPitcherInfo?.name ?? "OPP. PITCHER"} · ${state.opponentPitchCount} pitches`
+            : `${currentPitcher?.name ?? "—"} · ${state.pitchCountForCurrentPitcher} pitches`}
         </p>
 
         {/* Right-panel redesign: the floating B/S/O readout that used to
@@ -1644,24 +1726,28 @@ export function OperatorConsole({
               the diamond's own wrapper below claims all of it as a rule
               rather than a byproduct. */}
           <div className="flex flex-1 flex-col items-center justify-center gap-2 overflow-hidden py-1">
-            {rightPanelMode === "tagUp" && (
-              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
-                <p className="text-xs text-accent-amber">Did any runner leave early and get thrown out?</p>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {(["first", "second", "third"] as Base[])
-                    .filter((b) => state.runners[b])
-                    .map((b) => (
-                      <button
-                        key={b}
-                        onClick={() => handleTagUpViolation(b)}
-                        className="min-h-[40px] rounded-md border border-accent-amber/60 px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-amber/20"
-                      >
-                        {state.runners[b]!.name} ({b}) — Out, left early
-                      </button>
-                    ))}
+            {rightPanelMode === "sacFly" && sacFlyQueue[0] && state.runners[sacFlyQueue[0]] && (
+              <SacFlyPanel
+                base={sacFlyQueue[0]}
+                runner={state.runners[sacFlyQueue[0]]!}
+                onDecide={(decision) => handleSacFlyDecision(sacFlyQueue[0], decision)}
+              />
+            )}
+
+            {rightPanelMode === "squeeze" && state.runners.third && (
+              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3 text-center">
+                <p className="text-sm font-semibold text-white">Was this a squeeze play?</p>
+                <p className="mt-1 text-xs text-accent-amber">{state.runners.third.name} breaks for home on the bunt</p>
+                <div className="mt-2 flex gap-2">
                   <button
-                    onClick={() => setTagUpPrompt(false)}
-                    className="min-h-[40px] rounded-md border border-border px-3 py-1.5 text-xs text-foreground/60"
+                    onClick={() => handleSqueezeDecision(true)}
+                    className="min-h-[44px] flex-1 rounded-md border border-accent-green/60 text-sm font-medium text-white hover:bg-accent-green/20"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    onClick={() => handleSqueezeDecision(false)}
+                    className="min-h-[44px] flex-1 rounded-md border border-border text-sm font-medium text-white hover:border-accent-primary"
                   >
                     No
                   </button>
@@ -2473,6 +2559,57 @@ function RunnerQuickActionMenu({
       <button onClick={onClose} className="mt-2 w-full text-xs text-foreground/50">
         Close
       </button>
+    </div>
+  );
+}
+
+// Addition 1 (two-additions batch): one runner at a time from
+// sacFlyQueue, top base first. "Advanced to [next base]" is omitted for
+// a runner on third -- there's no base beyond third to advance to
+// without scoring, so only Scored/Held/Out-left-early make sense there.
+function SacFlyPanel({
+  base,
+  runner,
+  onDecide,
+}: {
+  base: Base;
+  runner: RunnerState;
+  onDecide: (decision: "scored" | "advance" | "held" | "out_early") => void;
+}) {
+  const nextBase = NEXT_BASE[base];
+  return (
+    <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
+      <p className="text-xs text-accent-amber">
+        {runner.name} was on {base} when the ball was caught -- did they advance?
+      </p>
+      <div className="mt-2 flex flex-col gap-1.5">
+        <button
+          onClick={() => onDecide("scored")}
+          className="min-h-[44px] rounded-md border border-accent-green/60 px-3 text-left text-sm font-medium text-white hover:bg-accent-green/20"
+        >
+          Scored — RBI (sacrifice fly)
+        </button>
+        {nextBase && (
+          <button
+            onClick={() => onDecide("advance")}
+            className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
+          >
+            Advanced to {nextBase}
+          </button>
+        )}
+        <button
+          onClick={() => onDecide("held")}
+          className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
+        >
+          Held at {base}
+        </button>
+        <button
+          onClick={() => onDecide("out_early")}
+          className="min-h-[44px] rounded-md border border-accent-red/60 px-3 text-left text-sm font-medium text-white hover:bg-accent-red/20"
+        >
+          Out — left early (tag-up violation)
+        </button>
+      </div>
     </div>
   );
 }
