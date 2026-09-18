@@ -1264,18 +1264,14 @@ export function OperatorConsole({
           <span className="text-accent-green">{state.ourScore}</span> {game.home_away === "home" ? teamName : game.opponent_name}
         </p>
 
-        <div className="flex items-center gap-3">
-          <div className="font-heading flex items-baseline gap-1 text-2xl font-bold leading-none">
-            <span className="text-accent-green">{state.balls}</span>
-            <span className="text-sm text-foreground/30">·</span>
-            <span className="text-accent-red">{state.strikes}</span>
-            <span className="text-sm text-foreground/30">·</span>
-            <span className="text-accent-amber">{state.outs}</span>
-          </div>
-          <button onClick={() => setLeaveConfirmOpen(true)} className="min-h-[36px] px-1 text-[10px] text-foreground/40 hover:text-white">
-            ← Dashboard
-          </button>
-        </div>
+        {/* Right-panel redesign: the floating B/S/O readout that used to
+            live here is gone -- the scoreboard's own B/S/O line (right
+            panel, Section 2) is now the only place those counts are
+            shown, so this bar is just mode toggle + inning/score + the
+            dashboard exit. */}
+        <button onClick={() => setLeaveConfirmOpen(true)} className="min-h-[36px] px-1 text-[10px] text-foreground/40 hover:text-white">
+          ← Dashboard
+        </button>
       </header>
 
       {/* Transient/occasional banners float over the top of the panels
@@ -1463,64 +1459,54 @@ export function OperatorConsole({
 
         {/* RIGHT PANEL -- what happens after contact. */}
         <div className="flex flex-col overflow-hidden p-2">
-          {/* Current batter card -- Fix 4: capped at 80px so the diamond
-              below gets the overwhelming majority of the panel's height. */}
-          <div className="glossy flex max-h-[80px] shrink-0 items-center gap-3 overflow-hidden rounded-lg border-l-4 border-accent-green bg-card p-2.5">
+          {/* Section 1 (right-panel redesign): compact batter strip, one
+              horizontal line, capped at 48px -- replaces the old
+              wide/tall bordered card. Nothing here is a "protagonist"
+              (per spec, only the batter image+zone and the diamond are),
+              so everything is deliberately small/muted, never competing
+              with those two or with the scoreboard below it. */}
+          <div className="flex h-12 max-h-12 shrink-0 items-center gap-2 overflow-hidden px-1">
             {state.mode === "hitting" ? (
               <>
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 border-accent-gold bg-surface font-heading text-lg font-bold text-white">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 border-accent-gold bg-surface font-heading text-xs font-bold text-white">
                   {battingPlayerInfo?.jersey_number ?? "—"}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className="font-heading truncate text-[20px] font-bold leading-tight text-accent-gold">
-                    {battingPlayerInfo?.name ?? "—"}
-                  </p>
-                  <div className="flex items-center gap-2 text-[13px] text-[#8AABCC]">
-                    <span>
-                      #{battingPlayerInfo?.jersey_number ?? "—"} · {battingPlayerInfo?.position ?? "—"}
-                    </span>
-                    <span className="rounded border border-accent-primary/50 px-1 text-[10px] font-semibold text-accent-primary">
-                      {battingHandBadge}
-                    </span>
-                  </div>
-                  {battingPlayerInfo && seasonBattingLines[battingPlayerInfo.id] && (
-                    <p className="font-mono text-[13px] text-foreground">
-                      AVG {formatAvg(seasonBattingLines[battingPlayerInfo.id].avg)} · HR {seasonBattingLines[battingPlayerInfo.id].hr} · RBI{" "}
-                      {seasonBattingLines[battingPlayerInfo.id].rbi}
-                    </p>
-                  )}
-                </div>
+                <p className="font-heading truncate text-[16px] font-bold text-white">{battingPlayerInfo?.name ?? "—"}</p>
+                <span className="shrink-0 text-[12px] text-foreground/40">
+                  {battingPlayerInfo?.position ?? "—"} · {battingHandBadge}
+                </span>
+                {battingPlayerInfo && seasonBattingLines[battingPlayerInfo.id] && (
+                  <span className="shrink-0 truncate font-mono text-[12px] text-accent-green/70">
+                    AVG {formatAvg(seasonBattingLines[battingPlayerInfo.id].avg)} · HR {seasonBattingLines[battingPlayerInfo.id].hr} · RBI{" "}
+                    {seasonBattingLines[battingPlayerInfo.id].rbi}
+                  </span>
+                )}
               </>
             ) : (
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] uppercase tracking-wide text-foreground/40">Opposing batter</p>
+              <>
                 <input
                   value={state.opponentBatterName}
                   onChange={(e) => dispatch({ type: "SET_OPPONENT_BATTER_NAME", name: e.target.value })}
                   list="opponent-batters"
-                  placeholder="Type or select name"
-                  className="font-heading w-full border-b border-border bg-transparent text-lg font-bold text-accent-gold outline-none focus:border-accent-primary"
+                  placeholder="Opposing batter…"
+                  className="font-heading min-w-0 flex-1 border-b border-border bg-transparent text-[16px] font-bold text-white outline-none focus:border-accent-primary"
                 />
                 <datalist id="opponent-batters">
                   {opponentPlayers.map((p) => (
                     <option key={p.id} value={p.name} />
                   ))}
                 </datalist>
-                <div className="mt-1 flex items-center justify-between text-[10px]">
-                  <button onClick={() => setPitcherPickerOpen(true)} className="text-accent-primary hover:underline">
-                    Pitcher: {currentPitcher ? currentPitcher.name : "Select…"}
-                  </button>
-                  <span className={pitchCountColor}>
-                    {state.pendingPitches.length} this AB · {state.pitchCountForCurrentPitcher} total
-                  </span>
-                </div>
-              </div>
+                <button onClick={() => setPitcherPickerOpen(true)} className="shrink-0 text-[12px] text-accent-primary hover:underline">
+                  P: {currentPitcher ? currentPitcher.name : "Select…"}
+                </button>
+                <span className={`shrink-0 text-[12px] ${pitchCountColor}`}>{state.pitchCountForCurrentPitcher}p</span>
+              </>
             )}
           </div>
 
-          {/* Fix 5 (six-fixes batch): persistent scoreboard, above the
-              diamond -- always visible regardless of rightPanelMode.
-              Diamond sizing below is untouched by this. */}
+          {/* Section 2 (right-panel redesign): MLB-style scoreboard,
+              above the diamond -- always visible regardless of
+              rightPanelMode. Diamond sizing below is untouched by this. */}
           <Scoreboard
             teamName={teamName}
             opponentName={game.opponent_name ?? "Opponent"}
@@ -1535,34 +1521,43 @@ export function OperatorConsole({
             celebrateKey={scoreCelebrateKey}
           />
 
-          {/* Fix 7: on-deck batter -- below the scoreboard, above the
-              diamond, one compact muted line so it stays supporting info
-              rather than competing with the diamond for attention.
-              Derived from onDeckPlayerInfo above, so it advances
-              automatically the moment the batting order does. Opponent
-              batters (mode === "pitching") have no lineup/order concept
-              here, so this only ever shows in hitting mode. */}
+          {/* Section 3: on-deck batter -- capped at 24px, one compact
+              muted line so it stays supporting info rather than
+              competing with the diamond or the scoreboard for
+              attention. Derived from onDeckPlayerInfo above, so it
+              advances automatically the moment the batting order does.
+              Opponent batters (mode === "pitching") have no lineup/
+              order concept here, so this only ever shows in hitting
+              mode. The jersey circle is styled as a glowing blue badge
+              (border/background + drop-shadow filter) -- a deliberately
+              different accent color from the gold/green/amber already
+              used everywhere else on this screen, so "on deck" reads as
+              its own distinct category at a glance. */}
           {state.mode === "hitting" && onDeckPlayerInfo && (
-            <div className="shrink-0 truncate py-0.5 text-center text-xs text-foreground/50">
-              <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-accent-amber">On deck</span>{" "}
-              <span aria-hidden="true">⚾</span>{" "}
-              <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[9px] font-bold text-foreground/70">
+            <div className="flex h-6 max-h-6 shrink-0 items-center justify-center gap-1.5 truncate font-mono text-[12px] text-foreground/50">
+              <span className="font-semibold uppercase tracking-wide text-accent-amber">On deck</span>
+              <span aria-hidden="true">⚾</span>
+              <span
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                style={{ background: "#3B82F6", filter: "drop-shadow(0 0 6px #3B82F6)" }}
+              >
                 {onDeckPlayerInfo.jersey_number ?? "—"}
-              </span>{" "}
-              {onDeckPlayerInfo.name}
-              {seasonBattingLines[onDeckPlayerInfo.id] && <> {formatAvg(seasonBattingLines[onDeckPlayerInfo.id].avg)}</>}
+              </span>
+              <span className="truncate">{onDeckPlayerInfo.name}</span>
+              {seasonBattingLines[onDeckPlayerInfo.id] && <span>· AVG {formatAvg(seasonBattingLines[onDeckPlayerInfo.id].avg)}</span>}
             </div>
           )}
 
           {/* Middle: exactly one of a runner popup / active flow step /
-              the diamond -- see rightPanelMode above. Every mode except
-              the diamond itself still uses the full available space here
-              (a runner picker/reason menu benefits from all the room it
-              can get); the diamond alone is wrapped in its own h-[60%]
-              box below -- runners were reading as oversized at the size
-              an unconstrained fill produced, so this batch caps it back
-              down to "≈60% of the right panel," a deliberate reduction
-              from the previous "≈75%+." */}
+              the diamond -- see rightPanelMode above. flex-1 here is
+              "everything left after sections 1 (batter strip), 2
+              (scoreboard), 3 (on-deck), and 5 (quick actions)," which the
+              diamond (Section 4) now fills entirely (h-full, not the
+              previous batch's h-[60%] cap) -- it must visually dominate
+              the panel, per this redesign's own framing. Every other
+              rightPanelMode branch still gets the same full space; only
+              the diamond's own wrapper below claims all of it as a rule
+              rather than a byproduct. */}
           <div className="flex flex-1 flex-col items-center justify-center gap-2 overflow-hidden py-1">
             {rightPanelMode === "tagUp" && (
               <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
@@ -1770,7 +1765,14 @@ export function OperatorConsole({
             )}
 
             {rightPanelMode === "diamond" && (
-              <div className="flex h-[60%] w-full items-center justify-center">
+              // Section 4 (right-panel redesign): the diamond is one of
+              // this screen's two protagonists and must dominate the
+              // panel -- h-full (was h-[60%] in a previous batch) lets
+              // it claim the middle section's entire flex-1 space, which
+              // is now genuinely "everything left after sections 1-3-5"
+              // rather than a fraction of it. BaserunnerDiamond's own
+              // internals (dot/text sizes, viewBox) are untouched.
+              <div className="flex h-full w-full items-center justify-center">
                 <BaserunnerDiamond
                   runners={state.runners}
                   pending={state.runnersPendingConfirmation}
@@ -1780,9 +1782,10 @@ export function OperatorConsole({
             )}
           </div>
 
-          {/* Quick actions -- compact, secondary (Fix 4: 40px). Everything
-              else now flows from tapping the runner directly (see
-              rightPanelMode). */}
+          {/* Section 5: quick actions -- compact, secondary, 40px.
+              Everything else now flows from tapping the runner directly
+              (see rightPanelMode). Already this compact from an earlier
+              batch; unchanged by this redesign beyond the section label. */}
           <div className="flex h-10 shrink-0 gap-2">
             <QuickButton
               label="Pickoff"
@@ -1993,14 +1996,26 @@ export function OperatorConsole({
 // and /batter-right.png (transparent-background silhouettes) live in
 // /public.
 //
-// BATTER_IMAGE_VERTICAL_OFFSET_PX exists so the batter's elbow lines up
-// with the top of the green strike zone and their knees with its bottom
-// (the zone sits vertically centered in this same row -- see
-// StrikeZoneGrid's usage above). Still 0 -- getting this right needs
-// visually comparing the rendered image against the zone at real size,
-// which hasn't been done yet; treat this as a known follow-up, not a
-// finished value.
-const BATTER_IMAGE_VERTICAL_OFFSET_PX = 0;
+// BATTER_IMAGE_VERTICAL_OFFSET_PX shifts the batter image so the green
+// zone's top/bottom line up with elbow/knee height. Measured directly off
+// /batter-right.png (mirror-identical to -left.png) with the Read tool:
+// elbow sits at ~30% of the image's own height from the top, knees at
+// ~60%. At a representative render size (image/row height ~600px, zone
+// at its max ~280x330 -> 250px-tall green interior after the ring's
+// insets), that puts the green zone's own top/bottom at ~29%/~71% of the
+// image height -- i.e. the zone (250px) is taller than the actual
+// elbow-to-knee span in the artwork (~0.30 of 600px = 180px) by close to
+// 70px. **A pure vertical translate cannot satisfy both edges at once**
+// when the two spans are different lengths -- shifting to fix the top
+// necessarily throws off the bottom by the same amount, and vice versa.
+// 30px (shifting the art down) is the midpoint compromise: it splits the
+// ~76px of unavoidable mismatch roughly evenly between the two edges
+// rather than perfectly satisfying one while leaving the other far off.
+// This is tuned to that one reference size, same caveat as every other
+// "approximately Npx" constant in this file -- revisit by eye in an
+// actual browser once real device sizes are known, not by rederiving the
+// math again.
+const BATTER_IMAGE_VERTICAL_OFFSET_PX = 30;
 
 // Both PNGs render the batter well inset from the *inner* edge of their
 // own bounding box -- the bat's own knob is the first non-transparent
