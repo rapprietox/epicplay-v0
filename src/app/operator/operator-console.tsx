@@ -1284,7 +1284,7 @@ export function OperatorConsole({
             {state.mode === "hitting" && atBatBattingHand !== "R" && (
               <BatterImage
                 hand="L"
-                image="/batter-left.svg"
+                image="/batter-left.png"
                 selected={atBatBattingHand === "L"}
                 flash={hbpFlash?.side === "L" ? hbpFlash.key : 0}
                 onTapHbp={() => handleImageHbpTap("L")}
@@ -1323,7 +1323,7 @@ export function OperatorConsole({
             {state.mode === "hitting" && atBatBattingHand !== "L" && (
               <BatterImage
                 hand="R"
-                image="/batter-right.svg"
+                image="/batter-right.png"
                 selected={atBatBattingHand === "R"}
                 flash={hbpFlash?.side === "R" ? hbpFlash.key : 0}
                 onTapHbp={() => handleImageHbpTap("R")}
@@ -1869,8 +1869,8 @@ export function OperatorConsole({
 // per spec, tapping the image itself is now the HBP trigger instead of
 // a hand-selection tap (hand selection moved to the small L/R pill in
 // the footer overlay below). Plain <img>, not next/image, matching the
-// rest of this file's static-/public-asset convention. /batter-left.svg
-// and /batter-right.svg (transparent-background silhouettes) live in
+// rest of this file's static-/public-asset convention. /batter-left.png
+// and /batter-right.png (transparent-background silhouettes) live in
 // /public.
 //
 // BATTER_IMAGE_VERTICAL_OFFSET_PX exists so the batter's elbow lines up
@@ -1901,7 +1901,7 @@ function BatterImage({
 }) {
   return (
     <div className="relative h-full shrink-0" style={{ opacity: selected ? 1 : 0.5 }}>
-      {/* eslint-disable-next-line @next/next/no-img-element -- static /public SVG, not an optimizable next/image candidate */}
+      {/* eslint-disable-next-line @next/next/no-img-element -- static /public PNG, not an optimizable next/image candidate */}
       <img
         src={image}
         alt={`${hand === "L" ? "Left" : "Right"}-handed batter`}
