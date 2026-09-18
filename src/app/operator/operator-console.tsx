@@ -1255,7 +1255,7 @@ export function OperatorConsole({
                 onClick={() => setAtBatBattingHand("L")}
               />
             ) : (
-              <div className="w-[52px] shrink-0" style={{ height: "min(100%, 450px)" }} />
+              <div className="w-[90px] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
             <div className="flex flex-1 items-center justify-center overflow-hidden">
               <StrikeZoneGrid
@@ -1295,7 +1295,7 @@ export function OperatorConsole({
                 onClick={() => setAtBatBattingHand("R")}
               />
             ) : (
-              <div className="w-[52px] shrink-0" style={{ height: "min(100%, 450px)" }} />
+              <div className="w-[90px] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
           </div>
 
@@ -1826,8 +1826,13 @@ export function OperatorConsole({
 // strike-zone-grid.tsx -- a batter's body is taller than just the strike
 // zone). 450px is 1.8 x the zone's 250px design-target height (itself
 // unchanged since the 4:5-ratio proportions fix); `min(100%, ...)` caps
-// it so a short panel can never force a scrollbar. Width stays a fixed
-// 52px.
+// it so a short panel can never force a scrollbar. Width is a fixed
+// 90px (widened from an original 52px so the silhouette images read
+// clearly). mix-blend-mode: multiply on the <img> itself (not the
+// button) drops the images' white background against the dark stadium
+// backdrop -- multiply darkens white to transparent-looking while
+// leaving the dark silhouette lines intact, without needing the SVGs
+// themselves re-exported with a transparent background.
 function BatterStanceCard({
   label,
   image,
@@ -1844,13 +1849,18 @@ function BatterStanceCard({
       onClick={onClick}
       aria-pressed={selected}
       aria-label={`${label}-handed batter`}
-      className={`flex w-[52px] shrink-0 items-center justify-center overflow-hidden rounded-md border-2 border-accent-green transition ${
+      className={`flex w-[90px] shrink-0 items-center justify-center overflow-hidden rounded-md border-2 border-accent-green transition ${
         selected ? "glow-green bg-accent-green/20" : "bg-card"
       }`}
       style={{ height: "min(100%, 450px)" }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- static /public SVG, not an optimizable next/image candidate */}
-      <img src={image} alt={`${label}-handed batter silhouette`} className="h-full w-full object-contain" />
+      <img
+        src={image}
+        alt={`${label}-handed batter silhouette`}
+        className="h-full w-full object-contain"
+        style={{ mixBlendMode: "multiply" }}
+      />
     </button>
   );
 }
