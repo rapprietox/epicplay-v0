@@ -1243,12 +1243,17 @@ export function OperatorConsole({
               taller than the strike zone), so the row can no longer make
               them the same height as each other. The zone wrapper is
               flex-1 so it claims the remaining row width; the zone itself
-              is w-full max-w-[280px] aspect-[28/25] (width-driven, height
+              is w-full max-w-[280px] aspect-[28/33] (width-driven, height
               derived), and items-center is what visually centers it
               vertically inside the taller cards' row. */}
           <div className="flex flex-1 items-center justify-center gap-0 overflow-hidden py-1">
             {state.mode === "hitting" ? (
-              <BatterStanceCard label="L" selected={atBatBattingHand === "L"} onClick={() => setAtBatBattingHand("L")} />
+              <BatterStanceCard
+                label="L"
+                image="/batter-left.svg"
+                selected={atBatBattingHand === "L"}
+                onClick={() => setAtBatBattingHand("L")}
+              />
             ) : (
               <div className="w-[52px] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
@@ -1283,7 +1288,12 @@ export function OperatorConsole({
               />
             </div>
             {state.mode === "hitting" ? (
-              <BatterStanceCard label="R" selected={atBatBattingHand === "R"} onClick={() => setAtBatBattingHand("R")} />
+              <BatterStanceCard
+                label="R"
+                image="/batter-right.svg"
+                selected={atBatBattingHand === "R"}
+                onClick={() => setAtBatBattingHand("R")}
+              />
             ) : (
               <div className="w-[52px] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
@@ -1804,8 +1814,12 @@ export function OperatorConsole({
 // stats (Strike Rate by pitch type, etc.) treat a null pitch_type as
 // anything but "excluded from that breakdown," which is already correct.
 // Batter handedness ("L"/"R") flanking the strike zone -- originally two
-// small ellipse buttons, redesigned in a later fix into a tall card (a
-// placeholder for a future left-/right-handed batter SVG silhouette).
+// small ellipse buttons, then a placeholder card with just an "L"/"R"
+// letter, now the real left-/right-handed batter SVG silhouettes
+// (/public/batter-left.svg, /public/batter-right.svg). Plain <img>, not
+// next/image -- this codebase has no other next/image usage and these
+// are static /public files (same pattern StadiumBackground uses for its
+// own static image, just object-fit instead of a CSS background).
 // Height-alignment fix: the card is deliberately TALLER than the zone +
 // ball-zone ring now (~1.8x the zone's own height, since the ring no
 // longer adds any height of its own -- see the RING_X comment in
@@ -1814,17 +1828,29 @@ export function OperatorConsole({
 // unchanged since the 4:5-ratio proportions fix); `min(100%, ...)` caps
 // it so a short panel can never force a scrollbar. Width stays a fixed
 // 52px.
-function BatterStanceCard({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
+function BatterStanceCard({
+  label,
+  image,
+  selected,
+  onClick,
+}: {
+  label: string;
+  image: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       onClick={onClick}
       aria-pressed={selected}
-      className={`flex w-[52px] shrink-0 flex-col items-center justify-center rounded-md border-2 border-accent-green text-lg font-bold transition ${
-        selected ? "glow-green bg-accent-green/20 text-white" : "bg-card text-foreground/50"
+      aria-label={`${label}-handed batter`}
+      className={`flex w-[52px] shrink-0 items-center justify-center overflow-hidden rounded-md border-2 border-accent-green transition ${
+        selected ? "glow-green bg-accent-green/20" : "bg-card"
       }`}
       style={{ height: "min(100%, 450px)" }}
     >
-      {label}
+      {/* eslint-disable-next-line @next/next/no-img-element -- static /public SVG, not an optimizable next/image candidate */}
+      <img src={image} alt={`${label}-handed batter silhouette`} className="h-full w-full object-contain" />
     </button>
   );
 }
