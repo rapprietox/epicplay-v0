@@ -1598,6 +1598,122 @@ consumer on this screen any more. Real heat maps remain exactly where
 they already lived: the coach's per-player breakdown page
 (`/coach/players/[id]`), unaffected by any of this.
 
+## Height-alignment batch: ball zone flush to the strike zone, a smaller
+## diamond, and a bigger runner popup
+
+Two fixes. No schema changes -- both are sizing/CSS plus one small,
+necessary knock-on fix to `hbpEligible`'s row indexing (see Fix 1).
+
+### Fix 1: the ball zone no longer extends above/below the strike zone
+
+The ring's vertical extension (added when the 16-cell ball-zone ring was
+first built, still present through the later 4:5-ratio proportions
+batch) is gone -- the ring now only adds cells to the left and right,
+so the ring+zone's combined height is exactly the zone's own height,
+top and bottom edges flush. `strike-zone-grid.tsx` used to derive
+`EXT_MIN_Y`/`EXT_MAX_Y` from a `RING_Y` constant the same way `RING_X`
+still works; `RING_Y` is deleted outright (not zeroed) and
+`EXT_MIN_Y`/`EXT_SPAN_Y` are just `0`/`100` -- literally the zone's own
+range. That single change cascades correctly through the existing
+rendering code almost for free: the ball-zone background rect, drawn
+from `EXT_MIN_Y` to `EXT_MIN_Y + EXT_SPAN_Y`, now has the same Y-range
+as the strike zone rect drawn on top of it, so the red background is
+naturally invisible above/below and only shows where the green zone
+rect doesn't cover it (left/right) -- no special-casing needed. The two
+divider-line groups that used to draw *above* and *below* the zone
+(`ring-v`/`ring-v2`) are removed outright rather than left in (with
+`EXT_MIN_Y`/`EXT_MAX_Y` now equal to the zone's own 0/100, they'd have
+rendered zero-length lines -- harmless, but dead code, not just
+unreachable-for-now).
+
+**This reshapes the ring from a 5x5 grid (16 outer cells) to a 5-col x
+3-row layout (6 outer cells: 3 left, 3 right, no corners)** --
+`GRID_BOUNDS_Y` shrank from 6 entries (ring-row, 3 thirds, ring-row) to
+4 (just the 3 thirds), so `classifyZone`'s `row` now lands in 0-2
+instead of 0-4, and `isBallZone` is `col === 0 || col === 4` only (the
+old `|| row === 0 || row === 4` had no rows left to match). **This is a
+breaking change for `hbpEligible` in `operator-console.tsx`**, which
+gated HBP eligibility on `zone.row === 1 || zone.row === 2` under the
+old 0-4 scale (meaning "the zone's own top third or middle third,"
+since rows 0/4 were ring rows and row 3 was the zone's bottom third).
+Updated to `zone.row === 0 || zone.row === 1` under the new 0-2 scale --
+the exact same real-world cells (top third + middle third eligible,
+bottom third excluded), just reindexed now that there's no ring row 0
+to push the zone's own rows up by one. Left unfixed, HBP would have
+silently become eligible in the wrong cells (or never eligible at all)
+the moment this batch shipped -- caught by re-deriving the mapping by
+hand rather than by a type error, since `row` is just a `number`.
+
+The container's aspect ratio changed from `28/25`'s predecessor
+`28/33` (the previous batch's 280x330 target, ring included on all four
+sides) to `28/25` (280 wide x 250 tall -- 250 being the green zone's own
+target height, unchanged since the 4:5-ratio fix, now also the *total*
+box height since the ring adds none). Sizing reverted from
+height-driven (`h-full` + aspect-ratio computing width, introduced by
+the immediately preceding batch to make the zone match the batter
+cards' stretched height) back to width-driven (`w-full max-w-[280px]` +
+aspect-ratio computing height) -- necessary because Fix 2 below made
+the batter cards independently taller than the zone again, so there's
+no longer a shared "row height" for the zone to derive its size from.
+
+### Fix 1 continued: batter cards taller again, zone centered
+
+`BatterStanceCard` went back to a fixed pixel height (`min(100%,
+450px)`, same `min()`-safety-cap pattern the pre-previous batch used)
+instead of `h-full` -- 450px is 1.8x the zone's 250px design-target
+height, per this request's explicit ratio. The row wrapping "L card /
+zone / R card" went back to `items-center` (from `items-stretch`), which
+is what lets the now-taller cards and the independently-width-driven
+zone each keep their own height -- exactly the same mechanism the
+2-batches-ago version used for its 1.6x cards, just with a new ratio and
+a reintroduced `flex-1` wrapper div around `StrikeZoneGrid` (so the zone
+claims the row's remaining width the same way it did before the
+immediately preceding batch removed that wrapper). `gap-0` (cards flush
+against the ball zone's outer border) is unchanged from the previous
+batch -- this request didn't ask to reintroduce a gap, only to change
+the height relationship.
+
+### Fix 2: the diamond shrinks to ~60% of the right panel, runners with it
+
+The diamond's wrapping box gained an explicit `h-[60%]` (down from
+filling essentially the entire middle section, which the previous batch
+had measured out at "well over 75%"). That 60% resolves against the
+middle section's own height, not literally the right panel's total
+height including the 80px batter-card header and 40px quick-actions
+footer -- an exact "60% of the *entire* panel" would need either a CSS
+Grid with percentage row tracks on the whole right-panel column or a
+JS-measured height, neither of which fits this app's existing
+flexbox-and-Tailwind-only pattern for this screen. Since the middle
+section is already the panel's dominant portion, "60% of it" reads as a
+reasonable, clearly-smaller-than-before approximation of "60% of the
+panel" -- the same spirit as every other "approximately Nx/N%" sizing
+decision already documented in this file, not a literal pixel
+guarantee.
+
+`BaserunnerDiamond`'s runner-dot radius shrank from `22` to `18` (36
+viewBox units of diameter, directly mirroring the requested "36px" the
+same way the previous batch's `22` mirrored "44px") and the jersey/name
+text shrank with it (jersey `22`->`18`, name `12`->`11`, per the
+request's explicit "11px" for the name). The 200-unit viewBox, base
+positions, and base-square size (`BASE_HALF`) are all unchanged -- only
+the runner dot/text and the *container* the whole diamond renders into
+got smaller.
+
+**The runner-action popup (and its two reason submenus) grew, not
+shrank.** `RunnerQuickActionMenu` (Advance/Scored/Out/Picked Off),
+`AdvanceReasonMenu`, and `OutReasonMenu` all picked up `min-w-[200px]`
+(previously just `w-full max-w-xs`, which could theoretically shrink
+below 200px in a narrow container) and their option buttons' text grew
+from `text-xs` (12px) to an explicit `text-[15px]`, matching the
+request's numbers exactly; the existing `min-h-[44px]` on every option
+button already satisfied the "minimum 44px height" ask unchanged. All
+three menus render inside the right panel's middle section, which is
+already `items-center justify-center` -- so "centered in the right
+panel, not a tiny tooltip" was already true structurally (unlike the
+strike-zone popup, these were never portaled/anchored to the tap
+point); the complaint was size and text legibility, not position, which
+is what this fix actually addresses.
+
 ## Auth flow
 
 1. `/login` -- client component, calls

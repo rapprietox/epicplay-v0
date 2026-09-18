@@ -1236,52 +1236,56 @@ export function OperatorConsole({
           <p className="shrink-0 text-[10px] uppercase tracking-wide text-foreground/40">Strike zone — tap to log a pitch</p>
 
           {/* L batter card / zone / R batter card, flush against each
-              other (gap-0 -- Fix 2: "no gap, touching the ball zone
-              border") as one centered unit. items-stretch (not center)
-              so the cards pick up the row's own height via h-full; the
-              zone itself is height-driven (h-full + aspect-[28/33], no
-              w-full) so its width is *derived* from that shared row
-              height through the aspect-ratio, which is what keeps the
-              cards "same height as the total strike zone + ball zone
-              area" without hand-measuring anything in JS. */}
-          <div className="flex flex-1 items-stretch justify-center gap-0 overflow-hidden py-1">
+              other (gap-0 -- "no gap, touching the ball zone border") as
+              one centered unit. items-center (not stretch): the cards are
+              deliberately TALLER than the zone now (~1.8x, via the fixed
+              height on BatterStanceCard below -- a batter's body is
+              taller than the strike zone), so the row can no longer make
+              them the same height as each other. The zone wrapper is
+              flex-1 so it claims the remaining row width; the zone itself
+              is w-full max-w-[280px] aspect-[28/25] (width-driven, height
+              derived), and items-center is what visually centers it
+              vertically inside the taller cards' row. */}
+          <div className="flex flex-1 items-center justify-center gap-0 overflow-hidden py-1">
             {state.mode === "hitting" ? (
               <BatterStanceCard label="L" selected={atBatBattingHand === "L"} onClick={() => setAtBatBattingHand("L")} />
             ) : (
-              <div className="h-full w-[52px] shrink-0" />
+              <div className="w-[52px] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
-            <StrikeZoneGrid
-              selectedZone={state.selectedZone}
-              lastPitchZone={state.lastPitchZone}
-              pendingPitches={state.pendingPitches}
-              onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
-              flashKey={flashKey}
-              disabled={flowStep !== "pitch" || (state.mode === "hitting" && atBatBattingHand === null)}
-              popupContent={
-                state.selectedZone
-                  ? pitchTypeStepDone ? (
-                      <PitchOutcomePopup
-                        zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
-                        battingHand={state.mode === "hitting" ? atBatBattingHand : null}
-                        onPick={handlePitchOutcome}
-                        onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
-                      />
-                    ) : (
-                      <PitchTypePopup
-                        onPick={(t) => {
-                          dispatch({ type: "SELECT_PITCH_TYPE", pitchType: t });
-                          setPitchTypeStepDone(true);
-                        }}
-                        onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
-                      />
-                    )
-                  : undefined
-              }
-            />
+            <div className="flex flex-1 items-center justify-center overflow-hidden">
+              <StrikeZoneGrid
+                selectedZone={state.selectedZone}
+                lastPitchZone={state.lastPitchZone}
+                pendingPitches={state.pendingPitches}
+                onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
+                flashKey={flashKey}
+                disabled={flowStep !== "pitch" || (state.mode === "hitting" && atBatBattingHand === null)}
+                popupContent={
+                  state.selectedZone
+                    ? pitchTypeStepDone ? (
+                        <PitchOutcomePopup
+                          zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
+                          battingHand={state.mode === "hitting" ? atBatBattingHand : null}
+                          onPick={handlePitchOutcome}
+                          onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                        />
+                      ) : (
+                        <PitchTypePopup
+                          onPick={(t) => {
+                            dispatch({ type: "SELECT_PITCH_TYPE", pitchType: t });
+                            setPitchTypeStepDone(true);
+                          }}
+                          onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                        />
+                      )
+                    : undefined
+                }
+              />
+            </div>
             {state.mode === "hitting" ? (
               <BatterStanceCard label="R" selected={atBatBattingHand === "R"} onClick={() => setAtBatBattingHand("R")} />
             ) : (
-              <div className="h-full w-[52px] shrink-0" />
+              <div className="w-[52px] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
           </div>
 
@@ -1372,13 +1376,14 @@ export function OperatorConsole({
           </div>
 
           {/* Middle: exactly one of a runner popup / active flow step /
-              the diamond -- see rightPanelMode above. Fix 3/4: this is the
-              dominant element of the right panel now that the batter card
-              above is capped at 80px and the quick-actions row below is
-              40px -- BaserunnerDiamond's own h-full w-full (no more
-              max-w cap) fills whatever's left, which comes out to well
-              over 75% of the panel's height on any realistic tablet
-              viewport. */}
+              the diamond -- see rightPanelMode above. Every mode except
+              the diamond itself still uses the full available space here
+              (a runner picker/reason menu benefits from all the room it
+              can get); the diamond alone is wrapped in its own h-[60%]
+              box below -- runners were reading as oversized at the size
+              an unconstrained fill produced, so this batch caps it back
+              down to "≈60% of the right panel," a deliberate reduction
+              from the previous "≈75%+." */}
           <div className="flex flex-1 flex-col items-center justify-center gap-2 overflow-hidden py-1">
             {rightPanelMode === "tagUp" && (
               <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
@@ -1586,11 +1591,13 @@ export function OperatorConsole({
             )}
 
             {rightPanelMode === "diamond" && (
-              <BaserunnerDiamond
-                runners={state.runners}
-                pending={state.runnersPendingConfirmation}
-                onBaseTap={(b) => (state.runners[b] ? setRunnerActionMenu(b) : setRunnerPicker(b))}
-              />
+              <div className="flex h-[60%] w-full items-center justify-center">
+                <BaserunnerDiamond
+                  runners={state.runners}
+                  pending={state.runnersPendingConfirmation}
+                  onBaseTap={(b) => (state.runners[b] ? setRunnerActionMenu(b) : setRunnerPicker(b))}
+                />
+              </div>
             )}
           </div>
 
@@ -1799,19 +1806,23 @@ export function OperatorConsole({
 // Batter handedness ("L"/"R") flanking the strike zone -- originally two
 // small ellipse buttons, redesigned in a later fix into a tall card (a
 // placeholder for a future left-/right-handed batter SVG silhouette).
-// Fix 2 (proportions batch): width is a fixed 52px and height is h-full --
-// it picks up its height from the flex row's own stretched cross-size
-// (see the row's items-stretch above), which is exactly the strike zone
-// + ball-zone ring's combined height, not an independent 1.6x multiple of
-// the zone alone the way an earlier version of this card computed it.
+// Height-alignment fix: the card is deliberately TALLER than the zone +
+// ball-zone ring now (~1.8x the zone's own height, since the ring no
+// longer adds any height of its own -- see the RING_X comment in
+// strike-zone-grid.tsx -- a batter's body is taller than just the strike
+// zone). 450px is 1.8 x the zone's 250px design-target height (itself
+// unchanged since the 4:5-ratio proportions fix); `min(100%, ...)` caps
+// it so a short panel can never force a scrollbar. Width stays a fixed
+// 52px.
 function BatterStanceCard({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       aria-pressed={selected}
-      className={`flex h-full w-[52px] shrink-0 flex-col items-center justify-center rounded-md border-2 border-accent-green text-lg font-bold transition ${
+      className={`flex w-[52px] shrink-0 flex-col items-center justify-center rounded-md border-2 border-accent-green text-lg font-bold transition ${
         selected ? "glow-green bg-accent-green/20 text-white" : "bg-card text-foreground/50"
       }`}
+      style={{ height: "min(100%, 450px)" }}
     >
       {label}
     </button>
@@ -1858,8 +1869,13 @@ function PitchTypePopup({ onPick, onClose }: { onPick: (t: PitchType | null) => 
 // inside columns, per spec -- a switch hitter's *effective* side for this
 // at-bat isn't knowable from a static 'S' value, so this treats it the
 // same as truly unknown rather than guessing one side.
+// row is 0-2 (top/middle/bottom third of the strike zone -- the ring no
+// longer has rows of its own, see classifyZone). Same real-world cells as
+// before the ring's top/bottom removal (top third + middle third
+// eligible, bottom third excluded), just reindexed: those used to be rows
+// 1/2 on a 0-4 scale where 0 and 4 were ring rows that no longer exist.
 function hbpEligible(zone: { col: number; row: number }, hand: BattingHand | null): boolean {
-  if (zone.row !== 1 && zone.row !== 2) return false;
+  if (zone.row !== 0 && zone.row !== 1) return false;
   if (hand === "R") return zone.col === 0;
   if (hand === "L") return zone.col === 4;
   return zone.col === 0 || zone.col === 4;
@@ -2085,6 +2101,13 @@ const RUNNER_QUICK_ACTIONS: { action: RunnerQuickAction; label: string }[] = [
   { action: "picked_off", label: "Picked Off" },
 ];
 
+// Rendered inside the right panel's middle section, which is already
+// items-center/justify-center (see the "Middle:" comment above) -- so
+// this is centered in the right panel by construction, not a tooltip
+// anchored to the tap point the way the strike-zone popup is. Fix (popup
+// size batch): min-w/button-height/text size are now explicit tap-target
+// and readability minimums per spec, not just "whatever max-w-xs and
+// text-xs happen to produce."
 function RunnerQuickActionMenu({
   base,
   runner,
@@ -2097,17 +2120,17 @@ function RunnerQuickActionMenu({
   onClose: () => void;
 }) {
   return (
-    <div className="w-full max-w-xs rounded-md border border-border bg-background p-3">
+    <div className="glossy w-full min-w-[200px] max-w-xs rounded-md border border-border bg-background p-3">
       <p className="mb-2 text-xs text-foreground/50">
         {runner.jersey ? `#${runner.jersey} ` : ""}
         {runner.name} on {base}
       </p>
-      <div className="grid grid-cols-2 gap-1.5">
+      <div className="grid grid-cols-2 gap-2">
         {RUNNER_QUICK_ACTIONS.map((o) => (
           <button
             key={o.action}
             onClick={() => onAction(o.action)}
-            className="min-h-[44px] rounded border border-border px-2 text-xs font-medium text-white hover:border-accent-primary"
+            className="min-h-[44px] rounded border border-border px-2 text-[15px] font-medium text-white hover:border-accent-primary"
           >
             {o.label}
           </button>
@@ -2227,17 +2250,17 @@ function AdvanceReasonMenu({
   onClose: () => void;
 }) {
   return (
-    <div className="w-full max-w-xs rounded-md border border-accent-primary/40 bg-background p-3">
+    <div className="glossy w-full min-w-[200px] max-w-xs rounded-md border border-accent-primary/40 bg-background p-3">
       <p className="mb-2 text-xs text-foreground/50">
         {runner.jersey ? `#${runner.jersey} ` : ""}
         {runner.name} on {base} advances — why?
       </p>
-      <div className="grid grid-cols-2 gap-1.5">
+      <div className="grid grid-cols-2 gap-2">
         {ADVANCE_REASONS.map((r) => (
           <button
             key={r.value}
             onClick={() => onSelect(r.value)}
-            className="min-h-[44px] rounded border border-border px-2 text-xs font-medium text-white hover:border-accent-primary"
+            className="min-h-[44px] rounded border border-border px-2 text-[15px] font-medium text-white hover:border-accent-primary"
           >
             {r.label}
           </button>
@@ -2277,17 +2300,17 @@ function OutReasonMenu({
   onClose: () => void;
 }) {
   return (
-    <div className="w-full max-w-xs rounded-md border border-accent-red/40 bg-background p-3">
+    <div className="glossy w-full min-w-[200px] max-w-xs rounded-md border border-accent-red/40 bg-background p-3">
       <p className="mb-2 text-xs text-foreground/50">
         {runner.jersey ? `#${runner.jersey} ` : ""}
         {runner.name} on {base} — out. Why?
       </p>
-      <div className="grid grid-cols-2 gap-1.5">
+      <div className="grid grid-cols-2 gap-2">
         {OUT_REASONS.map((r) => (
           <button
             key={r.eventType}
             onClick={() => onSelect(r.eventType)}
-            className="min-h-[44px] rounded border border-border px-2 text-xs font-medium text-white hover:border-accent-primary"
+            className="min-h-[44px] rounded border border-border px-2 text-[15px] font-medium text-white hover:border-accent-primary"
           >
             {r.label}
           </button>

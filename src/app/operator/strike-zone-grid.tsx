@@ -30,34 +30,31 @@ function snapToGrid(value: number): number {
 const INNER_LINES = Array.from({ length: SUB_DIVISIONS - 1 }, (_, i) => (i + 1) * CELL);
 const THIRDS = [100 / 3, (2 * 100) / 3];
 
-// Fix 2: a 16-cell outer "ball zone" ring around the original 9-cell
+// Originally a 16-cell outer "ball zone" ring around the original 9-cell
 // strike zone -- 3 zones each on the top/bottom/left/right edges plus 4
-// corners (5x5 grid minus the center 3x3 = 16). Its coordinates fall
-// outside 0-100 rather than the 0-100 range being redefined -- see the
+// corners. A later fix (height-alignment batch) removed the top/bottom
+// extension entirely: the ring now only adds cells to the LEFT and RIGHT
+// of the strike zone, so the ring+zone's total height is exactly the
+// zone's own height, with the ring's top/bottom edges aligned flush to
+// the zone's top/bottom edges. That's a 5-col x 3-row layout (only the
+// two outer columns, spanning the same 3 rows as the zone itself) -- 6
+// ball-zone cells, not 16. Coordinates still fall outside 0-100 on the X
+// axis rather than the 0-100 range being redefined -- see the
 // pitches_ball_zone_range migration for why (existing zone_x/zone_y
-// values must keep meaning what they always have).
+// values must keep meaning what they always have); the Y axis was never
+// widened past 0-100 in the first place, so nothing changes there.
 //
-// RING_X/RING_Y are the ring's thickness in the same 0-100-scaled units
-// as the strike zone, one per axis so the *rendered* ring can be an even
-// ~40px on every side even though the zone itself (per the 4:5-ratio
-// proportions fix) is no longer square: the grid's own container is sized
-// 200x250 (4:5) for the green zone, so 1 x-unit and 1 y-unit map to
-// different pixel counts (2px and 2.5px respectively at that target
-// size), and RING_X=20/RING_Y=16 is exactly what makes both work out to
-// ~40px once multiplied by those per-axis scales. classifyZone/snapTap
-// use per-axis bounds accordingly; the component still renders with
-// preserveAspectRatio="none" (unchanged), which is what lets x and y
-// scale independently from one non-square viewBox in the first place.
+// RING_X is the ring's thickness (X only now) in the same 0-100-scaled
+// units as the strike zone; a later fix widened it from 100/6 to 100/5
+// for bigger tap targets, and it's unchanged by the top/bottom removal.
 const RING_X = 20;
-const RING_Y = 16;
 export const EXT_MIN_X = -RING_X;
 const EXT_MAX_X = 100 + RING_X;
 const EXT_SPAN_X = EXT_MAX_X - EXT_MIN_X;
-export const EXT_MIN_Y = -RING_Y;
-const EXT_MAX_Y = 100 + RING_Y;
-const EXT_SPAN_Y = EXT_MAX_Y - EXT_MIN_Y;
+export const EXT_MIN_Y = 0;
+const EXT_SPAN_Y = 100;
 const GRID_BOUNDS_X = [EXT_MIN_X, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX_X];
-const GRID_BOUNDS_Y = [EXT_MIN_Y, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX_Y];
+const GRID_BOUNDS_Y = [0, THIRDS[0], THIRDS[1], 100];
 const RING_DIVIDERS = [0, THIRDS[0], THIRDS[1], 100];
 
 function toPctX(v: number): number {
@@ -75,20 +72,22 @@ function cellIndex(v: number, bounds: number[]): number {
   return bounds.length - 2;
 }
 
-// Which of the 5x5 grid's cells a coordinate falls in -- col/row each land
-// in 0-4 (1-3 is the strike zone's own thirds, 0/4 are the outer ball-zone
-// ring). Exported so the pitch-outcome popup (operator-console.tsx) can
-// filter which outcomes make sense for a given tap (Fix: Ball/HBP don't
-// exist inside the strike zone; Strike-looking doesn't exist outside it;
-// HBP only in specific inside-column/mid-height ring cells) without
-// duplicating this grid's own geometry.
+// col lands in 0-4 (1-3 is the strike zone's own thirds, 0/4 are the
+// outer ball-zone ring columns); row lands in 0-2 -- always one of the
+// zone's own three thirds, since the ring no longer has rows of its own
+// (see the RING_X comment above). isBallZone is therefore col-only now.
+// Exported so the pitch-outcome popup (operator-console.tsx) can filter
+// which outcomes make sense for a given tap (Fix: Ball/HBP don't exist
+// inside the strike zone; Strike-looking doesn't exist outside it; HBP
+// only in specific inside-column/mid-height cells) without duplicating
+// this grid's own geometry.
 export function classifyZone(x: number, y: number): { col: number; row: number; isBallZone: boolean } {
   const col = cellIndex(x, GRID_BOUNDS_X);
   const row = cellIndex(y, GRID_BOUNDS_Y);
-  return { col, row, isBallZone: col === 0 || col === 4 || row === 0 || row === 4 };
+  return { col, row, isBallZone: col === 0 || col === 4 };
 }
 
-// Ball-zone taps snap to the center of whichever of the 16 ring cells was
+// Ball-zone taps snap to the center of whichever of the 6 ring cells was
 // tapped (no need for 9x9 precision out there); strike-zone taps keep the
 // existing fine snap.
 function snapTap(x: number, y: number): { x: number; y: number } {
@@ -172,7 +171,7 @@ export function StrikeZoneGrid({
       role="button"
       aria-disabled={disabled}
       aria-label="Strike zone and ball zones -- tap to mark pitch location"
-      className={`glossy relative h-full max-w-[280px] shrink-0 overflow-hidden rounded-md border-2 border-border bg-surface aspect-[28/33] ${
+      className={`glossy relative w-full max-w-[280px] overflow-hidden rounded-md border-2 border-border bg-surface aspect-[28/25] ${
         disabled ? "opacity-40" : "cursor-pointer"
       }`}
     >
@@ -183,20 +182,19 @@ export function StrikeZoneGrid({
       >
         {/* Ball zone: deep red background, bright red border/dividers --
             per the "colors more impressive" pass. Immediately distinct
-            at a glance from the strike zone's green. */}
+            at a glance from the strike zone's green. The Y range here is
+            just 0-100, same as the zone itself, so this rect's top and
+            bottom edges land exactly on the zone's top and bottom -- the
+            ring only actually shows on the left/right once the green
+            zone rect below is drawn on top of its center. */}
         <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="#1F0A0A" />
         <rect x={0} y={0} width={100} height={100} fill="#0A1F0D" />
 
-        {/* Ring cell dividers, continuing the strike-zone column/row
-            boundaries out into the ring. DIVIDERS covers all 4 boundary
-            positions (0/33.33/66.67/100) so every ring cell (including
-            corners) gets a full edge. */}
-        {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN_Y} x2={pos} y2={0} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
-        ))}
-        {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX_Y} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
-        ))}
+        {/* Ring cell dividers -- horizontal only now (there's no ring
+            above/below to divide vertically). DIVIDERS covers all 4
+            boundary positions (0/33.33/66.67/100) so the two ring
+            columns' 3 cells each get a full edge, top and bottom
+            included, matching the zone's own row boundaries exactly. */}
         {RING_DIVIDERS.map((pos) => (
           <line key={`ring-h-${pos}`} x1={EXT_MIN_X} y1={pos} x2={0} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}

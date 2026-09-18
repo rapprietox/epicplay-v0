@@ -2,24 +2,29 @@
 
 import type { Runners } from "@/lib/supabase/types";
 
-// Fix 3 (layout proportions batch): viewBox doubled from 0-100 to 0-200 and
-// every base/home position scaled 2x with it, keeping the diamond's own
-// geometry (proportions between bases) identical to before -- only the
-// container this renders into got bigger (see operator-console.tsx, where
-// the wrapping middle section now gives the diamond ~75%+ of the right
-// panel's height instead of the old ~280px cap). The runner dot radius and
-// text sizes are *not* a flat 2x of their old values -- they're grown
-// further on top of that, since "44px+ diameter, clearly readable jersey
-// numbers, easy-to-tap bases" are their own explicit requirements, not a
-// side effect of the viewBox getting bigger (a pure uniform scale changes
-// nothing about a shape's size relative to its container).
+// viewBox is 0-200 (doubled from an original 0-100 in an earlier fix,
+// every base/home position scaled 2x with it -- the diamond's own
+// geometry, i.e. the proportions between bases, is unchanged since then).
+// A later fix made the diamond fill most of the right panel and grew the
+// runner dot/text well beyond a flat proportional scale; the
+// height-alignment/popup-size batch after that walked the *container*
+// size back down (see operator-console.tsx -- the diamond is now capped
+// to ~60% of the right panel, not left to fill essentially all of it) and
+// shrunk the dot and text with it, since runners were reading as
+// oversized. RUNNER_R/jersey fontSize/name fontSize below are chosen the
+// same way the previous batch's 44px target was: the raw viewBox-unit
+// number mirrors the requested pixel number directly (36 viewBox units of
+// diameter for a "36px" ask), which is a reasonable approximation given
+// the container itself is a comparable number of pixels at realistic
+// panel sizes -- not an exact pixel guarantee, same caveat as every other
+// "approximately Npx" sizing decision in this codebase.
 const BASE_POS = {
   first: { x: 156, y: 124 },
   second: { x: 100, y: 68 },
   third: { x: 44, y: 124 },
 } as const;
-const BASE_HALF = 16; // 32-unit-wide base squares -- large, easy tablet tap targets
-const RUNNER_R = 22; // >=44-unit diameter, comfortably clears a 44px target at any realistic panel size
+const BASE_HALF = 16; // 32-unit-wide base squares -- large, easy tablet tap targets, unchanged by this fix
+const RUNNER_R = 18; // 36-unit diameter, mirroring the "36px" ask
 
 export function BaserunnerDiamond({
   runners,
@@ -72,10 +77,10 @@ export function BaserunnerDiamond({
                   strokeWidth="1.2"
                   style={{ filter: "drop-shadow(0 0 6px rgba(240, 192, 96, 0.9))" }}
                 />
-                <text x={pos.x} y={pos.y + 7} textAnchor="middle" fontSize="22" fontWeight="bold" fill="#030A06">
+                <text x={pos.x} y={pos.y + 6} textAnchor="middle" fontSize="18" fontWeight="bold" fill="#030A06">
                   {runner.jersey ?? "•"}
                 </text>
-                <text x={pos.x} y={pos.y + RUNNER_R + 16} textAnchor="middle" fontSize="12" fill="#C8F0D5">
+                <text x={pos.x} y={pos.y + RUNNER_R + 14} textAnchor="middle" fontSize="11" fill="#C8F0D5">
                   {runner.name.length > 12 ? `${runner.name.slice(0, 11)}…` : runner.name}
                 </text>
               </>
