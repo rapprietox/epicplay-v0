@@ -1255,7 +1255,7 @@ export function OperatorConsole({
                 onClick={() => setAtBatBattingHand("L")}
               />
             ) : (
-              <div className="w-[90px] shrink-0" style={{ height: "min(100%, 450px)" }} />
+              <div className="aspect-[9/16] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
             <div className="flex flex-1 items-center justify-center overflow-hidden">
               <StrikeZoneGrid
@@ -1295,7 +1295,7 @@ export function OperatorConsole({
                 onClick={() => setAtBatBattingHand("R")}
               />
             ) : (
-              <div className="w-[90px] shrink-0" style={{ height: "min(100%, 450px)" }} />
+              <div className="aspect-[9/16] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
           </div>
 
@@ -1826,9 +1826,11 @@ export function OperatorConsole({
 // strike-zone-grid.tsx -- a batter's body is taller than just the strike
 // zone). 450px is 1.8 x the zone's 250px design-target height (itself
 // unchanged since the 4:5-ratio proportions fix); `min(100%, ...)` caps
-// it so a short panel can never force a scrollbar. Width is a fixed
-// 90px (widened from an original 52px so the silhouette images read
-// clearly). mix-blend-mode: multiply on the <img> itself (not the
+// it so a short panel can never force a scrollbar. Width used to be a
+// fixed pixel value (52px, then 90px); it's now aspect-[9/16] instead --
+// a fixed portrait ratio, with width derived from the height above
+// rather than an independent number, per the explicit "9:16 aspect
+// ratio" ask. mix-blend-mode: multiply on the <img> itself (not the
 // button) drops the images' white background against the dark stadium
 // backdrop -- multiply darkens white to transparent-looking while
 // leaving the dark silhouette lines intact, without needing the SVGs
@@ -1849,7 +1851,7 @@ function BatterStanceCard({
       onClick={onClick}
       aria-pressed={selected}
       aria-label={`${label}-handed batter`}
-      className={`flex w-[90px] shrink-0 items-center justify-center overflow-hidden rounded-md border-2 border-accent-green transition ${
+      className={`flex aspect-[9/16] shrink-0 items-center justify-center overflow-hidden rounded-md border-2 border-accent-green transition ${
         selected ? "glow-green bg-accent-green/20" : "bg-card"
       }`}
       style={{ height: "min(100%, 450px)" }}
