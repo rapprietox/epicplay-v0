@@ -1869,13 +1869,13 @@ function PitchTypePopup({ onPick, onClose }: { onPick: (t: PitchType | null) => 
 // inside columns, per spec -- a switch hitter's *effective* side for this
 // at-bat isn't knowable from a static 'S' value, so this treats it the
 // same as truly unknown rather than guessing one side.
-// row is 0-2 (top/middle/bottom third of the strike zone -- the ring no
-// longer has rows of its own, see classifyZone). Same real-world cells as
-// before the ring's top/bottom removal (top third + middle third
-// eligible, bottom third excluded), just reindexed: those used to be rows
-// 1/2 on a 0-4 scale where 0 and 4 were ring rows that no longer exist.
+// row is 0-4 (1-3 are the zone's own top/middle/bottom thirds, 0/4 are the
+// ring's top/bottom rows -- restored). Eligible in the zone's own top
+// third and middle third only (rows 1/2); row 0 is the ring's top row,
+// rows 3/4 are the zone's bottom third and the ring's bottom row -- all
+// excluded, per "not top row, not bottom two rows."
 function hbpEligible(zone: { col: number; row: number }, hand: BattingHand | null): boolean {
-  if (zone.row !== 0 && zone.row !== 1) return false;
+  if (zone.row !== 1 && zone.row !== 2) return false;
   if (hand === "R") return zone.col === 0;
   if (hand === "L") return zone.col === 4;
   return zone.col === 0 || zone.col === 4;

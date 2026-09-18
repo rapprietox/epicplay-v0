@@ -1714,6 +1714,58 @@ strike-zone popup, these were never portaled/anchored to the tap
 point); the complaint was size and text legibility, not position, which
 is what this fix actually addresses.
 
+## Ball zone restored to a full ring, without growing the grid
+
+One fix, immediately reversing the ring half of the previous batch's
+Fix 1 (the top/bottom-removal) while explicitly keeping everything else
+that batch changed (the diamond size, batter card 1.8x, popup sizing).
+No schema changes.
+
+**The two constraints in the request -- "top/bottom ring, same
+thickness as left/right" and "overall height of the strike zone grid
+stays exactly as it is now" -- can't both be satisfied by simply
+restoring the previous `RING_Y = 16` value.** That value predates the
+top/bottom-removal batch and, combined with the container's *current*
+`aspect-[28/25]` sizing class (280x250, adopted when the ring stopped
+adding any height), would either grow the box back to the old 280x330
+aspect (violating "stays exactly as it is now") or -- if the class were
+left alone while `RING_Y` were just reinstated -- produce a top/bottom
+ring that's visibly *thinner* than the left/right ring, since X and Y
+already scale differently once stretched into a non-square box
+(`preserveAspectRatio="none"`), so reusing RING_X's raw unit count
+doesn't produce the same raw *pixel* thickness on the other axis.
+
+Resolved by leaving `aspect-[28/25]` (and `max-w-[280px]`) completely
+untouched -- the box's total rendered size is therefore unchanged, per
+the request -- and solving for a `RING_Y` that makes the ring's
+*physical* thickness come out to the same 40px on all four sides
+*within* that unchanged box. Since the box's total height is now fixed
+and shared between "ring, twice" and "zone," the zone's own rendered
+height necessarily shrinks somewhat (from 250px down to 170px at the
+280px-wide reference size) to make room -- the required consequence of
+"add a same-thickness ring" + "don't make the box taller," not a
+separate design choice. `RING_X`, `REF_WIDTH` (280, matching
+`max-w-[280px]`), and `REF_HEIGHT` (250, matching `aspect-[28/25]` at
+that width) are combined into a `RING_Y` formula in
+`strike-zone-grid.tsx` (`RING_Y = (100 * RING_PX) / (REF_HEIGHT - 2 *
+RING_PX)`, where `RING_PX` is the left/right ring's already-known 40px)
+rather than a hand-picked decimal, so the relationship stays correct
+and self-documenting if `RING_X` or the aspect-ratio class ever change
+together in one future edit.
+
+`GRID_BOUNDS_Y`, `classifyZone`'s `isBallZone` check (back to `col ===
+0 || col === 4 || row === 0 || row === 4`, restoring the corners), the
+`ring-v`/`ring-v2` divider line groups, and `EXT_MAX_Y` are all
+restored to their pre-previous-batch shape -- this is a straight
+reversion of that batch's Fix 1 mechanics, not a new design. **One
+consequential fix carried over correctly:** `hbpEligible`
+(`operator-console.tsx`), which the previous batch had reindexed from a
+0-4 row scale to 0-2 when the ring rows briefly went away, is reverted
+back to checking `row === 1 || row === 2` on the restored 0-4 scale --
+leaving it on the 0-2 check would have silently broken HBP eligibility
+again the moment the ring rows came back and `row` started reaching
+0/3/4 in cells that used to be (and are again) ring cells.
+
 ## Auth flow
 
 1. `/login` -- client component, calls
