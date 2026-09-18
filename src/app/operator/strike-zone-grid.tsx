@@ -176,7 +176,7 @@ export function StrikeZoneGrid({
       role="button"
       aria-disabled={disabled}
       aria-label="Strike zone and ball zones -- tap to mark pitch location"
-      className={`glossy relative w-full max-w-[280px] overflow-hidden rounded-md border-2 border-border bg-surface aspect-[28/33] ${
+      className={`zone-nuclear-glow glossy relative w-full max-w-[280px] overflow-hidden rounded-md border-2 border-border bg-surface aspect-[28/33] ${
         disabled ? "opacity-40" : "cursor-pointer"
       }`}
     >
@@ -217,16 +217,23 @@ export function StrikeZoneGrid({
         {INNER_LINES.map((pos) => (
           <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#1A3D28" strokeWidth={0.4} />
         ))}
-        {THIRDS.map((pos) => (
-          <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
-        ))}
-        {THIRDS.map((pos) => (
-          <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
-        ))}
+        {/* Holographic pass: the zone's bright-green lines (thirds +
+            boundary, not the faint 9x9 subdivision lines) pulse gently
+            on a 2s loop -- see .zone-pulse in globals.css. Grouped in one
+            <g> so a single animation class covers all of them instead of
+            repeating it per-element. */}
+        <g className="zone-pulse">
+          {THIRDS.map((pos) => (
+            <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
+          ))}
+          {THIRDS.map((pos) => (
+            <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
+          ))}
 
-        {/* Strike-zone boundary -- bright green, separates it from the
-            ball-zone ring */}
-        <rect x={0} y={0} width={100} height={100} fill="none" stroke="#2ECC71" strokeWidth={1} opacity={0.9} />
+          {/* Strike-zone boundary -- bright green, separates it from the
+              ball-zone ring */}
+          <rect x={0} y={0} width={100} height={100} fill="none" stroke="#2ECC71" strokeWidth={1} opacity={0.9} />
+        </g>
 
         {/* Fix 5 (v2): pitch confirmation flash -- a gold-stroked duplicate
             of the strike zone's own grid lines, laid exactly on top and
@@ -257,6 +264,15 @@ export function StrikeZoneGrid({
           </g>
         )}
       </svg>
+
+      {/* Holographic pass: a subtle red inset glow (hugs this box's own
+          edge, which is where the ball-zone ring actually sits -- the
+          8px blur never reaches as far in as the green zone's center) and
+          a faint scanline texture over the whole thing, both purely
+          decorative (pointer-events-none, rounded-md to match the
+          container's own corners). See .zone-scan-overlay in
+          globals.css. */}
+      <div className="zone-scan-overlay pointer-events-none absolute inset-0 rounded-md" />
 
       {pendingPitches
         .filter((p): p is ZonePitch & { zone_x: number; zone_y: number } => p.zone_x !== null && p.zone_y !== null)

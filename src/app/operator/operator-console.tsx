@@ -1893,11 +1893,13 @@ const BATTER_IMAGE_VERTICAL_OFFSET_PX = 0;
 // actually is. translateX pulls the image in by that fraction (a %
 // value in `transform` is relative to the element's *own* box, unlike
 // margin/inset percentages, so this stays correct at any rendered size)
-// plus a further fixed 10px so the visible art overlaps the zone
-// slightly, per spec. Sign flips with which side the image is on: the R
-// image needs to move left (negative), the L image right (positive).
+// plus a further fixed overlap so the visible art overlaps the zone,
+// per spec. Sign flips with which side the image is on: the R image
+// needs to move left (negative), the L image right (positive). The
+// overlap itself was 10px, then doubled to 20px in a follow-up request
+// ("the same delta again") to bring it in closer still.
 const BATTER_IMAGE_INNER_MARGIN_PCT = 11.5;
-const BATTER_IMAGE_OVERLAP_PX = 10;
+const BATTER_IMAGE_OVERLAP_PX = 20;
 
 function BatterImage({
   hand,

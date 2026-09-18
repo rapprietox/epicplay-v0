@@ -116,3 +116,51 @@ body {
   background: #e24b4a;
   animation: batter-hbp-flash 350ms ease-out;
 }
+
+/* Holographic pass: the strike-zone-grid container's own nuclear-gold
+   outer glow, matching the batter image's selection glow so the two
+   halves of the left panel read as one "sci-fi holographic display"
+   rather than the batter image being the only glowing thing. Unlike
+   .batter-glow-selected this one is always on (the zone isn't a
+   selectable thing with an "unselected" state), so it's a plain static
+   filter, no animation/fill-mode concern. drop-shadow, not box-shadow --
+   the container has real corners (rounded-md) box-shadow would also
+   glow, but staying consistent with drop-shadow elsewhere in this file
+   costs nothing and drop-shadow's per-layer softness reads better at
+   this size. */
+.zone-nuclear-glow {
+  filter: drop-shadow(0 0 16px #f0c060) drop-shadow(0 0 32px #f0c060);
+}
+
+/* The zone's own bright-green thirds/boundary lines (not the faint 9x9
+   subdivision lines, which stay static) pulse gently forever -- part of
+   the same holographic-display pass as the glow above. */
+@keyframes zone-pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+.zone-pulse {
+  animation: zone-pulse 2s ease-in-out infinite;
+}
+
+/* A red inset glow that hugs the container's own edge (physically where
+   the ball-zone ring sits, since an 8px inset blur never reaches as far
+   in as the green zone's center) plus a faint scanline texture over the
+   whole box -- both purely decorative, non-interactive. */
+.zone-scan-overlay {
+  box-shadow: inset 0 0 8px rgba(255, 68, 68, 0.4);
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 255, 0, 0.02) 2px,
+    rgba(0, 255, 0, 0.02) 4px
+  );
+}
