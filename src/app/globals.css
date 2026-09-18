@@ -276,3 +276,140 @@ body {
   transform: translateY(0);
   animation: toast-slide-in 250ms ease-out;
 }
+
+/* Toast slide-*out* -- applied (in place of .toast-slide-in) once
+   operator-console.tsx marks a toast "leaving," 300ms before it's
+   removed from the DOM entirely. Ends at the same off-screen position
+   .toast-slide-in started from, so the two read as a matched pair. */
+@keyframes toast-slide-out {
+  0% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+}
+.toast-slide-out {
+  transform: translateY(-20px);
+  opacity: 0;
+  animation: toast-slide-out 300ms ease-in;
+}
+
+/* Refinement pass -- Fix 5: two more full-screen flashes alongside the
+   plain .celebration-flash above (which is now only for a non-RBI run,
+   e.g. one scored on an error/wild pitch): .celebration-flash-rbi (a
+   longer, slightly softer green wash for an RBI) and
+   .celebration-flash-hr (three quick white flashes for a home run).
+   Same resting-opacity-on-the-class fill-mode fix as every other
+   one-shot flash in this file. */
+@keyframes celebration-flash-rbi {
+  0% {
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.celebration-flash-rbi {
+  opacity: 0;
+  background: rgba(46, 204, 113, 0.1);
+  animation: celebration-flash-rbi 800ms ease-out;
+}
+
+/* Three ~80ms white flashes, spaced roughly 200ms apart, over a 640ms
+   total -- exact millisecond boundaries are approximate (CSS percentage
+   keyframes, not a JS-timed sequence), same "approximately Nms" caveat
+   as every other hand-tuned timing constant in this file. */
+@keyframes celebration-flash-hr {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  4% {
+    opacity: 1;
+  }
+  8% {
+    opacity: 0;
+  }
+  44% {
+    opacity: 1;
+  }
+  48% {
+    opacity: 0;
+  }
+  84% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 0;
+  }
+}
+.celebration-flash-hr {
+  opacity: 0;
+  background: rgba(255, 255, 255, 0.15);
+  animation: celebration-flash-hr 640ms ease-out;
+}
+
+/* RBI confetti -- 40 particles (see celebration.tsx), each falling along
+   its own per-particle --dx/--dy/--rot (set inline), read by this one
+   shared keyframe. ease-in for the fall approximates gravity (starts
+   slow, accelerates) well enough without a physics simulation. */
+@keyframes confetti-fall {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) rotate(var(--rot));
+    opacity: 0;
+  }
+}
+.confetti-particle {
+  animation: confetti-fall 2.5s ease-in forwards;
+}
+
+/* Home run fireworks -- 6 bursts x 12 particles (see celebration.tsx),
+   each radiating outward along its own --dx/--dy and shrinking/fading
+   as it goes. */
+@keyframes firework-particle {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0.3);
+    opacity: 0;
+  }
+}
+.firework-particle {
+  animation: firework-particle 900ms ease-out forwards;
+}
+
+/* Home-run variant of the scoreboard score-number celebration -- bigger
+   scale (1.8x vs the plain run/RBI version's 1.3x) over 600ms, same gold
+   color flash + glow pairing. A separate class (not a parameter on
+   score-scale/score-glow) since both variants need to coexist in the
+   stylesheet and be selected by tier in scoreboard.tsx. */
+@keyframes score-scale-hr {
+  0% {
+    transform: scale(1);
+    color: #2ecc71;
+  }
+  50% {
+    transform: scale(1.8);
+    color: #f0c060;
+  }
+  100% {
+    transform: scale(1);
+    color: #2ecc71;
+  }
+}
+.score-celebrate-hr {
+  display: inline-block;
+  animation: score-scale-hr 600ms ease-out, score-glow 800ms ease-out;
+}

@@ -59,6 +59,7 @@ import { StrikeZoneGrid, OUTCOME_COLOR, classifyZone } from "./strike-zone-grid"
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
 import { Scoreboard } from "./scoreboard";
+import { ConfettiBurst, Fireworks } from "./celebration";
 import { SubstitutionPanel } from "./substitution-panel";
 import { PitchCountModal } from "./pitch-count-modal";
 import { PostGameSummary } from "./post-game-summary";
@@ -248,29 +249,52 @@ export function OperatorConsole({
   // visible pre-selection.
   const [hbpFlash, setHbpFlash] = useState<{ side: BattingHand; key: number } | null>(null);
 
-  // Fix 6 (six-fixes batch): RBI/run-scored celebration -- toasts,
-  // full-screen flash, and the scoreboard's score-pulse are all driven
+  // RBI/run-scored/home-run celebration -- toasts, full-screen flashes,
+  // confetti/fireworks, and the scoreboard's score-pulse are all driven
   // from here. Scoped to the one place that already knows, synchronously
-  // and before dispatch, exactly how many runs/RBI a confirm produced
-  // and who scored (handleConfirm below) -- not a generic
-  // state.ourScore-diff watcher, which would catch every path a run can
-  // score through (double play, intentional walk, wild pitch/balk,
-  // adjustScore for a delayed steal of home) but couldn't say *who*
-  // scored or risk double-firing against a more specific trigger.
-  // Known, documented gap: those other paths don't call handleConfirm,
-  // so they don't trigger this celebration yet -- same "honest partial
-  // coverage, flagged" precedent as this codebase's other documented
+  // and before dispatch, exactly how many runs/RBI a confirm produced,
+  // who scored, and whether the result was a home run (handleConfirm
+  // below) -- not a generic state.ourScore-diff watcher, which would
+  // catch every path a run can score through (double play, intentional
+  // walk, wild pitch/balk, adjustScore for a delayed steal of home) but
+  // couldn't say *who* scored, *how* (HR vs. otherwise), or risk
+  // double-firing against a more specific trigger. Known, documented
+  // gap: those other paths don't call handleConfirm, so they don't
+  // trigger this celebration yet -- same "honest partial coverage,
+  // flagged" precedent as this codebase's other documented
   // simplifications (Whiff Rate, chase rate, etc.), not silently assumed
   // complete.
-  const [celebrationToasts, setCelebrationToasts] = useState<{ id: number; kind: "rbi" | "run"; text: string }[]>([]);
+  const [celebrationToasts, setCelebrationToasts] = useState<
+    { id: number; kind: "rbi" | "run" | "hr"; text: string; leaving: boolean }[]
+  >([]);
+  // Three separate full-screen flashes (plain run / RBI / home run all
+  // read differently per spec -- see .celebration-flash/-rbi/-hr in
+  // globals.css) plus confetti (RBI) and fireworks (HR) particle bursts,
+  // each its own bump counter so remounting one never restarts another.
   const [celebrationFlash, setCelebrationFlash] = useState(0);
-  const [scoreCelebrateKey, setScoreCelebrateKey] = useState(0);
+  const [rbiFlash, setRbiFlash] = useState(0);
+  const [hrFlash, setHrFlash] = useState(0);
+  const [confettiKey, setConfettiKey] = useState(0);
+  const [fireworksKey, setFireworksKey] = useState(0);
+  // The scoreboard's score-number animation has two tiers (plain
+  // score-celebrate vs. the bigger score-celebrate-hr) -- tier travels
+  // alongside the bump key so Scoreboard knows which class to apply for
+  // *this* remount without needing two independent key props.
+  const [scoreCelebrate, setScoreCelebrate] = useState<{ key: number; tier: "normal" | "hr" }>({ key: 0, tier: "normal" });
   const toastIdRef = useRef(0);
 
-  function pushCelebrationToast(kind: "rbi" | "run", text: string) {
+  // durationMs is the toast's total on-screen time including its 250ms
+  // slide-in and 300ms slide-out (per spec, "stays 2s, slides out" etc.
+  // are inclusive of the transition, not additional to it) -- `leaving`
+  // flips 300ms before removal so .toast-slide-out can play first
+  // instead of the toast just vanishing.
+  function pushCelebrationToast(kind: "rbi" | "run" | "hr", text: string, durationMs = 2500) {
     const id = ++toastIdRef.current;
-    setCelebrationToasts((prev) => [...prev, { id, kind, text }]);
-    setTimeout(() => setCelebrationToasts((prev) => prev.filter((t) => t.id !== id)), 2500);
+    setCelebrationToasts((prev) => [...prev, { id, kind, text, leaving: false }]);
+    setTimeout(() => {
+      setCelebrationToasts((prev) => prev.map((t) => (t.id === id ? { ...t, leaving: true } : t)));
+    }, Math.max(0, durationMs - 300));
+    setTimeout(() => setCelebrationToasts((prev) => prev.filter((t) => t.id !== id)), durationMs);
   }
 
   useEffect(() => {
@@ -613,16 +637,34 @@ export function OperatorConsole({
 
     dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, accuracyRatio });
 
-    // Fix 6: celebrate -- hitting mode only, per spec. Reads the
-    // pre-dispatch snapshot captured above (state.scoredThisAtBat/
-    // pendingRbi are about to be reset for the next batter).
+    // Celebrate -- hitting mode only, per spec. Reads the pre-dispatch
+    // snapshot captured above (state.scoredThisAtBat/pendingRbi are
+    // about to be reset for the next batter). A home run gets its own,
+    // more dramatic tier (fireworks, triple flash, bigger score-scale,
+    // one big banner toast) instead of stacking the plain run + RBI
+    // treatments on top of it -- a HR almost always produces both, but
+    // showing all three at once would be visual noise, not "more
+    // dramatic." Every other result keeps the plain run-scored toast
+    // (per runner) and/or the RBI confetti treatment, independently,
+    // exactly as before.
     if (mode === "hitting") {
-      if (runsScored > 0) {
-        scoredRunners.forEach((s) => pushCelebrationToast("run", `🏃 ${s.runner.name} SCORES!`));
-        setCelebrationFlash((k) => k + 1);
-        setScoreCelebrateKey((k) => k + 1);
+      if (result === "hr") {
+        setFireworksKey((k) => k + 1);
+        setHrFlash((k) => k + 1);
+        setScoreCelebrate((prev) => ({ key: prev.key + 1, tier: "hr" }));
+        pushCelebrationToast("hr", `💥 HOME RUN — ${batterName}! 🔥`, 2500);
+      } else {
+        if (runsScored > 0) {
+          scoredRunners.forEach((s) => pushCelebrationToast("run", `🏃 ${s.runner.name} SCORES!`));
+          setCelebrationFlash((k) => k + 1);
+          setScoreCelebrate((prev) => ({ key: prev.key + 1, tier: "normal" }));
+        }
+        if (rbi > 0) {
+          setConfettiKey((k) => k + 1);
+          setRbiFlash((k) => k + 1);
+          pushCelebrationToast("rbi", `⚾ RBI — ${batterName}!`, 2500);
+        }
       }
-      if (rbi > 0) pushCelebrationToast("rbi", `⚾ RBI — ${batterName}!`);
     }
     setSummaryFlash(
       [RESULT_LABELS[result], hitType ? HIT_TYPE_LABELS[hitType] : null, fielding?.position ?? null].filter(Boolean).join(" — ")
@@ -1213,22 +1255,36 @@ export function OperatorConsole({
     <div className="fixed inset-0 flex flex-col overflow-hidden text-foreground">
       <StadiumBackground />
 
-      {/* Fix 6 (six-fixes batch): full-screen run-scored flash, remounted
-          (key={celebrationFlash}) on every run scored in hitting mode --
-          only rendered once triggered (celebrationFlash > 0), the same
-          "don't play on mount" guard flashKey/hbpFlash already use. */}
-      {celebrationFlash > 0 && <div key={celebrationFlash} className="celebration-flash pointer-events-none fixed inset-0 z-50" />}
+      {/* Refinement pass -- Fix 5: three full-screen flashes (plain run /
+          RBI / home run, each its own color+timing -- see globals.css),
+          each remounted only on its own trigger and only once fired
+          (guard > 0, the same "don't play on mount" pattern flashKey/
+          hbpFlash already use), plus the RBI confetti and HR fireworks
+          particle bursts. All position: fixed, pointer-events: none,
+          z-[9999] -- never intercept a tap. */}
+      {celebrationFlash > 0 && <div key={`cf-${celebrationFlash}`} className="celebration-flash pointer-events-none fixed inset-0 z-[9999]" />}
+      {rbiFlash > 0 && <div key={`rf-${rbiFlash}`} className="celebration-flash-rbi pointer-events-none fixed inset-0 z-[9999]" />}
+      {hrFlash > 0 && <div key={`hf-${hrFlash}`} className="celebration-flash-hr pointer-events-none fixed inset-0 z-[9999]" />}
+      <ConfettiBurst triggerKey={confettiKey} />
+      <Fireworks triggerKey={fireworksKey} />
 
-      {/* Fix 6: RBI / run-scored toasts, stacked top-center. The
+      {/* RBI / run-scored / home-run toasts, stacked top-center. The
           horizontal centering (-translate-x-1/2) is static, applied once
-          to this container -- not part of each toast's own slide-in
-          animation, which only needs to animate vertically. */}
-      <div className="pointer-events-none fixed left-1/2 top-4 z-50 flex -translate-x-1/2 flex-col items-center gap-2">
+          to this container -- not part of each toast's own slide
+          animation, which only needs to animate vertically. The home-run
+          toast gets its own larger, full-width-banner treatment;
+          RBI/run share the smaller pill style. `leaving` swaps the
+          slide-in class for slide-out 300ms before the toast is removed
+          from the array entirely. */}
+      <div className="pointer-events-none fixed left-1/2 top-4 z-[9999] flex w-full max-w-md -translate-x-1/2 flex-col items-center gap-2 px-4">
         {celebrationToasts.map((t) => (
           <div
             key={t.id}
-            className={`toast-slide-in whitespace-nowrap rounded-md border px-4 py-2 text-sm font-bold shadow-lg ${
-              t.kind === "rbi" ? "border-accent-gold/60 bg-[#0A2214] text-accent-gold" : "border-accent-green/60 bg-[#0A2214] text-accent-green"
+            className={`${t.leaving ? "toast-slide-out" : "toast-slide-in"} rounded-md border font-bold shadow-lg ${
+              t.kind === "hr"
+                ? "w-full whitespace-normal px-5 py-3 text-center text-lg border-accent-gold bg-gradient-to-r from-[#0A2214] via-[#123018] to-[#0A2214] text-accent-gold"
+                : "whitespace-nowrap px-4 py-2 text-sm " +
+                  (t.kind === "rbi" ? "border-accent-gold/60 bg-[#0A2214] text-accent-gold" : "border-accent-green/60 bg-[#0A2214] text-accent-green")
             }`}
           >
             {t.text}
@@ -1256,19 +1312,28 @@ export function OperatorConsole({
           ))}
         </div>
 
-        <p className="font-heading truncate text-sm font-bold text-white">
-          {state.inningHalf === "top" ? "Top" : "Bot"} {state.inning}
-          <span className="mx-1.5 text-foreground/30">·</span>
-          {game.home_away === "home" ? game.opponent_name : teamName} <span className="text-accent-green">{state.opponentScore}</span>
-          {" – "}
-          <span className="text-accent-green">{state.ourScore}</span> {game.home_away === "home" ? teamName : game.opponent_name}
+        {/* Fix 3 (three-fixes batch): inning + score used to live here,
+            redundant with the scoreboard (right panel) which already
+            shows both -- replaced with the one thing the scoreboard
+            *doesn't* say: who's currently up. Hitting mode's "AB N" is
+            the batting-order slot (state.battingOrderPosition), not a
+            true plate-appearance tally -- this app has no live per-game
+            at-bat counter for a specific player anywhere (seasonBattingLines
+            is season-wide, across every game, not this game alone), so
+            the batting-order position is what's actually available and
+            cheap to show; flagging this reading explicitly rather than
+            quietly presenting it as literal at-bat count. */}
+        <p className="truncate text-center font-mono text-[13px] text-foreground/60">
+          {state.mode === "hitting"
+            ? `HITTING — ${battingPlayerInfo?.name ?? "—"} · AB ${state.battingOrderPosition}`
+            : `PITCHING — ${currentPitcher?.name ?? "—"} · ${state.pitchCountForCurrentPitcher} pitches`}
         </p>
 
         {/* Right-panel redesign: the floating B/S/O readout that used to
             live here is gone -- the scoreboard's own B/S/O line (right
             panel, Section 2) is now the only place those counts are
-            shown, so this bar is just mode toggle + inning/score + the
-            dashboard exit. */}
+            shown, so this bar is just mode toggle + batter/pitcher info +
+            the dashboard exit. */}
         <button onClick={() => setLeaveConfirmOpen(true)} className="min-h-[36px] px-1 text-[10px] text-foreground/40 hover:text-white">
           ← Dashboard
         </button>
@@ -1339,7 +1404,7 @@ export function OperatorConsole({
             sharing that same flex-col would otherwise eat into). `relative`
             on the panel is what anchors those overlays. */}
         <div className="relative flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
-          <p className="absolute left-2 top-2 z-10 text-[14px] uppercase tracking-[0.08em] text-[#7AB893]">
+          <p className="absolute left-2 top-2 z-10 text-[15px] uppercase tracking-[0.08em] text-[#7AB893]">
             Strike zone — tap to log a pitch
           </p>
 
@@ -1457,69 +1522,88 @@ export function OperatorConsole({
           </div>
         </div>
 
-        {/* RIGHT PANEL -- what happens after contact. */}
-        <div className="flex flex-col overflow-hidden p-2">
-          {/* Section 1 (right-panel redesign): compact batter strip, one
-              horizontal line, capped at 48px -- replaces the old
-              wide/tall bordered card. Nothing here is a "protagonist"
-              (per spec, only the batter image+zone and the diamond are),
-              so everything is deliberately small/muted, never competing
-              with those two or with the scoreboard below it. */}
-          <div className="flex h-12 max-h-12 shrink-0 items-center gap-2 overflow-hidden px-1">
-            {state.mode === "hitting" ? (
-              <>
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 border-accent-gold bg-surface font-heading text-xs font-bold text-white">
-                  {battingPlayerInfo?.jersey_number ?? "—"}
+        {/* RIGHT PANEL -- what happens after contact. p-1.5 (was p-2) --
+            refinement pass, ~25% tighter, applied throughout this panel. */}
+        <div className="flex flex-col overflow-hidden p-1.5">
+          {/* Sections 1-3 (batter strip / scoreboard / on-deck) get a
+              max-width so they stay a compact centered column instead of
+              stretching edge-to-edge on a wide screen -- the diamond
+              (Section 4, below) is deliberately NOT inside this wrapper,
+              since it must still fill the panel's full remaining
+              width/height per Fix 4. */}
+          <div className="mx-auto flex w-full max-w-[420px] shrink-0 flex-col gap-1">
+          {/* Sections 1+2 (three-fixes batch): batter/pitcher card top
+              LEFT, scoreboard top RIGHT, side by side -- replaces the
+              previous stacked layout (one-line strip, then scoreboard
+              below it). justify-between + items-start per spec; the
+              card is flex-1 (takes whatever the scoreboard's fixed
+              ~220px doesn't need), the scoreboard is shrink-0 so it
+              never gets squeezed by a long name. */}
+          <div className="flex items-start justify-between gap-2">
+            <div className="glossy flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border-l-[3px] border-l-accent-green bg-card px-2.5 py-2">
+              {state.mode === "hitting" ? (
+                <>
+                  {/* Circular avatar -- jersey number for now, styled like
+                      the diamond's runner dots but bigger; swaps for a real
+                      photo once players can upload one, same slot. */}
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-accent-gold bg-surface font-heading text-2xl font-bold text-white">
+                    {battingPlayerInfo?.jersey_number ?? "—"}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-heading truncate text-[20px] font-bold text-white">{battingPlayerInfo?.name ?? "—"}</p>
+                    <p className="truncate text-[12px] text-foreground/40">
+                      {battingPlayerInfo?.position ?? "—"} · {battingHandBadge}
+                    </p>
+                    {battingPlayerInfo && seasonBattingLines[battingPlayerInfo.id] && (
+                      <p className="truncate font-mono text-[13px] text-accent-green">
+                        AVG {formatAvg(seasonBattingLines[battingPlayerInfo.id].avg)} · HR {seasonBattingLines[battingPlayerInfo.id].hr} · RBI{" "}
+                        {seasonBattingLines[battingPlayerInfo.id].rbi}
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="min-w-0 flex-1">
+                  <input
+                    value={state.opponentBatterName}
+                    onChange={(e) => dispatch({ type: "SET_OPPONENT_BATTER_NAME", name: e.target.value })}
+                    list="opponent-batters"
+                    placeholder="Opposing batter…"
+                    className="font-heading w-full border-b border-border bg-transparent text-[20px] font-bold text-white outline-none focus:border-accent-primary"
+                  />
+                  <datalist id="opponent-batters">
+                    {opponentPlayers.map((p) => (
+                      <option key={p.id} value={p.name} />
+                    ))}
+                  </datalist>
+                  <div className="mt-0.5 flex items-center gap-2">
+                    <button onClick={() => setPitcherPickerOpen(true)} className="shrink-0 text-[12px] text-accent-primary hover:underline">
+                      P: {currentPitcher ? currentPitcher.name : "Select…"}
+                    </button>
+                    <span className={`shrink-0 text-[12px] ${pitchCountColor}`}>{state.pitchCountForCurrentPitcher}p</span>
+                  </div>
                 </div>
-                <p className="font-heading truncate text-[16px] font-bold text-white">{battingPlayerInfo?.name ?? "—"}</p>
-                <span className="shrink-0 text-[12px] text-foreground/40">
-                  {battingPlayerInfo?.position ?? "—"} · {battingHandBadge}
-                </span>
-                {battingPlayerInfo && seasonBattingLines[battingPlayerInfo.id] && (
-                  <span className="shrink-0 truncate font-mono text-[12px] text-accent-green/70">
-                    AVG {formatAvg(seasonBattingLines[battingPlayerInfo.id].avg)} · HR {seasonBattingLines[battingPlayerInfo.id].hr} · RBI{" "}
-                    {seasonBattingLines[battingPlayerInfo.id].rbi}
-                  </span>
-                )}
-              </>
-            ) : (
-              <>
-                <input
-                  value={state.opponentBatterName}
-                  onChange={(e) => dispatch({ type: "SET_OPPONENT_BATTER_NAME", name: e.target.value })}
-                  list="opponent-batters"
-                  placeholder="Opposing batter…"
-                  className="font-heading min-w-0 flex-1 border-b border-border bg-transparent text-[16px] font-bold text-white outline-none focus:border-accent-primary"
-                />
-                <datalist id="opponent-batters">
-                  {opponentPlayers.map((p) => (
-                    <option key={p.id} value={p.name} />
-                  ))}
-                </datalist>
-                <button onClick={() => setPitcherPickerOpen(true)} className="shrink-0 text-[12px] text-accent-primary hover:underline">
-                  P: {currentPitcher ? currentPitcher.name : "Select…"}
-                </button>
-                <span className={`shrink-0 text-[12px] ${pitchCountColor}`}>{state.pitchCountForCurrentPitcher}p</span>
-              </>
-            )}
-          </div>
+              )}
+            </div>
 
-          {/* Section 2 (right-panel redesign): MLB-style scoreboard,
-              above the diamond -- always visible regardless of
-              rightPanelMode. Diamond sizing below is untouched by this. */}
-          <Scoreboard
-            teamName={teamName}
-            opponentName={game.opponent_name ?? "Opponent"}
-            ourScore={state.ourScore}
-            opponentScore={state.opponentScore}
-            inning={state.inning}
-            inningHalf={state.inningHalf}
-            outs={state.outs}
-            balls={state.balls}
-            strikes={state.strikes}
-            isLive={game.status === "active"}
-            celebrateKey={scoreCelebrateKey}
-          />
+            {/* Scoreboard, flush to the right edge, capped narrower
+                (~220px) than its previous standalone centered width
+                (300px) now that it shares the row with the batter card. */}
+            <Scoreboard
+              teamName={teamName}
+              opponentName={game.opponent_name ?? "Opponent"}
+              ourScore={state.ourScore}
+              opponentScore={state.opponentScore}
+              inning={state.inning}
+              inningHalf={state.inningHalf}
+              outs={state.outs}
+              balls={state.balls}
+              strikes={state.strikes}
+              isLive={game.status === "active"}
+              celebrateKey={scoreCelebrate.key}
+              celebrateTier={scoreCelebrate.tier}
+            />
+          </div>
 
           {/* Section 3: on-deck batter -- capped at 24px, one compact
               muted line so it stays supporting info rather than
@@ -1535,7 +1619,7 @@ export function OperatorConsole({
               its own distinct category at a glance. */}
           {state.mode === "hitting" && onDeckPlayerInfo && (
             <div className="flex h-6 max-h-6 shrink-0 items-center justify-center gap-1.5 truncate font-mono text-[12px] text-foreground/50">
-              <span className="font-semibold uppercase tracking-wide text-accent-amber">On deck</span>
+              <span className="text-[13px] font-semibold uppercase tracking-wide text-accent-amber">On deck</span>
               <span aria-hidden="true">⚾</span>
               <span
                 className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
@@ -1543,10 +1627,11 @@ export function OperatorConsole({
               >
                 {onDeckPlayerInfo.jersey_number ?? "—"}
               </span>
-              <span className="truncate">{onDeckPlayerInfo.name}</span>
+              <span className="truncate text-[14px]">{onDeckPlayerInfo.name}</span>
               {seasonBattingLines[onDeckPlayerInfo.id] && <span>· AVG {formatAvg(seasonBattingLines[onDeckPlayerInfo.id].avg)}</span>}
             </div>
           )}
+          </div>
 
           {/* Middle: exactly one of a runner popup / active flow step /
               the diamond -- see rightPanelMode above. flex-1 here is
