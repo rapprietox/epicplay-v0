@@ -64,6 +64,16 @@ const GRID_BOUNDS_X = [EXT_MIN_X, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX_X];
 const GRID_BOUNDS_Y = [EXT_MIN_Y, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX_Y];
 const RING_DIVIDERS = [0, THIRDS[0], THIRDS[1], 100];
 
+// Where the green 9-cell zone's own edges land as a percentage inset
+// from the *container's* edges -- the container spans the ring too, so
+// the zone itself is a smaller inner rectangle. Used to size/position
+// the .neon-border-green wrapper (see the render below) so its rotating
+// border traces exactly the zone's own boundary, not the ring's. Ring is
+// symmetric on both axes (RING_X/RING_Y equally on every side), so one
+// inset value per axis covers all four sides.
+const ZONE_INSET_X_PCT = (RING_X / EXT_SPAN_X) * 100;
+const ZONE_INSET_Y_PCT = (RING_Y / EXT_SPAN_Y) * 100;
+
 function toPctX(v: number): number {
   return ((v - EXT_MIN_X) / EXT_SPAN_X) * 100;
 }
@@ -170,59 +180,62 @@ export function StrikeZoneGrid({
   }
 
   return (
-    <div
-      ref={ref}
-      onClick={handleTap}
-      role="button"
-      aria-disabled={disabled}
-      aria-label="Strike zone and ball zones -- tap to mark pitch location"
-      className={`zone-nuclear-glow glossy relative w-full max-w-[280px] overflow-hidden rounded-md border-2 border-border bg-surface aspect-[28/33] ${
-        disabled ? "opacity-40" : "cursor-pointer"
-      }`}
-    >
-      <svg
-        viewBox={`${EXT_MIN_X} ${EXT_MIN_Y} ${EXT_SPAN_X} ${EXT_SPAN_Y}`}
-        preserveAspectRatio="none"
-        className="pointer-events-none absolute inset-0 h-full w-full"
+    // Sizing (w-full/max-w/aspect) lives on this outer wrapper, not the
+    // tappable div below -- .neon-border-red's ::before extends 2px
+    // outside its own box (inset: -2px), and the tappable div needs
+    // overflow-hidden to clip the SVG to its rounded corners, so the two
+    // can't be the same element without the border getting clipped away.
+    // This wrapper has no overflow set, so the red glow renders freely;
+    // the inner div fills it exactly (absolute inset-0) and keeps every
+    // other prop (ref, onClick, aria) it had before.
+    <div className="neon-border-red relative w-full max-w-[280px] rounded-md aspect-[28/33]">
+      <div
+        ref={ref}
+        onClick={handleTap}
+        role="button"
+        aria-disabled={disabled}
+        aria-label="Strike zone and ball zones -- tap to mark pitch location"
+        className={`glossy absolute inset-0 overflow-hidden rounded-md border-2 border-border bg-surface ${
+          disabled ? "opacity-40" : "cursor-pointer"
+        }`}
       >
-        {/* Ball zone: deep red background, bright red border/dividers --
-            per the "colors more impressive" pass. Immediately distinct
-            at a glance from the strike zone's green. */}
-        <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="#1F0A0A" />
-        <rect x={0} y={0} width={100} height={100} fill="#0A1F0D" />
+        <svg
+          viewBox={`${EXT_MIN_X} ${EXT_MIN_Y} ${EXT_SPAN_X} ${EXT_SPAN_Y}`}
+          preserveAspectRatio="none"
+          className="pointer-events-none absolute inset-0 h-full w-full"
+        >
+          {/* Ball zone: deep red background, bright red border/dividers --
+              per the "colors more impressive" pass. Immediately distinct
+              at a glance from the strike zone's green. */}
+          <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="#1F0A0A" />
+          <rect x={0} y={0} width={100} height={100} fill="#0A1F0D" />
 
-        {/* Ring cell dividers, continuing the strike-zone column/row
-            boundaries out into the ring. DIVIDERS covers all 4 boundary
-            positions (0/33.33/66.67/100) so every ring cell (including
-            corners) gets a full edge. */}
-        {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN_Y} x2={pos} y2={0} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
-        ))}
-        {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX_Y} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
-        ))}
-        {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-h-${pos}`} x1={EXT_MIN_X} y1={pos} x2={0} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
-        ))}
-        {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX_X} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
-        ))}
-        {/* Outer boundary of the ball-zone ring itself */}
-        <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="none" stroke="#FF4444" strokeWidth={0.8} opacity={0.9} />
+          {/* Ring cell dividers, continuing the strike-zone column/row
+              boundaries out into the ring. DIVIDERS covers all 4 boundary
+              positions (0/33.33/66.67/100) so every ring cell (including
+              corners) gets a full edge. */}
+          {RING_DIVIDERS.map((pos) => (
+            <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN_Y} x2={pos} y2={0} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+          ))}
+          {RING_DIVIDERS.map((pos) => (
+            <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX_Y} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+          ))}
+          {RING_DIVIDERS.map((pos) => (
+            <line key={`ring-h-${pos}`} x1={EXT_MIN_X} y1={pos} x2={0} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+          ))}
+          {RING_DIVIDERS.map((pos) => (
+            <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX_X} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+          ))}
+          {/* Outer boundary of the ball-zone ring itself */}
+          <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="none" stroke="#FF4444" strokeWidth={0.8} opacity={0.9} />
 
-        {/* Strike-zone interior */}
-        {INNER_LINES.map((pos) => (
-          <line key={`v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#1A3D28" strokeWidth={0.4} />
-        ))}
-        {INNER_LINES.map((pos) => (
-          <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#1A3D28" strokeWidth={0.4} />
-        ))}
-        {/* Holographic pass: the zone's bright-green lines (thirds +
-            boundary, not the faint 9x9 subdivision lines) pulse gently
-            on a 2s loop -- see .zone-pulse in globals.css. Grouped in one
-            <g> so a single animation class covers all of them instead of
-            repeating it per-element. */}
-        <g className="zone-pulse">
+          {/* Strike-zone interior */}
+          {INNER_LINES.map((pos) => (
+            <line key={`v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#1A3D28" strokeWidth={0.4} />
+          ))}
+          {INNER_LINES.map((pos) => (
+            <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#1A3D28" strokeWidth={0.4} />
+          ))}
           {THIRDS.map((pos) => (
             <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
           ))}
@@ -233,81 +246,91 @@ export function StrikeZoneGrid({
           {/* Strike-zone boundary -- bright green, separates it from the
               ball-zone ring */}
           <rect x={0} y={0} width={100} height={100} fill="none" stroke="#2ECC71" strokeWidth={1} opacity={0.9} />
-        </g>
 
-        {/* Fix 5 (v2): pitch confirmation flash -- a gold-stroked duplicate
-            of the strike zone's own grid lines, laid exactly on top and
-            keyed by flashKey so it remounts (restarting the CSS animation)
-            on every ball/strike/foul/HBP. Only its opacity animates
-            (0->1->0->1->0, see .grid-line-flash in globals.css) -- the
-            real lines underneath are never recolored, so there's no way
-            for this to get "stuck" showing gold. pointer-events: none (via
-            the Tailwind class) so it can never intercept a tap, even
-            mid-flash. Scoped to the strike zone's own lines, not the
-            ball-zone ring's dividers -- those just got their own red
-            styling above and flashing them gold too would muddy that. */}
-        {!!flashKey && (
-          <g key={flashKey} className="grid-line-flash pointer-events-none">
-            {INNER_LINES.map((pos) => (
-              <line key={`flash-v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#F0C060" strokeWidth={0.4} />
-            ))}
-            {INNER_LINES.map((pos) => (
-              <line key={`flash-h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#F0C060" strokeWidth={0.4} />
-            ))}
-            {THIRDS.map((pos) => (
-              <line key={`flash-V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#F0C060" strokeWidth={0.8} />
-            ))}
-            {THIRDS.map((pos) => (
-              <line key={`flash-H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#F0C060" strokeWidth={0.8} />
-            ))}
-            <rect x={0} y={0} width={100} height={100} fill="none" stroke="#F0C060" strokeWidth={1} />
-          </g>
-        )}
-      </svg>
+          {/* Fix 5 (v2): pitch confirmation flash -- a gold-stroked duplicate
+              of the strike zone's own grid lines, laid exactly on top and
+              keyed by flashKey so it remounts (restarting the CSS animation)
+              on every ball/strike/foul/HBP. Only its opacity animates
+              (0->1->0->1->0, see .grid-line-flash in globals.css) -- the
+              real lines underneath are never recolored, so there's no way
+              for this to get "stuck" showing gold. pointer-events: none (via
+              the Tailwind class) so it can never intercept a tap, even
+              mid-flash. Scoped to the strike zone's own lines, not the
+              ball-zone ring's dividers -- those just got their own red
+              styling above and flashing them gold too would muddy that. */}
+          {!!flashKey && (
+            <g key={flashKey} className="grid-line-flash pointer-events-none">
+              {INNER_LINES.map((pos) => (
+                <line key={`flash-v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#F0C060" strokeWidth={0.4} />
+              ))}
+              {INNER_LINES.map((pos) => (
+                <line key={`flash-h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#F0C060" strokeWidth={0.4} />
+              ))}
+              {THIRDS.map((pos) => (
+                <line key={`flash-V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#F0C060" strokeWidth={0.8} />
+              ))}
+              {THIRDS.map((pos) => (
+                <line key={`flash-H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#F0C060" strokeWidth={0.8} />
+              ))}
+              <rect x={0} y={0} width={100} height={100} fill="none" stroke="#F0C060" strokeWidth={1} />
+            </g>
+          )}
+        </svg>
 
-      {/* Holographic pass: a subtle red inset glow (hugs this box's own
-          edge, which is where the ball-zone ring actually sits -- the
-          8px blur never reaches as far in as the green zone's center) and
-          a faint scanline texture over the whole thing, both purely
-          decorative (pointer-events-none, rounded-md to match the
-          container's own corners). See .zone-scan-overlay in
-          globals.css. */}
-      <div className="zone-scan-overlay pointer-events-none absolute inset-0 rounded-md" />
+        {/* Animated neon border, green: traces the 9-cell zone's own
+            rectangle, not the container's -- positioned by inset
+            percentage (ZONE_INSET_X_PCT/Y_PCT) rather than a fixed pixel
+            box, so it stays exactly on the zone's boundary at any
+            rendered size. overflow-hidden on this same parent div is
+            safe for this one (unlike the red border on the outer
+            wrapper): the ring's ~40px band gives this ::before's 2px
+            outward expansion nowhere near the parent's own edge to be
+            clipped against. */}
+        <div
+          className="neon-border-green pointer-events-none absolute"
+          style={{
+            left: `${ZONE_INSET_X_PCT}%`,
+            right: `${ZONE_INSET_X_PCT}%`,
+            top: `${ZONE_INSET_Y_PCT}%`,
+            bottom: `${ZONE_INSET_Y_PCT}%`,
+          }}
+        />
 
-      {pendingPitches
-        .filter((p): p is ZonePitch & { zone_x: number; zone_y: number } => p.zone_x !== null && p.zone_y !== null)
-        .map((p, i) => (
+        {pendingPitches
+          .filter((p): p is ZonePitch & { zone_x: number; zone_y: number } => p.zone_x !== null && p.zone_y !== null)
+          .map((p, i) => (
+            <span
+              key={i}
+              className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-60"
+              style={{ left: `${toPctX(p.zone_x)}%`, top: `${toPctY(p.zone_y)}%`, backgroundColor: OUTCOME_COLOR[p.outcome] }}
+            />
+          ))}
+
+        {selectedZone && (
           <span
-            key={i}
-            className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-60"
-            style={{ left: `${toPctX(p.zone_x)}%`, top: `${toPctY(p.zone_y)}%`, backgroundColor: OUTCOME_COLOR[p.outcome] }}
+            className="pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
+            style={{
+              left: `${toPctX(selectedZone.x)}%`,
+              top: `${toPctY(selectedZone.y)}%`,
+              borderColor: "#F0C060",
+              backgroundColor: "rgba(240, 192, 96, 0.4)",
+              boxShadow: "0 0 10px 2px rgba(240, 192, 96, 0.8)",
+            }}
           />
-        ))}
+        )}
+        {lastPitchZone && (
+          <span
+            className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-background"
+            style={{
+              left: `${toPctX(lastPitchZone.x)}%`,
+              top: `${toPctY(lastPitchZone.y)}%`,
+              backgroundColor: OUTCOME_COLOR[lastPitchZone.outcome],
+            }}
+          />
+        )}
 
-      {selectedZone && (
-        <span
-          className="pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
-          style={{
-            left: `${toPctX(selectedZone.x)}%`,
-            top: `${toPctY(selectedZone.y)}%`,
-            borderColor: "#F0C060",
-            backgroundColor: "rgba(240, 192, 96, 0.4)",
-            boxShadow: "0 0 10px 2px rgba(240, 192, 96, 0.8)",
-          }}
-        />
-      )}
-      {lastPitchZone && (
-        <span
-          className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-background"
-          style={{
-            left: `${toPctX(lastPitchZone.x)}%`,
-            top: `${toPctY(lastPitchZone.y)}%`,
-            backgroundColor: OUTCOME_COLOR[lastPitchZone.outcome],
-          }}
-        />
-      )}
-
-      {selectedZone && popupContent && tapAnchor && <PopupPortal anchor={tapAnchor}>{popupContent}</PopupPortal>}
+        {selectedZone && popupContent && tapAnchor && <PopupPortal anchor={tapAnchor}>{popupContent}</PopupPortal>}
+      </div>
     </div>
   );
 }
