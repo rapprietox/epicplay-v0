@@ -58,6 +58,7 @@ import {
 import { StrikeZoneGrid, OUTCOME_COLOR, classifyZone } from "./strike-zone-grid";
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
+import { Scoreboard } from "./scoreboard";
 import { SubstitutionPanel } from "./substitution-panel";
 import { PitchCountModal } from "./pitch-count-modal";
 import { PostGameSummary } from "./post-game-summary";
@@ -107,6 +108,7 @@ export function OperatorConsole({
   opponentPlayers,
   allGamePitches,
   seasonBattingLines,
+  teamName,
 }: {
   game: Game;
   players: Player[];
@@ -120,6 +122,10 @@ export function OperatorConsole({
   // object (not a Map) since that's what survives the RSC server ->
   // client prop serialization boundary cleanly.
   seasonBattingLines: Record<string, BattingLine>;
+  // Fix 4 (six-fixes batch): the coach-set teams.name row, replacing the
+  // hardcoded "Us" the score display used everywhere it needed to name
+  // our own side.
+  teamName: string;
 }) {
   const router = useRouter();
   // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
@@ -242,6 +248,31 @@ export function OperatorConsole({
   // visible pre-selection.
   const [hbpFlash, setHbpFlash] = useState<{ side: BattingHand; key: number } | null>(null);
 
+  // Fix 6 (six-fixes batch): RBI/run-scored celebration -- toasts,
+  // full-screen flash, and the scoreboard's score-pulse are all driven
+  // from here. Scoped to the one place that already knows, synchronously
+  // and before dispatch, exactly how many runs/RBI a confirm produced
+  // and who scored (handleConfirm below) -- not a generic
+  // state.ourScore-diff watcher, which would catch every path a run can
+  // score through (double play, intentional walk, wild pitch/balk,
+  // adjustScore for a delayed steal of home) but couldn't say *who*
+  // scored or risk double-firing against a more specific trigger.
+  // Known, documented gap: those other paths don't call handleConfirm,
+  // so they don't trigger this celebration yet -- same "honest partial
+  // coverage, flagged" precedent as this codebase's other documented
+  // simplifications (Whiff Rate, chase rate, etc.), not silently assumed
+  // complete.
+  const [celebrationToasts, setCelebrationToasts] = useState<{ id: number; kind: "rbi" | "run"; text: string }[]>([]);
+  const [celebrationFlash, setCelebrationFlash] = useState(0);
+  const [scoreCelebrateKey, setScoreCelebrateKey] = useState(0);
+  const toastIdRef = useRef(0);
+
+  function pushCelebrationToast(kind: "rbi" | "run", text: string) {
+    const id = ++toastIdRef.current;
+    setCelebrationToasts((prev) => [...prev, { id, kind, text }]);
+    setTimeout(() => setCelebrationToasts((prev) => prev.filter((t) => t.id !== id)), 2500);
+  }
+
   useEffect(() => {
     if (!summaryFlash) return;
     const t = setTimeout(() => setSummaryFlash(null), 2500);
@@ -273,6 +304,22 @@ export function OperatorConsole({
     () => (battingPlayer ? players.find((p) => p.id === battingPlayer.player_id) : undefined),
     [battingPlayer, players]
   );
+
+  // Fix 7 (six-fixes batch, appended after): "on deck" is just the next
+  // slot in the batting order, wrapping from the last position back to
+  // the first -- lineup.batting_order isn't guaranteed to already be
+  // sorted (it's fetched as a plain table scan), so the position list is
+  // sorted here before finding "current, then one after it." Recomputes
+  // automatically whenever state.battingOrderPosition changes (a new
+  // batter stepping up), same as battingPlayer above.
+  const onDeckPlayerInfo = useMemo(() => {
+    if (state.mode !== "hitting" || lineup.length === 0) return undefined;
+    const positions = lineup.map((l) => l.batting_order).sort((a, b) => a - b);
+    const currentIdx = positions.indexOf(state.battingOrderPosition);
+    const nextPos = currentIdx === -1 ? positions[0] : positions[(currentIdx + 1) % positions.length];
+    const onDeckSlot = lineup.find((l) => l.batting_order === nextPos);
+    return onDeckSlot ? players.find((p) => p.id === onDeckSlot.player_id) : undefined;
+  }, [lineup, players, state.mode, state.battingOrderPosition]);
 
   // Fix 1/4: a live, per-at-bat override of the batter's hand -- not
   // written back to players.batting_hand (this fix needs no schema
@@ -561,8 +608,22 @@ export function OperatorConsole({
     const rbi = state.pendingRbi;
     const mode = state.mode;
     const fielding = state.pendingFielding;
+    const scoredRunners = state.scoredThisAtBat;
+    const batterName = battingPlayerInfo?.name ?? "Batter";
 
     dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, accuracyRatio });
+
+    // Fix 6: celebrate -- hitting mode only, per spec. Reads the
+    // pre-dispatch snapshot captured above (state.scoredThisAtBat/
+    // pendingRbi are about to be reset for the next batter).
+    if (mode === "hitting") {
+      if (runsScored > 0) {
+        scoredRunners.forEach((s) => pushCelebrationToast("run", `🏃 ${s.runner.name} SCORES!`));
+        setCelebrationFlash((k) => k + 1);
+        setScoreCelebrateKey((k) => k + 1);
+      }
+      if (rbi > 0) pushCelebrationToast("rbi", `⚾ RBI — ${batterName}!`);
+    }
     setSummaryFlash(
       [RESULT_LABELS[result], hitType ? HIT_TYPE_LABELS[hitType] : null, fielding?.position ?? null].filter(Boolean).join(" — ")
     );
@@ -1152,6 +1213,29 @@ export function OperatorConsole({
     <div className="fixed inset-0 flex flex-col overflow-hidden text-foreground">
       <StadiumBackground />
 
+      {/* Fix 6 (six-fixes batch): full-screen run-scored flash, remounted
+          (key={celebrationFlash}) on every run scored in hitting mode --
+          only rendered once triggered (celebrationFlash > 0), the same
+          "don't play on mount" guard flashKey/hbpFlash already use. */}
+      {celebrationFlash > 0 && <div key={celebrationFlash} className="celebration-flash pointer-events-none fixed inset-0 z-50" />}
+
+      {/* Fix 6: RBI / run-scored toasts, stacked top-center. The
+          horizontal centering (-translate-x-1/2) is static, applied once
+          to this container -- not part of each toast's own slide-in
+          animation, which only needs to animate vertically. */}
+      <div className="pointer-events-none fixed left-1/2 top-4 z-50 flex -translate-x-1/2 flex-col items-center gap-2">
+        {celebrationToasts.map((t) => (
+          <div
+            key={t.id}
+            className={`toast-slide-in whitespace-nowrap rounded-md border px-4 py-2 text-sm font-bold shadow-lg ${
+              t.kind === "rbi" ? "border-accent-gold/60 bg-[#0A2214] text-accent-gold" : "border-accent-green/60 bg-[#0A2214] text-accent-green"
+            }`}
+          >
+            {t.text}
+          </div>
+        ))}
+      </div>
+
       {/* TOP BAR -- 52px, always visible */}
       <header className="z-10 flex h-[52px] shrink-0 items-center justify-between gap-2 border-b-2 border-accent-primary/40 bg-surface/90 px-3">
         <div className="flex rounded-md border border-border p-1 text-xs">
@@ -1175,9 +1259,9 @@ export function OperatorConsole({
         <p className="font-heading truncate text-sm font-bold text-white">
           {state.inningHalf === "top" ? "Top" : "Bot"} {state.inning}
           <span className="mx-1.5 text-foreground/30">·</span>
-          {game.home_away === "home" ? game.opponent_name : "Us"} <span className="text-accent-green">{state.opponentScore}</span>
+          {game.home_away === "home" ? game.opponent_name : teamName} <span className="text-accent-green">{state.opponentScore}</span>
           {" – "}
-          <span className="text-accent-green">{state.ourScore}</span> {game.home_away === "home" ? "Us" : game.opponent_name}
+          <span className="text-accent-green">{state.ourScore}</span> {game.home_away === "home" ? teamName : game.opponent_name}
         </p>
 
         <div className="flex items-center gap-3">
@@ -1259,7 +1343,7 @@ export function OperatorConsole({
             sharing that same flex-col would otherwise eat into). `relative`
             on the panel is what anchors those overlays. */}
         <div className="relative flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
-          <p className="absolute left-2 top-2 z-10 text-[10px] uppercase tracking-wide text-foreground/40">
+          <p className="absolute left-2 top-2 z-10 text-[14px] uppercase tracking-[0.08em] text-[#7AB893]">
             Strike zone — tap to log a pitch
           </p>
 
@@ -1388,10 +1472,10 @@ export function OperatorConsole({
                   {battingPlayerInfo?.jersey_number ?? "—"}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="font-heading truncate text-[22px] font-bold leading-tight text-accent-gold">
+                  <p className="font-heading truncate text-[20px] font-bold leading-tight text-accent-gold">
                     {battingPlayerInfo?.name ?? "—"}
                   </p>
-                  <div className="flex items-center gap-2 text-[11px] text-foreground/60">
+                  <div className="flex items-center gap-2 text-[13px] text-[#8AABCC]">
                     <span>
                       #{battingPlayerInfo?.jersey_number ?? "—"} · {battingPlayerInfo?.position ?? "—"}
                     </span>
@@ -1400,7 +1484,7 @@ export function OperatorConsole({
                     </span>
                   </div>
                   {battingPlayerInfo && seasonBattingLines[battingPlayerInfo.id] && (
-                    <p className="font-mono text-[10px] text-foreground/50">
+                    <p className="font-mono text-[13px] text-foreground">
                       AVG {formatAvg(seasonBattingLines[battingPlayerInfo.id].avg)} · HR {seasonBattingLines[battingPlayerInfo.id].hr} · RBI{" "}
                       {seasonBattingLines[battingPlayerInfo.id].rbi}
                     </p>
@@ -1433,6 +1517,42 @@ export function OperatorConsole({
               </div>
             )}
           </div>
+
+          {/* Fix 5 (six-fixes batch): persistent scoreboard, above the
+              diamond -- always visible regardless of rightPanelMode.
+              Diamond sizing below is untouched by this. */}
+          <Scoreboard
+            teamName={teamName}
+            opponentName={game.opponent_name ?? "Opponent"}
+            ourScore={state.ourScore}
+            opponentScore={state.opponentScore}
+            inning={state.inning}
+            inningHalf={state.inningHalf}
+            outs={state.outs}
+            balls={state.balls}
+            strikes={state.strikes}
+            isLive={game.status === "active"}
+            celebrateKey={scoreCelebrateKey}
+          />
+
+          {/* Fix 7: on-deck batter -- below the scoreboard, above the
+              diamond, one compact muted line so it stays supporting info
+              rather than competing with the diamond for attention.
+              Derived from onDeckPlayerInfo above, so it advances
+              automatically the moment the batting order does. Opponent
+              batters (mode === "pitching") have no lineup/order concept
+              here, so this only ever shows in hitting mode. */}
+          {state.mode === "hitting" && onDeckPlayerInfo && (
+            <div className="shrink-0 truncate py-0.5 text-center text-xs text-foreground/50">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-accent-amber">On deck</span>{" "}
+              <span aria-hidden="true">⚾</span>{" "}
+              <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[9px] font-bold text-foreground/70">
+                {onDeckPlayerInfo.jersey_number ?? "—"}
+              </span>{" "}
+              {onDeckPlayerInfo.name}
+              {seasonBattingLines[onDeckPlayerInfo.id] && <> {formatAvg(seasonBattingLines[onDeckPlayerInfo.id].avg)}</>}
+            </div>
+          )}
 
           {/* Middle: exactly one of a runner popup / active flow step /
               the diamond -- see rightPanelMode above. Every mode except
@@ -1920,7 +2040,14 @@ function BatterImage({
 }) {
   const sign = hand === "R" ? -1 : 1;
   return (
-    <div className="relative h-full shrink-0" style={{ opacity: selected ? 1 : 0.5 }}>
+    // Fix 2 (six-fixes batch): the glow (batter-glow-selected, a filter:
+    // drop-shadow) was already scoped to just the <img> below, not this
+    // wrapper -- and this div never had overflow-hidden either, so there
+    // was nothing here actually clipping or widening it. overflow-visible
+    // is added anyway, explicitly, per spec, so nothing upstream can
+    // silently reintroduce clipping by changing this div's classes later
+    // without noticing it once carried this requirement.
+    <div className="relative h-full shrink-0 overflow-visible" style={{ opacity: selected ? 1 : 0.5 }}>
       {/* eslint-disable-next-line @next/next/no-img-element -- static /public PNG, not an optimizable next/image candidate */}
       <img
         src={image}

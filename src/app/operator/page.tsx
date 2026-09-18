@@ -24,6 +24,7 @@ export default async function OperatorPage({
   if (!profile?.team_id || !["operator", "coach"].includes(profile.role)) redirect("/pending");
 
   const teamId = profile.team_id;
+  const { data: team } = await supabase.from("teams").select("name").eq("id", teamId).single();
 
   const { data: activeGames } = searchParams.game
     ? await supabase.from("games").select("*").eq("team_id", teamId).eq("id", searchParams.game)
@@ -105,6 +106,7 @@ export default async function OperatorPage({
       opponentPlayers={opponentPlayers ?? []}
       allGamePitches={allGamePitches ?? []}
       seasonBattingLines={Object.fromEntries(seasonBattingLines)}
+      teamName={team?.name ?? "Us"}
     />
   );
 }

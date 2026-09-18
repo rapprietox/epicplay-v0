@@ -117,62 +117,162 @@ body {
   animation: batter-hbp-flash 350ms ease-out;
 }
 
-/* Animated neon border pass -- replaces the previous batch's static
-   zone-nuclear-glow / zone-pulse / zone-scan-overlay entirely (a static
-   glow + a subtle opacity pulse + a faint scanline texture), swapped out
-   for a single moving bright arc that orbits each rectangle's edge.
-   `--angle` is one shared custom property (registered via @property so
-   the browser knows to interpolate it as an <angle>, not just swap
-   between two string values with no in-between frames) driving a
-   conic-gradient rotation; .neon-border-green and .neon-border-red are
-   two colors of the same technique, applied to two different elements
-   (see strike-zone-grid.tsx): green wraps just the inner 9-cell zone
-   rectangle, red wraps the outer container (physically the ball-zone
-   ring's own outer edge). Both share this one @property/@keyframes pair
-   -- `inherits: false` means each element's animated --angle is its own,
-   not shared/synchronized state, so the two borders can safely reuse the
-   same declarations. */
+/* Spinning-border pass -- replaces the previous batch's rotating
+   conic-gradient arc entirely (a plain background-color arc with a
+   drop-shadow glow) with a proper masked border: the ::before's own
+   padding + the two-layer mask (content-box vs border-box, XORed)
+   confines the conic-gradient to a thin ring instead of filling the
+   whole box, so it reads as a single glowing dash tracing the border
+   itself rather than a soft arc floating near it. `color` + currentColor
+   is what parameterizes it per zone -- .spinning-border-green/-red set
+   color, the shared ::before rule just reads whatever that resolves to.
+
+   `position: relative` from the originally-supplied .spinning-border
+   rule is deliberately omitted here: both actual host elements (see
+   strike-zone-grid.tsx) already carry their own explicit position via
+   Tailwind (`relative` on the outer ball-zone wrapper, `absolute` on the
+   inner zone-boundary div, the latter needed for its own percentage
+   inset positioning) -- adding a bare `position: relative` on the same
+   element would win the cascade (this file's custom classes are
+   declared after `@tailwind utilities` in source order) and silently
+   flip the zone-boundary div back to static/relative, breaking its
+   inset-percentage placement. Both elements are already positioned
+   either way, so the rule was redundant even before considering that. */
 @property --angle {
   syntax: "<angle>";
   initial-value: 0deg;
   inherits: false;
 }
-@keyframes rotate-border {
+@keyframes border-spin {
   to {
     --angle: 360deg;
   }
 }
-/* The transparent/color/transparent stops span 70%-100% of the circle --
-   a 30%-of-circumference bright arc, per spec ("about 30% of the
-   perimeter") -- conic-gradient angle-percentage isn't literally
-   perimeter-length on a non-square rectangle, but this is the exact
-   technique given, applied as given.
-   z-index: -1 (part of the originally-supplied snippet) is deliberately
-   NOT used here, and z-index: 1 is used instead -- a ::before paints
-   *before* its own element's later sibling *children* by default (it's
-   literally the first thing in the box), so on .neon-border-red (the
-   outer wrapper, whose next child is the inner tappable div with its own
-   opaque bg-surface background), an unset/negative z-index would leave
-   the border almost entirely covered by that div, with only the 2px
-   .neon-border-red itself is inset beyond even that div's edges left
-   showing. z-index: 1 puts it above that sibling instead. (.neon-border-
-   green has no such sibling -- its own div is otherwise empty -- so this
-   is harmless there, kept on the shared rule for both colors.) */
-.neon-border-green::before,
-.neon-border-red::before {
+.spinning-border::before {
   content: "";
   position: absolute;
-  inset: -2px;
-  z-index: 1;
+  inset: -1px;
   border-radius: inherit;
-  animation: rotate-border 3s linear infinite;
+  padding: 3px;
+  /* The 90% stop moved to 80% (same position as the preceding transparent
+     stop) -- that turns the fade-in into a hard edge and leaves only the
+     80%-100% fade-out, a dash that spans a full 20% of the circle instead
+     of visually tapering in from 80% to a peak at 90%. */
+  background: conic-gradient(from var(--angle), transparent 0%, transparent 80%, currentColor 80%, transparent 100%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  filter: blur(2px);
+  animation: border-spin 2.5s linear infinite;
+  z-index: 1;
   pointer-events: none;
 }
-.neon-border-green::before {
-  background: conic-gradient(from var(--angle), transparent 70%, #2ecc71 85%, transparent 100%);
-  filter: drop-shadow(0 0 8px #2ecc71) drop-shadow(0 0 16px #2ecc71);
+.spinning-border-green {
+  color: #2ecc71;
 }
-.neon-border-red::before {
-  background: conic-gradient(from var(--angle), transparent 70%, #ff4444 85%, transparent 100%);
-  filter: drop-shadow(0 0 8px #ff4444) drop-shadow(0 0 16px #ff4444);
+.spinning-border-red {
+  color: #ff4444;
+}
+
+/* Fix 6 (six-fixes batch): scoreboard score-number celebration -- scale
+   1 -> 1.4 -> 1 over 400ms with a gold color flash, plus a longer 1s
+   gold glow that outlasts the scale itself (two independently-timed
+   animations on one element, comma-separated in the `animation`
+   shorthand, per the spec's two separate durations). Remounted
+   (key={celebrateKey} in scoreboard.tsx) each time a run scores in
+   hitting mode -- the same one-shot-CSS-animation-via-remount idiom
+   grid-line-flash/batter-hbp-flash already use, since a toggled class
+   alone wouldn't restart an animation that's already at rest in its
+   finished state. */
+@keyframes score-scale {
+  0% {
+    transform: scale(1);
+    color: #2ecc71;
+  }
+  50% {
+    transform: scale(1.4);
+    color: #f0c060;
+  }
+  100% {
+    transform: scale(1);
+    color: #2ecc71;
+  }
+}
+@keyframes score-glow {
+  0% {
+    filter: drop-shadow(0 0 0 rgba(240, 192, 96, 0));
+  }
+  30% {
+    filter: drop-shadow(0 0 14px #f0c060);
+  }
+  100% {
+    filter: drop-shadow(0 0 0 rgba(240, 192, 96, 0));
+  }
+}
+.score-celebrate {
+  display: inline-block;
+  animation: score-scale 400ms ease-out, score-glow 1000ms ease-out;
+}
+
+/* Scoreboard LIVE dot -- simple infinite opacity pulse. */
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.live-dot {
+  animation: live-pulse 1.2s ease-in-out infinite;
+}
+
+/* Full-screen run-scored flash (Fix 6) -- a green wash over the whole
+   screen for 600ms. Resting opacity 0 declared on the class itself, not
+   just the 0%/100% keyframe stops -- same fill-mode reasoning as
+   grid-line-flash: once animation-fill-mode: none reverts the element
+   to its un-animated state after the animation ends, that state needs
+   to already be invisible, or the flash would get stuck fully opaque. */
+@keyframes celebration-flash {
+  0% {
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.celebration-flash {
+  opacity: 0;
+  background: rgba(46, 204, 113, 0.15);
+  animation: celebration-flash 600ms ease-out;
+}
+
+/* RBI/run-scored toast slide-in from top-center (Fix 6). Horizontal
+   centering is a static `-translate-x-1/2` Tailwind utility on the
+   *container* in operator-console.tsx, not part of this animation --
+   each toast here only animates its own vertical slide-in, so there's no
+   horizontal transform for animation-fill-mode to lose track of once the
+   animation ends. Toasts are removed from the DOM entirely (not just
+   faded) after their 2.5s via a timeout in operator-console.tsx, so no
+   matching slide-out keyframe is needed -- they're simply gone.
+   `transform: translateY(0)` is still declared on .toast-slide-in itself
+   and not only inside the 100% keyframe stop, same fill-mode reasoning as
+   grid-line-flash/celebration-flash elsewhere in this file. */
+@keyframes toast-slide-in {
+  0% {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.toast-slide-in {
+  transform: translateY(0);
+  animation: toast-slide-in 250ms ease-out;
 }

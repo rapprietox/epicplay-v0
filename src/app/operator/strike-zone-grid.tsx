@@ -67,10 +67,10 @@ const RING_DIVIDERS = [0, THIRDS[0], THIRDS[1], 100];
 // Where the green 9-cell zone's own edges land as a percentage inset
 // from the *container's* edges -- the container spans the ring too, so
 // the zone itself is a smaller inner rectangle. Used to size/position
-// the .neon-border-green wrapper (see the render below) so its rotating
-// border traces exactly the zone's own boundary, not the ring's. Ring is
-// symmetric on both axes (RING_X/RING_Y equally on every side), so one
-// inset value per axis covers all four sides.
+// the .spinning-border-green wrapper (see the render below) so its
+// spinning border traces exactly the zone's own boundary, not the
+// ring's. Ring is symmetric on both axes (RING_X/RING_Y equally on
+// every side), so one inset value per axis covers all four sides.
 const ZONE_INSET_X_PCT = (RING_X / EXT_SPAN_X) * 100;
 const ZONE_INSET_Y_PCT = (RING_Y / EXT_SPAN_Y) * 100;
 
@@ -181,14 +181,14 @@ export function StrikeZoneGrid({
 
   return (
     // Sizing (w-full/max-w/aspect) lives on this outer wrapper, not the
-    // tappable div below -- .neon-border-red's ::before extends 2px
-    // outside its own box (inset: -2px), and the tappable div needs
+    // tappable div below -- .spinning-border's ::before extends slightly
+    // outside its own box (inset: -1px), and the tappable div needs
     // overflow-hidden to clip the SVG to its rounded corners, so the two
     // can't be the same element without the border getting clipped away.
-    // This wrapper has no overflow set, so the red glow renders freely;
+    // This wrapper has no overflow set, so the red border renders freely;
     // the inner div fills it exactly (absolute inset-0) and keeps every
     // other prop (ref, onClick, aria) it had before.
-    <div className="neon-border-red relative w-full max-w-[280px] rounded-md aspect-[28/33]">
+    <div className="spinning-border spinning-border-red relative w-full max-w-[280px] rounded-md aspect-[28/33]">
       <div
         ref={ref}
         onClick={handleTap}
@@ -205,47 +205,58 @@ export function StrikeZoneGrid({
           className="pointer-events-none absolute inset-0 h-full w-full"
         >
           {/* Ball zone: deep red background, bright red border/dividers --
-              per the "colors more impressive" pass. Immediately distinct
-              at a glance from the strike zone's green. */}
-          <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="#1F0A0A" />
-          <rect x={0} y={0} width={100} height={100} fill="#0A1F0D" />
+              per the "colors more impressive" pass, then the "zone colors
+              more alive" pass (deeper red bg, more vivid red lines).
+              Immediately distinct at a glance from the strike zone's
+              green. Note this red (#FF3333) is deliberately a different
+              shade from the spinning border's currentColor (#FF4444,
+              spinning-border-red above) -- one is the static ring
+              linework, the other is the moving accent, per two separate
+              requests specifying each independently. */}
+          <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="#2A0808" />
+          <rect x={0} y={0} width={100} height={100} fill="#0D2B10" />
 
           {/* Ring cell dividers, continuing the strike-zone column/row
               boundaries out into the ring. DIVIDERS covers all 4 boundary
               positions (0/33.33/66.67/100) so every ring cell (including
               corners) gets a full edge. */}
           {RING_DIVIDERS.map((pos) => (
-            <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN_Y} x2={pos} y2={0} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+            <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN_Y} x2={pos} y2={0} stroke="#FF3333" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
           ))}
           {RING_DIVIDERS.map((pos) => (
-            <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX_Y} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+            <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX_Y} stroke="#FF3333" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
           ))}
           {RING_DIVIDERS.map((pos) => (
-            <line key={`ring-h-${pos}`} x1={EXT_MIN_X} y1={pos} x2={0} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+            <line key={`ring-h-${pos}`} x1={EXT_MIN_X} y1={pos} x2={0} y2={pos} stroke="#FF3333" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
           ))}
           {RING_DIVIDERS.map((pos) => (
-            <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX_X} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+            <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX_X} y2={pos} stroke="#FF3333" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
           ))}
           {/* Outer boundary of the ball-zone ring itself */}
-          <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="none" stroke="#FF4444" strokeWidth={0.8} opacity={0.9} />
+          <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="none" stroke="#FF3333" strokeWidth={0.8} opacity={0.9} />
 
-          {/* Strike-zone interior */}
+          {/* Strike-zone interior. "Grid lines" (the request's own
+              term) reads as the whole line family here, not just the
+              already-bright thirds/boundary -- so the previously-muted
+              9x9 subdivision lines (#1A3D28) get the same vivid #00CC55
+              as the thirds/boundary, rather than only the lines that were
+              already vivid changing while the genuinely muted ones don't. */}
           {INNER_LINES.map((pos) => (
-            <line key={`v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#1A3D28" strokeWidth={0.4} />
+            <line key={`v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#00CC55" strokeWidth={0.4} />
           ))}
           {INNER_LINES.map((pos) => (
-            <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#1A3D28" strokeWidth={0.4} />
+            <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#00CC55" strokeWidth={0.4} />
           ))}
           {THIRDS.map((pos) => (
-            <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
+            <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#00CC55" strokeWidth={0.8} opacity={0.6} />
           ))}
           {THIRDS.map((pos) => (
-            <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#2ECC71" strokeWidth={0.8} opacity={0.6} />
+            <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#00CC55" strokeWidth={0.8} opacity={0.6} />
           ))}
 
           {/* Strike-zone boundary -- bright green, separates it from the
               ball-zone ring */}
-          <rect x={0} y={0} width={100} height={100} fill="none" stroke="#2ECC71" strokeWidth={1} opacity={0.9} />
+          <rect x={0} y={0} width={100} height={100} fill="none" stroke="#00CC55" strokeWidth={1} opacity={0.9} />
 
           {/* Fix 5 (v2): pitch confirmation flash -- a gold-stroked duplicate
               of the strike zone's own grid lines, laid exactly on top and
@@ -277,17 +288,17 @@ export function StrikeZoneGrid({
           )}
         </svg>
 
-        {/* Animated neon border, green: traces the 9-cell zone's own
+        {/* Spinning border, green: traces the 9-cell zone's own
             rectangle, not the container's -- positioned by inset
             percentage (ZONE_INSET_X_PCT/Y_PCT) rather than a fixed pixel
             box, so it stays exactly on the zone's boundary at any
             rendered size. overflow-hidden on this same parent div is
             safe for this one (unlike the red border on the outer
-            wrapper): the ring's ~40px band gives this ::before's 2px
+            wrapper): the ring's ~40px band gives this ::before's slight
             outward expansion nowhere near the parent's own edge to be
             clipped against. */}
         <div
-          className="neon-border-green pointer-events-none absolute"
+          className="spinning-border spinning-border-green pointer-events-none absolute"
           style={{
             left: `${ZONE_INSET_X_PCT}%`,
             right: `${ZONE_INSET_X_PCT}%`,
