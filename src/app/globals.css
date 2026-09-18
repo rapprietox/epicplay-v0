@@ -66,3 +66,49 @@ body {
   opacity: 0;
   animation: grid-line-flash 300ms linear;
 }
+
+/* Left-panel redesign: the selected batter image's gold glow -- pulses
+   once (brighter, per spec) then settles to a resting glow. The resting
+   value is declared on .batter-glow-selected itself, not only inside the
+   100% keyframe stop -- same reasoning as grid-line-flash above: once the
+   animation ends, `animation-fill-mode: none` reverts the element to its
+   un-animated box-shadow, and that needs to already BE the resting glow
+   (not "no box-shadow at all") for the glow to actually persist instead
+   of vanishing the instant the pulse finishes. */
+@keyframes batter-glow-pulse {
+  0% {
+    box-shadow: 0 0 0 rgba(240, 192, 96, 0);
+  }
+  50% {
+    box-shadow: 0 0 30px #f0c060, 0 0 60px #f0c060;
+  }
+  100% {
+    box-shadow: 0 0 20px #f0c060, 0 0 40px #f0c060;
+  }
+}
+.batter-glow-selected {
+  box-shadow: 0 0 20px #f0c060, 0 0 40px #f0c060;
+  animation: batter-glow-pulse 500ms ease-out;
+}
+
+/* Brief red flash on the batter image for a direct HBP tap -- keyed by
+   the caller (a fresh key remounts this div, restarting the animation)
+   since, unlike the glow above, this can fire repeatedly while the same
+   image stays mounted. Resting opacity is 0 on the class itself for the
+   same fill-mode reason as grid-line-flash. */
+@keyframes batter-hbp-flash {
+  0% {
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.batter-hbp-flash {
+  opacity: 0;
+  background: #e24b4a;
+  animation: batter-hbp-flash 350ms ease-out;
+}

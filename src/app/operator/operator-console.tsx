@@ -233,6 +233,14 @@ export function OperatorConsole({
   // -- "In Play" deliberately never bumps this, since that outcome moves
   // straight to the field diagram instead of resetting for another pitch.
   const [flashKey, setFlashKey] = useState(0);
+  // Left-panel redesign: which side's batter image last got tapped for a
+  // direct HBP, and a per-tap counter -- BatterImage keys its red flash
+  // overlay on `key` so a repeated tap on the same (already-selected)
+  // image restarts the flash, the same trick flashKey above uses for the
+  // strike-zone grid's own confirmation flash. Scoped by `side` so
+  // tapping one image doesn't also flash the other while both are still
+  // visible pre-selection.
+  const [hbpFlash, setHbpFlash] = useState<{ side: BattingHand; key: number } | null>(null);
 
   useEffect(() => {
     if (!summaryFlash) return;
@@ -1005,6 +1013,15 @@ export function OperatorConsole({
     pickResult("hbp");
   }
 
+  // Left-panel redesign: tapping the batter image itself is now the HBP
+  // trigger (the old standalone HBP pill button is gone) -- same
+  // handleDirectHbp underneath, plus bumping the per-side flash counter
+  // so BatterImage's red flash overlay remounts and replays.
+  function handleImageHbpTap(side: BattingHand) {
+    setHbpFlash((prev) => ({ side, key: (prev?.side === side ? prev.key : 0) + 1 }));
+    void handleDirectHbp();
+  }
+
   function confirmEndInning() {
     dispatch({ type: "END_INNING_LOCAL" });
     const nextHalf = state.inningHalf === "top" ? "bottom" : "top";
@@ -1231,31 +1248,47 @@ export function OperatorConsole({
             heat maps are a coach-dashboard feature; this screen only ever
             logs pitches now. gamePitchLog still accumulates in
             OperatorState (harmless, and other code doesn't touch it), it
-            just has no on-screen consumer here any more. */}
-        <div className="flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
-          <p className="shrink-0 text-[10px] uppercase tracking-wide text-foreground/40">Strike zone — tap to log a pitch</p>
+            just has no on-screen consumer here any more.
 
-          {/* L batter card / zone / R batter card, flush against each
-              other (gap-0 -- "no gap, touching the ball zone border") as
-              one centered unit. items-center (not stretch): the cards are
-              deliberately TALLER than the zone now (~1.8x, via the fixed
-              height on BatterStanceCard below -- a batter's body is
-              taller than the strike zone), so the row can no longer make
-              them the same height as each other. The zone wrapper is
-              flex-1 so it claims the remaining row width; the zone itself
-              is w-full max-w-[280px] aspect-[28/33] (width-driven, height
-              derived), and items-center is what visually centers it
-              vertically inside the taller cards' row. */}
-          <div className="flex flex-1 items-center justify-center gap-0 overflow-hidden py-1">
-            {state.mode === "hitting" ? (
-              <BatterStanceCard
-                label="L"
-                image="/batter-left.svg"
+            Left-panel redesign: the header label and the footer controls
+            (hand pill, IBB) are now `absolute` overlays instead of their
+            own flex-col rows -- freeing the middle row to be the panel's
+            *only* normal-flow content, so it can be given the panel's
+            full height (per spec, the batter images must be "the same
+            height as the full left panel," which a shrink-0 header/footer
+            sharing that same flex-col would otherwise eat into). `relative`
+            on the panel is what anchors those overlays. */}
+        <div className="relative flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
+          <p className="absolute left-2 top-2 z-10 text-[10px] uppercase tracking-wide text-foreground/40">
+            Strike zone — tap to log a pitch
+          </p>
+
+          {/* Batter image / zone / batter image, flush against each other
+              (gap-0) and each other's edges -- no card, no border, no
+              padding on the images themselves (per spec). flex-1 here is
+              what claims the *entire* panel height now that the header/
+              footer above are absolute overlays rather than siblings
+              competing for space. Before a hand is picked, both images
+              render at 50% opacity; picking one un-renders the other
+              entirely (not just opacity: 0) so its slot collapses and the
+              zone ends up flush against the one remaining image, matching
+              "[Zone][Batter-right]" / "[Batter-left][Zone]" from the spec
+              -- conditional rendering does this for free, no extra
+              layout logic needed. Each side's condition is "hand isn't
+              definitively the *other* side" (!== "R" / !== "L"), not "is
+              null," so a switch hitter ('S', from the player's own
+              profile) still shows both images at 50% -- same "unresolved
+              stance" treatment null already gets, consistent with how
+              hbpEligible below treats 'S' too. */}
+          <div className="flex flex-1 items-center justify-center gap-0 overflow-hidden">
+            {state.mode === "hitting" && atBatBattingHand !== "R" && (
+              <BatterImage
+                hand="L"
+                image="/batter-left.png"
                 selected={atBatBattingHand === "L"}
-                onClick={() => setAtBatBattingHand("L")}
+                flash={hbpFlash?.side === "L" ? hbpFlash.key : 0}
+                onTapHbp={() => handleImageHbpTap("L")}
               />
-            ) : (
-              <div className="aspect-[9/16] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
             <div className="flex flex-1 items-center justify-center overflow-hidden">
               <StrikeZoneGrid
@@ -1287,44 +1320,60 @@ export function OperatorConsole({
                 }
               />
             </div>
-            {state.mode === "hitting" ? (
-              <BatterStanceCard
-                label="R"
-                image="/batter-right.svg"
+            {state.mode === "hitting" && atBatBattingHand !== "L" && (
+              <BatterImage
+                hand="R"
+                image="/batter-right.png"
                 selected={atBatBattingHand === "R"}
-                onClick={() => setAtBatBattingHand("R")}
+                flash={hbpFlash?.side === "R" ? hbpFlash.key : 0}
+                onTapHbp={() => handleImageHbpTap("R")}
               />
-            ) : (
-              <div className="aspect-[9/16] shrink-0" style={{ height: "min(100%, 450px)" }} />
             )}
           </div>
 
-          {state.mode === "hitting" && atBatBattingHand === null && (
-            <p className="shrink-0 truncate text-center text-[10px] text-accent-amber">Select batter&apos;s stance to activate the zone</p>
-          )}
-          {state.pendingPitches.length > 0 && (
-            <p className="shrink-0 truncate text-center text-[10px] text-foreground/50">
-              {state.pendingPitches
-                .map((p, i) => `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`)
-                .join(", ")}
-            </p>
-          )}
-
-          <div className="mt-1 flex shrink-0 justify-center gap-2">
-            <button
-              onClick={() => setIbbConfirmOpen(true)}
-              className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
-              style={{ borderColor: "#EF9F27", color: "#EF9F27" }}
-            >
-              IBB
-            </button>
-            <button
-              onClick={() => void handleDirectHbp()}
-              className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
-              style={{ borderColor: "#FF4444", color: "#FF4444" }}
-            >
-              HBP
-            </button>
+          {/* Footer overlay: warning text / pending-pitches list (both
+              unchanged from before, just repositioned) / the L-R hand pill
+              (replaces the old batter-card taps as the way to pick a
+              stance, now that the images themselves are an HBP tap target
+              instead) / IBB (unchanged; the standalone HBP pill next to it
+              is gone -- tapping either batter image is the new HBP
+              trigger). */}
+          <div className="absolute inset-x-2 bottom-2 z-10 flex flex-col items-center gap-1">
+            {state.mode === "hitting" && atBatBattingHand === null && (
+              <p className="truncate text-center text-[10px] text-accent-amber">Select batter&apos;s stance to activate the zone</p>
+            )}
+            {state.pendingPitches.length > 0 && (
+              <p className="truncate text-center text-[10px] text-foreground/50">
+                {state.pendingPitches
+                  .map((p, i) => `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`)
+                  .join(", ")}
+              </p>
+            )}
+            <div className="flex items-center gap-2">
+              {state.mode === "hitting" && (
+                <div className="glossy flex overflow-hidden rounded-full border border-accent-green bg-surface">
+                  {(["L", "R"] as const).map((h) => (
+                    <button
+                      key={h}
+                      onClick={() => setAtBatBattingHand(h)}
+                      aria-pressed={atBatBattingHand === h}
+                      className={`min-h-[36px] min-w-[36px] px-3 text-xs font-bold transition ${
+                        atBatBattingHand === h ? "bg-accent-green text-background" : "text-foreground/60 hover:text-white"
+                      }`}
+                    >
+                      {h}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setIbbConfirmOpen(true)}
+                className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
+                style={{ borderColor: "#EF9F27", color: "#EF9F27" }}
+              >
+                IBB
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1813,57 +1862,57 @@ export function OperatorConsole({
 // separate "penalty" flag to track, since none of the pitch-type-keyed
 // stats (Strike Rate by pitch type, etc.) treat a null pitch_type as
 // anything but "excluded from that breakdown," which is already correct.
-// Batter handedness ("L"/"R") flanking the strike zone -- originally two
-// small ellipse buttons, then a placeholder card with just an "L"/"R"
-// letter, now the real left-/right-handed batter SVG silhouettes
-// (/public/batter-left.svg, /public/batter-right.svg). Plain <img>, not
-// next/image -- this codebase has no other next/image usage and these
-// are static /public files (same pattern StadiumBackground uses for its
-// own static image, just object-fit instead of a CSS background).
-// Height-alignment fix: the card is deliberately TALLER than the zone +
-// ball-zone ring now (~1.8x the zone's own height, since the ring no
-// longer adds any height of its own -- see the RING_X comment in
-// strike-zone-grid.tsx -- a batter's body is taller than just the strike
-// zone). 450px is 1.8 x the zone's 250px design-target height (itself
-// unchanged since the 4:5-ratio proportions fix); `min(100%, ...)` caps
-// it so a short panel can never force a scrollbar. Width used to be a
-// fixed pixel value (52px, then 90px); it's now aspect-[9/16] instead --
-// a fixed portrait ratio, with width derived from the height above
-// rather than an independent number, per the explicit "9:16 aspect
-// ratio" ask. mix-blend-mode: multiply on the <img> itself (not the
-// button) drops the images' white background against the dark stadium
-// backdrop -- multiply darkens white to transparent-looking while
-// leaving the dark silhouette lines intact, without needing the SVGs
-// themselves re-exported with a transparent background.
-function BatterStanceCard({
-  label,
+// Left-panel redesign: full-height batter silhouettes flanking the
+// strike zone, replacing the earlier bordered/backgrounded card
+// (BatterStanceCard, an ellipse button before that). Raw <img>, no
+// button chrome, no card -- "no card border, no background, no padding"
+// per spec, tapping the image itself is now the HBP trigger instead of
+// a hand-selection tap (hand selection moved to the small L/R pill in
+// the footer overlay below). Plain <img>, not next/image, matching the
+// rest of this file's static-/public-asset convention.
+//
+// BATTER_IMAGE_VERTICAL_OFFSET_PX exists so the batter's elbow lines up
+// with the top of the green strike zone and their knees with its bottom
+// (the zone sits vertically centered in this same row -- see
+// StrikeZoneGrid's usage above). It's 0 for now: the actual
+// /batter-left.png / /batter-right.png files referenced below don't
+// exist in /public yet (only stale /batter-left.svg.svg and
+// /batter-right.svg.svg from an earlier fix do), so there is nothing to
+// visually tune this offset against. Once the real PNGs are added, this
+// needs a manual pass (Read can view the image directly to work out the
+// right pixel value) -- it is not something that can be derived from
+// the image's file path alone.
+const BATTER_IMAGE_VERTICAL_OFFSET_PX = 0;
+
+function BatterImage({
+  hand,
   image,
   selected,
-  onClick,
+  flash,
+  onTapHbp,
 }: {
-  label: string;
+  hand: BattingHand;
   image: string;
   selected: boolean;
-  onClick: () => void;
+  // 0 = no flash rendered (including on first mount -- see the `flash >
+  // 0` guard below, the same "don't play the animation on mount" guard
+  // strike-zone-grid.tsx's own flashKey uses); any other value is a
+  // fresh HBP tap and remounts the flash overlay to replay it.
+  flash: number;
+  onTapHbp: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      aria-pressed={selected}
-      aria-label={`${label}-handed batter`}
-      className={`flex aspect-[9/16] shrink-0 items-center justify-center overflow-hidden rounded-md border-2 border-accent-green transition ${
-        selected ? "glow-green bg-accent-green/20" : "bg-card"
-      }`}
-      style={{ height: "min(100%, 450px)" }}
-    >
-      {/* eslint-disable-next-line @next/next/no-img-element -- static /public SVG, not an optimizable next/image candidate */}
+    <div className="relative h-full shrink-0" style={{ opacity: selected ? 1 : 0.5 }}>
+      {/* eslint-disable-next-line @next/next/no-img-element -- static /public PNG, not an optimizable next/image candidate */}
       <img
         src={image}
-        alt={`${label}-handed batter silhouette`}
-        className="h-full w-full object-contain"
-        style={{ mixBlendMode: "multiply" }}
+        alt={`${hand === "L" ? "Left" : "Right"}-handed batter`}
+        onClick={onTapHbp}
+        className={`block h-full w-auto cursor-pointer ${selected ? "batter-glow-selected" : ""}`}
+        style={{ transform: `translateY(${BATTER_IMAGE_VERTICAL_OFFSET_PX}px)` }}
       />
-    </button>
+      {flash > 0 && <div key={flash} className="batter-hbp-flash pointer-events-none absolute inset-0" />}
+    </div>
   );
 }
 
