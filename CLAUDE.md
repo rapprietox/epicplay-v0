@@ -1464,6 +1464,140 @@ for *why* the card needs to be taller (a strike zone covers knees to
 elbows, not a whole body), not a second, independent constraint to hit
 precisely.
 
+## Layout proportions batch: 4:5 strike zone, flush batter cards, a much
+## bigger diamond, and removing the operator's Heat Map toggle
+
+Five fixes, built in the requested order (substitution/defaults from the
+prior batch untouched -- this one is pure sizing/CSS plus one structural
+removal). No schema or reducer changes.
+
+### Fix 1: strike zone becomes a non-square 4:5 box, not a bigger square
+
+The zone had been a single square (`aspect-square`, `max-w-[220px]`)
+since the original ball-zone-ring fix. Going non-square (200x250 target
+for the green interior) meant the ring's ~40px-per-side padding could no
+longer be one constant applied equally to both axes in the underlying
+0-100 coordinate space -- the *pixel* padding needs to match on both
+axes even though the *unit* padding doesn't, because 100 coordinate
+units now maps to a different pixel count on each axis (2px/unit at
+200px wide, 2.5px/unit at 250px tall). `strike-zone-grid.tsx` splits the
+old single `RING`/`EXT_MIN`/`EXT_SPAN` into `RING_X = 20` / `RING_Y =
+16` (and the `EXT_*` values that follow from each), so `RING_X *
+2px/unit = 40px` and `RING_Y * 2.5px/unit = 40px` -- the ring is the
+same ~40px physical width on every side despite being a different
+number of coordinate units per axis. `classifyZone`/`snapTap`/
+`cellIndex` all took a `bounds` array parameter instead of a single
+shared one, using `GRID_BOUNDS_X`/`GRID_BOUNDS_Y` respectively;
+`toPct` split into `toPctX`/`toPctY`. The component already rendered
+with `preserveAspectRatio="none"`, which is exactly what makes a
+non-square viewBox (`EXT_SPAN_X x EXT_SPAN_Y`) stretch correctly onto a
+non-square container -- no new SVG mechanism needed, just feeding it
+different numbers per axis. The container itself switched from
+`aspect-square` to `aspect-[28/33]` (`280/330`, the exact ratio implied
+by a 200x250 zone plus 40px ring on every side) and `max-w-[220px]` to
+`max-w-[280px]` (the new total-box target width). **The 9-cell strike
+zone's own 0-100 meaning on both axes is completely unchanged** -- only
+the ring's thickness and the container's aspect ratio changed, so no
+historical `zone_x`/`zone_y` data is reinterpreted.
+
+### Fix 2: batter cards flush against the zone, sized to match it exactly
+
+The row wrapping "L card / zone / R card" changed from `items-center
+gap-2` to `items-stretch gap-0` -- `gap-0` is the literal "no gap,
+touching the ball zone border" ask, and `items-stretch` (flex's default,
+made explicit here since it was previously overridden) is what lets the
+two cards inherit the *exact* height of the tallest row content via
+`h-full`, rather than needing to know that height number and hard-code
+it (the previous batch's card used a hard-coded `min(100%, 352px)` tied
+to a since-changed 1.6x-of-zone formula -- gone now). `BatterStanceCard`
+dropped that inline style entirely in favor of a plain `h-full` class,
+and its width moved from `w-12` (48px) to `w-[52px]` per this request.
+The zone itself became the thing that actually *drives* the row's
+height: `StrikeZoneGrid`'s container is `h-full` (no `w-full`) with
+`aspect-[28/33]`, so with a definite stretched height coming from the
+row, the browser computes the box's *width* from that height via the
+aspect-ratio (standard, well-supported flexbox + `aspect-ratio`
+interaction) -- rather than the old width-driven sizing (`w-full
+max-w-[220px]` computing height from width). This means the cards'
+`h-full` and the zone's own height are, by construction, the same
+number: the row's own stretched height, which is exactly "same height
+as the total strike zone + ball zone area" without any manual
+measurement. The placeholder spacer shown in `mode === "pitching"` (no
+stance cards for an opponent batter, still no data source for their
+hand) widened from `w-12` to match, `w-[52px] h-full`.
+
+### Fix 3: the diamond is now driven by real available space, not a cap
+
+`BaserunnerDiamond`'s container was `h-full w-full max-w-[280px]` --
+that cap, not the surrounding layout, was the actual reason it looked
+small relative to the panel ("takes up maybe 40%"): the panel had more
+than 280px of height to give it, but the SVG was never allowed to use
+it. The cap is gone (`h-full w-full`, no `max-w`); the default SVG
+`preserveAspectRatio` (`xMidYMid meet`, unchanged, still a 1:1 viewBox)
+naturally scales it up to fill whichever of the panel's available width
+or height is the limiting one, centered -- which on a real tablet
+(landscape, right panel roughly as wide as it is tall or wider) is
+height, so it now genuinely fills the panel's vertical space rather
+than being artificially bounded. **"Increase the viewBox and scale all
+coordinates proportionally," taken literally, would have been a
+no-op** -- a uniform scale-up of a viewBox and everything in it changes
+nothing about a shape's rendered size relative to its container, since
+SVG coordinates are relative units, not pixels. What was actually
+implemented: the viewBox did double (`0 0 100 100` -> `0 0 200 200`) and
+`BASE_POS`/the home-plate path/the small home-plate marker all scaled
+exactly 2x with it (geometry -- the diamond's own proportions --
+unchanged), but the runner dot radius (`r`, 6.5 -> 22, i.e. ~3.4x, not
+2x) and both text sizes (jersey number 6.5 -> 22, player name 5.5 -> 12)
+grew *beyond* that flat proportional scale, since "44px+ diameter,
+clearly readable jersey number" are explicit size-relative-to-container
+requirements, not a byproduct of the coordinate system's own scale.
+Base squares grew similarly disproportionately (half-width 5 -> 16, a
+~3.2x jump) for "easy to tap on a tablet." At virtually any realistic
+right-panel size after Fix 4's compact header/footer, a 22-unit radius
+in a 200-unit viewBox (22% of the diamond's own width/height) clears
+44px comfortably.
+
+### Fix 4: compact top/bottom chrome, diamond gets what's left
+
+The current-batter card gained `max-h-[80px] overflow-hidden` (was
+unbounded, sized to its own content) and the Pickoff/Substitution row
+gained a fixed `h-10` (40px) on both the row and `QuickButton` itself
+(previously `min-h-[48px]`, the app's general tap-target minimum --
+these two buttons are a deliberate, spec'd exception to that rule, not
+an oversight). Both are the only two `QuickButton` call sites in the
+file, so this was a direct change to the shared component rather than a
+per-instance override. With those two now fixed/capped instead of
+sizing to their own content, the middle section's existing `flex-1`
+picks up essentially all of the remaining height for whichever
+`rightPanelMode` is showing (the diamond, by default) --
+`BaserunnerDiamond`'s own `h-full` (Fix 3) is what actually claims that
+space once it's available. No dedicated "75%" measurement was coded
+anywhere; the two other rows shrinking to their compact fixed sizes is
+what leaves the diamond with the overwhelming majority of the panel by
+construction, matching the spec's own framing ("diamond fills the rest
+of the right panel").
+
+### Fix 5: the operator screen's Heat Map toggle is gone, not just hidden
+
+This wasn't just deleting a button -- `sessionHeatMapOpen` and everything
+conditioned on it were fully removed from `operator-console.tsx`
+(the header button itself, the two batter-card-vs-spacer branches, the
+`heatMapPitches`/`disabled`/`popupContent` conditions passed into
+`StrikeZoneGrid`, the ball/strike/foul legend, and the now-orphaned
+`LegendDot` helper). `StrikeZoneGrid` itself lost the entire heat-map
+render mode too (the `heatMapPitches` prop, `isHeatMap`, the read-only
+dot-cloud branch, the heat-map `aria-label`/`role` variants) --
+`StrikeZoneGrid` is only ever used from this one file (confirmed via a
+repo-wide search), so once the operator-side toggle that was its only
+caller for that mode is gone, that code path was genuinely dead, not
+just unreachable-for-now, and was removed rather than left in place.
+**`OperatorState.gamePitchLog` (the accumulator this view used to read
+from) is untouched** -- it's harmless, low-cost, and nothing else in
+this request asked for a reducer/state change; it just has no on-screen
+consumer on this screen any more. Real heat maps remain exactly where
+they already lived: the coach's per-player breakdown page
+(`/coach/players/[id]`), unaffected by any of this.
+
 ## Auth flow
 
 1. `/login` -- client component, calls

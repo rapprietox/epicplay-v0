@@ -35,31 +35,44 @@ const THIRDS = [100 / 3, (2 * 100) / 3];
 // corners (5x5 grid minus the center 3x3 = 16). Its coordinates fall
 // outside 0-100 rather than the 0-100 range being redefined -- see the
 // pitches_ball_zone_range migration for why (existing zone_x/zone_y
-// values must keep meaning what they always have). RING is the ring's
-// thickness in the same 0-100-scaled units as the strike zone; a later
-// fix widened it from 100/6 to 100/5 -- exactly a 20% increase
-// ((100/5)/(100/6) = 6/5), for bigger tap targets during fast gameplay.
-// Widening it doesn't corrupt any historical data: no shipped feature
-// buckets by "which of the 16 ring cells" yet (only the 9 strike zones
-// are ever aggregated -- zoneIndexFromCoords returns null for anything
-// outside 0-100), so the exact ring-cell center coordinate isn't
-// load-bearing the way the strike zone's own 0-100 meaning is.
-const RING = 100 / 5;
-export const EXT_MIN = -RING;
-const EXT_MAX = 100 + RING;
-const EXT_SPAN = EXT_MAX - EXT_MIN;
-const GRID_BOUNDS = [EXT_MIN, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX];
+// values must keep meaning what they always have).
+//
+// RING_X/RING_Y are the ring's thickness in the same 0-100-scaled units
+// as the strike zone, one per axis so the *rendered* ring can be an even
+// ~40px on every side even though the zone itself (per the 4:5-ratio
+// proportions fix) is no longer square: the grid's own container is sized
+// 200x250 (4:5) for the green zone, so 1 x-unit and 1 y-unit map to
+// different pixel counts (2px and 2.5px respectively at that target
+// size), and RING_X=20/RING_Y=16 is exactly what makes both work out to
+// ~40px once multiplied by those per-axis scales. classifyZone/snapTap
+// use per-axis bounds accordingly; the component still renders with
+// preserveAspectRatio="none" (unchanged), which is what lets x and y
+// scale independently from one non-square viewBox in the first place.
+const RING_X = 20;
+const RING_Y = 16;
+export const EXT_MIN_X = -RING_X;
+const EXT_MAX_X = 100 + RING_X;
+const EXT_SPAN_X = EXT_MAX_X - EXT_MIN_X;
+export const EXT_MIN_Y = -RING_Y;
+const EXT_MAX_Y = 100 + RING_Y;
+const EXT_SPAN_Y = EXT_MAX_Y - EXT_MIN_Y;
+const GRID_BOUNDS_X = [EXT_MIN_X, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX_X];
+const GRID_BOUNDS_Y = [EXT_MIN_Y, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX_Y];
 const RING_DIVIDERS = [0, THIRDS[0], THIRDS[1], 100];
 
-function toPct(v: number): number {
-  return ((v - EXT_MIN) / EXT_SPAN) * 100;
+function toPctX(v: number): number {
+  return ((v - EXT_MIN_X) / EXT_SPAN_X) * 100;
 }
 
-function cellIndex(v: number): number {
-  for (let i = 0; i < GRID_BOUNDS.length - 2; i++) {
-    if (v < GRID_BOUNDS[i + 1]) return i;
+function toPctY(v: number): number {
+  return ((v - EXT_MIN_Y) / EXT_SPAN_Y) * 100;
+}
+
+function cellIndex(v: number, bounds: number[]): number {
+  for (let i = 0; i < bounds.length - 2; i++) {
+    if (v < bounds[i + 1]) return i;
   }
-  return GRID_BOUNDS.length - 2;
+  return bounds.length - 2;
 }
 
 // Which of the 5x5 grid's cells a coordinate falls in -- col/row each land
@@ -70,8 +83,8 @@ function cellIndex(v: number): number {
 // HBP only in specific inside-column/mid-height ring cells) without
 // duplicating this grid's own geometry.
 export function classifyZone(x: number, y: number): { col: number; row: number; isBallZone: boolean } {
-  const col = cellIndex(x);
-  const row = cellIndex(y);
+  const col = cellIndex(x, GRID_BOUNDS_X);
+  const row = cellIndex(y, GRID_BOUNDS_Y);
   return { col, row, isBallZone: col === 0 || col === 4 || row === 0 || row === 4 };
 }
 
@@ -81,8 +94,8 @@ export function classifyZone(x: number, y: number): { col: number; row: number; 
 function snapTap(x: number, y: number): { x: number; y: number } {
   const { col, row, isBallZone } = classifyZone(x, y);
   if (!isBallZone) return { x: snapToGrid(x), y: snapToGrid(y) };
-  const cx = Math.round((GRID_BOUNDS[col] + GRID_BOUNDS[col + 1]) / 2 * 100) / 100;
-  const cy = Math.round((GRID_BOUNDS[row] + GRID_BOUNDS[row + 1]) / 2 * 100) / 100;
+  const cx = Math.round((GRID_BOUNDS_X[col] + GRID_BOUNDS_X[col + 1]) / 2 * 100) / 100;
+  const cy = Math.round((GRID_BOUNDS_Y[row] + GRID_BOUNDS_Y[row + 1]) / 2 * 100) / 100;
   return { x: cx, y: cy };
 }
 
@@ -96,7 +109,6 @@ export function StrikeZoneGrid({
   selectedZone,
   lastPitchZone,
   pendingPitches = [],
-  heatMapPitches,
   onTap,
   popupContent,
   flashKey,
@@ -105,12 +117,8 @@ export function StrikeZoneGrid({
   selectedZone: { x: number; y: number } | null;
   lastPitchZone: { x: number; y: number; outcome: PitchOutcome } | null;
   // The current at-bat's pitch sequence so far -- shown as small dots
-  // building up in real time. Omitted (or empty) outside logging mode.
+  // building up in real time.
   pendingPitches?: ZonePitch[];
-  // When set, renders session heat map mode instead of logging mode: every
-  // pitch location logged so far this game, colored by outcome, and tap
-  // capture is disabled (this is a read-only view).
-  heatMapPitches?: ZonePitch[];
   onTap: (x: number, y: number) => void;
   // Sequential-flow (Fix 4) outcome popup, rendered anchored to
   // selectedZone -- the caller supplies just the menu content, this
@@ -130,7 +138,6 @@ export function StrikeZoneGrid({
   disabled?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const isHeatMap = heatMapPitches !== undefined;
 
   // Fix 1: the popup used to be positioned as a percentage inside this
   // same box -- but the box has overflow-hidden (to clip the SVG/dots to
@@ -146,13 +153,13 @@ export function StrikeZoneGrid({
   );
 
   function handleTap(e: React.MouseEvent<HTMLDivElement>) {
-    if (isHeatMap || disabled) return;
+    if (disabled) return;
     const rect = ref.current?.getBoundingClientRect();
     if (!rect || rect.width === 0 || rect.height === 0) return;
     const fracX = (e.clientX - rect.left) / rect.width;
     const fracY = (e.clientY - rect.top) / rect.height;
-    const relX = EXT_MIN + fracX * EXT_SPAN;
-    const relY = EXT_MIN + fracY * EXT_SPAN;
+    const relX = EXT_MIN_X + fracX * EXT_SPAN_X;
+    const relY = EXT_MIN_Y + fracY * EXT_SPAN_Y;
     const snapped = snapTap(relX, relY);
     setTapAnchor({ clientX: e.clientX, clientY: e.clientY, topHalf: fracY < 0.5, leftHalf: fracX < 0.5 });
     onTap(snapped.x, snapped.y);
@@ -162,18 +169,22 @@ export function StrikeZoneGrid({
     <div
       ref={ref}
       onClick={handleTap}
-      role={isHeatMap ? undefined : "button"}
+      role="button"
       aria-disabled={disabled}
-      aria-label={isHeatMap ? "Session heat map -- this game's pitch locations" : "Strike zone and ball zones -- tap to mark pitch location"}
-      className={`glossy relative aspect-square h-full w-full max-w-[220px] overflow-hidden rounded-md border-2 border-border bg-surface ${
-        isHeatMap ? "" : disabled ? "opacity-40" : "cursor-pointer"
+      aria-label="Strike zone and ball zones -- tap to mark pitch location"
+      className={`glossy relative h-full max-w-[280px] shrink-0 overflow-hidden rounded-md border-2 border-border bg-surface aspect-[28/33] ${
+        disabled ? "opacity-40" : "cursor-pointer"
       }`}
     >
-      <svg viewBox={`${EXT_MIN} ${EXT_MIN} ${EXT_SPAN} ${EXT_SPAN}`} preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full">
+      <svg
+        viewBox={`${EXT_MIN_X} ${EXT_MIN_Y} ${EXT_SPAN_X} ${EXT_SPAN_Y}`}
+        preserveAspectRatio="none"
+        className="pointer-events-none absolute inset-0 h-full w-full"
+      >
         {/* Ball zone: deep red background, bright red border/dividers --
             per the "colors more impressive" pass. Immediately distinct
             at a glance from the strike zone's green. */}
-        <rect x={EXT_MIN} y={EXT_MIN} width={EXT_SPAN} height={EXT_SPAN} fill="#1F0A0A" />
+        <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="#1F0A0A" />
         <rect x={0} y={0} width={100} height={100} fill="#0A1F0D" />
 
         {/* Ring cell dividers, continuing the strike-zone column/row
@@ -181,19 +192,19 @@ export function StrikeZoneGrid({
             positions (0/33.33/66.67/100) so every ring cell (including
             corners) gets a full edge. */}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN} x2={pos} y2={0} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+          <line key={`ring-v-${pos}`} x1={pos} y1={EXT_MIN_Y} x2={pos} y2={0} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+          <line key={`ring-v2-${pos}`} x1={pos} y1={100} x2={pos} y2={EXT_MAX_Y} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-h-${pos}`} x1={EXT_MIN} y1={pos} x2={0} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+          <line key={`ring-h-${pos}`} x1={EXT_MIN_X} y1={pos} x2={0} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}
         {RING_DIVIDERS.map((pos) => (
-          <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
+          <line key={`ring-h2-${pos}`} x1={100} y1={pos} x2={EXT_MAX_X} y2={pos} stroke="#FF4444" strokeWidth={0.4} strokeOpacity={0.6} strokeDasharray="1.5,1.5" />
         ))}
         {/* Outer boundary of the ball-zone ring itself */}
-        <rect x={EXT_MIN} y={EXT_MIN} width={EXT_SPAN} height={EXT_SPAN} fill="none" stroke="#FF4444" strokeWidth={0.8} opacity={0.9} />
+        <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="none" stroke="#FF4444" strokeWidth={0.8} opacity={0.9} />
 
         {/* Strike-zone interior */}
         {INNER_LINES.map((pos) => (
@@ -224,7 +235,7 @@ export function StrikeZoneGrid({
             mid-flash. Scoped to the strike zone's own lines, not the
             ball-zone ring's dividers -- those just got their own red
             styling above and flashing them gold too would muddy that. */}
-        {!isHeatMap && !!flashKey && (
+        {!!flashKey && (
           <g key={flashKey} className="grid-line-flash pointer-events-none">
             {INNER_LINES.map((pos) => (
               <line key={`flash-v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#F0C060" strokeWidth={0.4} />
@@ -243,52 +254,40 @@ export function StrikeZoneGrid({
         )}
       </svg>
 
-      {isHeatMap
-        ? heatMapPitches
-            .filter((p): p is ZonePitch & { zone_x: number; zone_y: number } => p.zone_x !== null && p.zone_y !== null)
-            .map((p, i) => (
-              <span
-                key={i}
-                className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-80"
-                style={{ left: `${toPct(p.zone_x)}%`, top: `${toPct(p.zone_y)}%`, backgroundColor: OUTCOME_COLOR[p.outcome] }}
-              />
-            ))
-        : pendingPitches
-            .filter((p): p is ZonePitch & { zone_x: number; zone_y: number } => p.zone_x !== null && p.zone_y !== null)
-            .map((p, i) => (
-              <span
-                key={i}
-                className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-60"
-                style={{ left: `${toPct(p.zone_x)}%`, top: `${toPct(p.zone_y)}%`, backgroundColor: OUTCOME_COLOR[p.outcome] }}
-              />
-            ))}
+      {pendingPitches
+        .filter((p): p is ZonePitch & { zone_x: number; zone_y: number } => p.zone_x !== null && p.zone_y !== null)
+        .map((p, i) => (
+          <span
+            key={i}
+            className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-60"
+            style={{ left: `${toPctX(p.zone_x)}%`, top: `${toPctY(p.zone_y)}%`, backgroundColor: OUTCOME_COLOR[p.outcome] }}
+          />
+        ))}
 
-      {!isHeatMap && selectedZone && (
+      {selectedZone && (
         <span
           className="pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
           style={{
-            left: `${toPct(selectedZone.x)}%`,
-            top: `${toPct(selectedZone.y)}%`,
+            left: `${toPctX(selectedZone.x)}%`,
+            top: `${toPctY(selectedZone.y)}%`,
             borderColor: "#F0C060",
             backgroundColor: "rgba(240, 192, 96, 0.4)",
             boxShadow: "0 0 10px 2px rgba(240, 192, 96, 0.8)",
           }}
         />
       )}
-      {!isHeatMap && lastPitchZone && (
+      {lastPitchZone && (
         <span
           className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-background"
           style={{
-            left: `${toPct(lastPitchZone.x)}%`,
-            top: `${toPct(lastPitchZone.y)}%`,
+            left: `${toPctX(lastPitchZone.x)}%`,
+            top: `${toPctY(lastPitchZone.y)}%`,
             backgroundColor: OUTCOME_COLOR[lastPitchZone.outcome],
           }}
         />
       )}
 
-      {!isHeatMap && selectedZone && popupContent && tapAnchor && (
-        <PopupPortal anchor={tapAnchor}>{popupContent}</PopupPortal>
-      )}
+      {selectedZone && popupContent && tapAnchor && <PopupPortal anchor={tapAnchor}>{popupContent}</PopupPortal>}
     </div>
   );
 }

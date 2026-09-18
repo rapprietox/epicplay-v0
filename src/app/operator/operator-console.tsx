@@ -227,7 +227,6 @@ export function OperatorConsole({
   useEffect(() => {
     setPitchTypeStepDone(false);
   }, [state.selectedZone?.x, state.selectedZone?.y]);
-  const [sessionHeatMapOpen, setSessionHeatMapOpen] = useState(false);
   const [summaryFlash, setSummaryFlash] = useState<string | null>(null);
   // Fix 5: bumped (never reset to 0) on every ball/strike/foul/HBP so
   // StrikeZoneGrid's flash overlay remounts and its CSS animation restarts
@@ -1226,115 +1225,100 @@ export function OperatorConsole({
           without an explicit row size, lets row content grow to whatever
           it needs and only clips the *combined* result. */}
       <div className="grid flex-1 grid-cols-1 grid-rows-2 overflow-hidden md:grid-cols-2 md:grid-rows-1">
-        {/* LEFT PANEL -- pitching/hitting the ball. Nothing else. */}
+        {/* LEFT PANEL -- pitching/hitting the ball. Nothing else. Fix 5:
+            the "Heat Map" toggle (and the session-heat-map render mode it
+            drove, in both this panel and StrikeZoneGrid itself) is gone --
+            heat maps are a coach-dashboard feature; this screen only ever
+            logs pitches now. gamePitchLog still accumulates in
+            OperatorState (harmless, and other code doesn't touch it), it
+            just has no on-screen consumer here any more. */}
         <div className="flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
-          <div className="flex shrink-0 items-center justify-between">
-            <p className="text-[10px] uppercase tracking-wide text-foreground/40">
-              {sessionHeatMapOpen ? "Session heat map" : "Strike zone — tap to log a pitch"}
-            </p>
-            <button
-              onClick={() => setSessionHeatMapOpen((v) => !v)}
-              className="min-h-[32px] rounded-full border border-border px-2.5 text-[10px] font-medium text-foreground/70 hover:border-accent-primary hover:text-white"
-            >
-              {sessionHeatMapOpen ? "Back to Logging" : "Heat Map"}
-            </button>
-          </div>
+          <p className="shrink-0 text-[10px] uppercase tracking-wide text-foreground/40">Strike zone — tap to log a pitch</p>
 
-          {/* L batter card / zone / R batter card -- this row is the
-              dominant element of the panel, per spec ("takes up 70% of
-              panel height"); flex-1 gives it whatever's left after the
-              two slim header/footer rows above and below it. The batter
-              cards are taller than the zone (per spec, ~1.6x -- a
-              strike zone only covers knees to elbows, not a whole
-              body), using items-center so each row child keeps its own
-              height instead of being stretched to match the tallest. */}
-          <div className="flex flex-1 items-center justify-center gap-2 overflow-hidden py-1">
-            {state.mode === "hitting" && !sessionHeatMapOpen ? (
+          {/* L batter card / zone / R batter card, flush against each
+              other (gap-0 -- Fix 2: "no gap, touching the ball zone
+              border") as one centered unit. items-stretch (not center)
+              so the cards pick up the row's own height via h-full; the
+              zone itself is height-driven (h-full + aspect-[28/33], no
+              w-full) so its width is *derived* from that shared row
+              height through the aspect-ratio, which is what keeps the
+              cards "same height as the total strike zone + ball zone
+              area" without hand-measuring anything in JS. */}
+          <div className="flex flex-1 items-stretch justify-center gap-0 overflow-hidden py-1">
+            {state.mode === "hitting" ? (
               <BatterStanceCard label="L" selected={atBatBattingHand === "L"} onClick={() => setAtBatBattingHand("L")} />
             ) : (
-              <div className="w-12 shrink-0" />
+              <div className="h-full w-[52px] shrink-0" />
             )}
-            <div className="flex h-full flex-1 items-center justify-center overflow-hidden">
-              <StrikeZoneGrid
-                selectedZone={state.selectedZone}
-                lastPitchZone={state.lastPitchZone}
-                pendingPitches={state.pendingPitches}
-                heatMapPitches={sessionHeatMapOpen ? state.gamePitchLog : undefined}
-                onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
-                flashKey={flashKey}
-                disabled={flowStep !== "pitch" || (!sessionHeatMapOpen && state.mode === "hitting" && atBatBattingHand === null)}
-                popupContent={
-                  !sessionHeatMapOpen && state.selectedZone
-                    ? pitchTypeStepDone ? (
-                        <PitchOutcomePopup
-                          zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
-                          battingHand={state.mode === "hitting" ? atBatBattingHand : null}
-                          onPick={handlePitchOutcome}
-                          onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
-                        />
-                      ) : (
-                        <PitchTypePopup
-                          onPick={(t) => {
-                            dispatch({ type: "SELECT_PITCH_TYPE", pitchType: t });
-                            setPitchTypeStepDone(true);
-                          }}
-                          onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
-                        />
-                      )
-                    : undefined
-                }
-              />
-            </div>
-            {state.mode === "hitting" && !sessionHeatMapOpen ? (
+            <StrikeZoneGrid
+              selectedZone={state.selectedZone}
+              lastPitchZone={state.lastPitchZone}
+              pendingPitches={state.pendingPitches}
+              onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
+              flashKey={flashKey}
+              disabled={flowStep !== "pitch" || (state.mode === "hitting" && atBatBattingHand === null)}
+              popupContent={
+                state.selectedZone
+                  ? pitchTypeStepDone ? (
+                      <PitchOutcomePopup
+                        zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
+                        battingHand={state.mode === "hitting" ? atBatBattingHand : null}
+                        onPick={handlePitchOutcome}
+                        onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                      />
+                    ) : (
+                      <PitchTypePopup
+                        onPick={(t) => {
+                          dispatch({ type: "SELECT_PITCH_TYPE", pitchType: t });
+                          setPitchTypeStepDone(true);
+                        }}
+                        onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
+                      />
+                    )
+                  : undefined
+              }
+            />
+            {state.mode === "hitting" ? (
               <BatterStanceCard label="R" selected={atBatBattingHand === "R"} onClick={() => setAtBatBattingHand("R")} />
             ) : (
-              <div className="w-12 shrink-0" />
+              <div className="h-full w-[52px] shrink-0" />
             )}
           </div>
 
-          {state.mode === "hitting" && !sessionHeatMapOpen && atBatBattingHand === null && (
+          {state.mode === "hitting" && atBatBattingHand === null && (
             <p className="shrink-0 truncate text-center text-[10px] text-accent-amber">Select batter&apos;s stance to activate the zone</p>
           )}
-          {sessionHeatMapOpen ? (
-            <div className="flex shrink-0 flex-wrap justify-center gap-3 text-[10px] text-foreground/50">
-              <LegendDot color="#24A058" label="Ball" />
-              <LegendDot color="#E24B4A" label="Strike" />
-              <LegendDot color="#EF9F27" label="Foul" />
-            </div>
-          ) : (
-            state.pendingPitches.length > 0 && (
-              <p className="shrink-0 truncate text-center text-[10px] text-foreground/50">
-                {state.pendingPitches
-                  .map((p, i) => `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`)
-                  .join(", ")}
-              </p>
-            )
+          {state.pendingPitches.length > 0 && (
+            <p className="shrink-0 truncate text-center text-[10px] text-foreground/50">
+              {state.pendingPitches
+                .map((p, i) => `${i + 1}. ${p.pitch_type ? PITCH_TYPE_LABELS[p.pitch_type] : "Pitch"} — ${OUTCOME_LABELS[p.outcome]}`)
+                .join(", ")}
+            </p>
           )}
 
-          {!sessionHeatMapOpen && (
-            <div className="mt-1 flex shrink-0 justify-center gap-2">
-              <button
-                onClick={() => setIbbConfirmOpen(true)}
-                className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
-                style={{ borderColor: "#EF9F27", color: "#EF9F27" }}
-              >
-                IBB
-              </button>
-              <button
-                onClick={() => void handleDirectHbp()}
-                className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
-                style={{ borderColor: "#FF4444", color: "#FF4444" }}
-              >
-                HBP
-              </button>
-            </div>
-          )}
+          <div className="mt-1 flex shrink-0 justify-center gap-2">
+            <button
+              onClick={() => setIbbConfirmOpen(true)}
+              className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
+              style={{ borderColor: "#EF9F27", color: "#EF9F27" }}
+            >
+              IBB
+            </button>
+            <button
+              onClick={() => void handleDirectHbp()}
+              className="min-h-[36px] rounded-full border px-3 text-xs font-semibold transition hover:brightness-125"
+              style={{ borderColor: "#FF4444", color: "#FF4444" }}
+            >
+              HBP
+            </button>
+          </div>
         </div>
 
         {/* RIGHT PANEL -- what happens after contact. */}
         <div className="flex flex-col overflow-hidden p-2">
-          {/* Current batter card */}
-          <div className="glossy flex shrink-0 items-center gap-3 rounded-lg border-l-4 border-accent-green bg-card p-2.5">
+          {/* Current batter card -- Fix 4: capped at 80px so the diamond
+              below gets the overwhelming majority of the panel's height. */}
+          <div className="glossy flex max-h-[80px] shrink-0 items-center gap-3 overflow-hidden rounded-lg border-l-4 border-accent-green bg-card p-2.5">
             {state.mode === "hitting" ? (
               <>
                 <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 border-accent-gold bg-surface font-heading text-lg font-bold text-white">
@@ -1388,7 +1372,13 @@ export function OperatorConsole({
           </div>
 
           {/* Middle: exactly one of a runner popup / active flow step /
-              the diamond -- see rightPanelMode above. */}
+              the diamond -- see rightPanelMode above. Fix 3/4: this is the
+              dominant element of the right panel now that the batter card
+              above is capped at 80px and the quick-actions row below is
+              40px -- BaserunnerDiamond's own h-full w-full (no more
+              max-w cap) fills whatever's left, which comes out to well
+              over 75% of the panel's height on any realistic tablet
+              viewport. */}
           <div className="flex flex-1 flex-col items-center justify-center gap-2 overflow-hidden py-1">
             {rightPanelMode === "tagUp" && (
               <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
@@ -1604,9 +1594,10 @@ export function OperatorConsole({
             )}
           </div>
 
-          {/* Quick actions -- compact, secondary. Everything else now
-              flows from tapping the runner directly (see rightPanelMode). */}
-          <div className="flex shrink-0 gap-2">
+          {/* Quick actions -- compact, secondary (Fix 4: 40px). Everything
+              else now flows from tapping the runner directly (see
+              rightPanelMode). */}
+          <div className="flex h-10 shrink-0 gap-2">
             <QuickButton
               label="Pickoff"
               onClick={() => setPickoffWizard({ step: "base" })}
@@ -1799,15 +1790,6 @@ export function OperatorConsole({
   );
 }
 
-function LegendDot({ color, label }: { color: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
-      {label}
-    </span>
-  );
-}
-
 // Fix 1: step 1 of the zone-tap popup -- asked before the outcome menu,
 // per spec. "Unknown" logs pitch_type as null (already how an unset pitch
 // type has always been recorded -- nothing new needed there) with no
@@ -1816,20 +1798,20 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 // anything but "excluded from that breakdown," which is already correct.
 // Batter handedness ("L"/"R") flanking the strike zone -- originally two
 // small ellipse buttons, redesigned in a later fix into a tall card (a
-// placeholder for a future left-/right-handed batter SVG silhouette),
-// taller than the zone itself since the zone only covers knees-to-elbows
-// while a batter's body is taller. Still the same live per-at-bat
-// handedness override underneath -- no confirmation, no server round-trip,
-// just a taller box around the same "L"/"R" tap target.
+// placeholder for a future left-/right-handed batter SVG silhouette).
+// Fix 2 (proportions batch): width is a fixed 52px and height is h-full --
+// it picks up its height from the flex row's own stretched cross-size
+// (see the row's items-stretch above), which is exactly the strike zone
+// + ball-zone ring's combined height, not an independent 1.6x multiple of
+// the zone alone the way an earlier version of this card computed it.
 function BatterStanceCard({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       aria-pressed={selected}
-      className={`flex w-12 shrink-0 flex-col items-center justify-center rounded-md border-2 border-accent-green text-lg font-bold transition ${
+      className={`flex h-full w-[52px] shrink-0 flex-col items-center justify-center rounded-md border-2 border-accent-green text-lg font-bold transition ${
         selected ? "glow-green bg-accent-green/20 text-white" : "bg-card text-foreground/50"
       }`}
-      style={{ height: "min(100%, 352px)" }}
     >
       {label}
     </button>
@@ -1947,11 +1929,14 @@ function PopupButton({
   );
 }
 
+// Fix 4 (layout proportions batch): both call sites (Pickoff, Substitution)
+// are the compact bottom row of the right panel, so 40px -- not the 48px
+// tap-target minimum used elsewhere -- is the deliberate height here.
 function QuickButton({ label, onClick, className = "" }: { label: string; onClick: () => void; className?: string }) {
   return (
     <button
       onClick={onClick}
-      className={`min-h-[48px] rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground/80 hover:border-accent-primary hover:text-white ${className}`}
+      className={`h-10 rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground/80 hover:border-accent-primary hover:text-white ${className}`}
     >
       {label}
     </button>
