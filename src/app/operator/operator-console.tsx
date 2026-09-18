@@ -1284,7 +1284,7 @@ export function OperatorConsole({
             {state.mode === "hitting" && atBatBattingHand !== "R" && (
               <BatterImage
                 hand="L"
-                image="/batter-left.png"
+                image="/batter-left.svg"
                 selected={atBatBattingHand === "L"}
                 flash={hbpFlash?.side === "L" ? hbpFlash.key : 0}
                 onTapHbp={() => handleImageHbpTap("L")}
@@ -1323,7 +1323,7 @@ export function OperatorConsole({
             {state.mode === "hitting" && atBatBattingHand !== "L" && (
               <BatterImage
                 hand="R"
-                image="/batter-right.png"
+                image="/batter-right.svg"
                 selected={atBatBattingHand === "R"}
                 flash={hbpFlash?.side === "R" ? hbpFlash.key : 0}
                 onTapHbp={() => handleImageHbpTap("R")}
@@ -1869,19 +1869,17 @@ export function OperatorConsole({
 // per spec, tapping the image itself is now the HBP trigger instead of
 // a hand-selection tap (hand selection moved to the small L/R pill in
 // the footer overlay below). Plain <img>, not next/image, matching the
-// rest of this file's static-/public-asset convention.
+// rest of this file's static-/public-asset convention. /batter-left.svg
+// and /batter-right.svg (transparent-background silhouettes) live in
+// /public.
 //
 // BATTER_IMAGE_VERTICAL_OFFSET_PX exists so the batter's elbow lines up
 // with the top of the green strike zone and their knees with its bottom
 // (the zone sits vertically centered in this same row -- see
-// StrikeZoneGrid's usage above). It's 0 for now: the actual
-// /batter-left.png / /batter-right.png files referenced below don't
-// exist in /public yet (only stale /batter-left.svg.svg and
-// /batter-right.svg.svg from an earlier fix do), so there is nothing to
-// visually tune this offset against. Once the real PNGs are added, this
-// needs a manual pass (Read can view the image directly to work out the
-// right pixel value) -- it is not something that can be derived from
-// the image's file path alone.
+// StrikeZoneGrid's usage above). Still 0 -- getting this right needs
+// visually comparing the rendered image against the zone at real size,
+// which hasn't been done yet; treat this as a known follow-up, not a
+// finished value.
 const BATTER_IMAGE_VERTICAL_OFFSET_PX = 0;
 
 function BatterImage({
@@ -1903,7 +1901,7 @@ function BatterImage({
 }) {
   return (
     <div className="relative h-full shrink-0" style={{ opacity: selected ? 1 : 0.5 }}>
-      {/* eslint-disable-next-line @next/next/no-img-element -- static /public PNG, not an optimizable next/image candidate */}
+      {/* eslint-disable-next-line @next/next/no-img-element -- static /public SVG, not an optimizable next/image candidate */}
       <img
         src={image}
         alt={`${hand === "L" ? "Left" : "Right"}-handed batter`}

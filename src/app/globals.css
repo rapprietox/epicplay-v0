@@ -68,26 +68,30 @@ body {
 }
 
 /* Left-panel redesign: the selected batter image's gold glow -- pulses
-   once (brighter, per spec) then settles to a resting glow. The resting
-   value is declared on .batter-glow-selected itself, not only inside the
-   100% keyframe stop -- same reasoning as grid-line-flash above: once the
+   once (brighter, per spec) then settles to a resting glow. filter:
+   drop-shadow(), not box-shadow -- the images are transparent-background
+   SVGs, so drop-shadow (which follows the actual visible/alpha pixels)
+   hugs the batter silhouette itself, where box-shadow would have glowed
+   around the whole rectangular image box instead. The resting value is
+   declared on .batter-glow-selected itself, not only inside the 100%
+   keyframe stop -- same reasoning as grid-line-flash above: once the
    animation ends, `animation-fill-mode: none` reverts the element to its
-   un-animated box-shadow, and that needs to already BE the resting glow
-   (not "no box-shadow at all") for the glow to actually persist instead
-   of vanishing the instant the pulse finishes. */
+   un-animated filter, and that needs to already BE the resting glow (not
+   "no drop-shadow at all") for the glow to actually persist instead of
+   vanishing the instant the pulse finishes. */
 @keyframes batter-glow-pulse {
   0% {
-    box-shadow: 0 0 0 rgba(240, 192, 96, 0);
+    filter: drop-shadow(0 0 0 rgba(240, 192, 96, 0));
   }
   50% {
-    box-shadow: 0 0 30px #f0c060, 0 0 60px #f0c060;
+    filter: drop-shadow(0 0 20px #f0c060);
   }
   100% {
-    box-shadow: 0 0 20px #f0c060, 0 0 40px #f0c060;
+    filter: drop-shadow(0 0 12px #f0c060);
   }
 }
 .batter-glow-selected {
-  box-shadow: 0 0 20px #f0c060, 0 0 40px #f0c060;
+  filter: drop-shadow(0 0 12px #f0c060);
   animation: batter-glow-pulse 500ms ease-out;
 }
 
