@@ -1882,6 +1882,23 @@ export function OperatorConsole({
 // finished value.
 const BATTER_IMAGE_VERTICAL_OFFSET_PX = 0;
 
+// Both PNGs render the batter well inset from the *inner* edge of their
+// own bounding box -- the bat's own knob is the first non-transparent
+// pixel, roughly 11.5% of the image's width in from that edge (measured
+// directly off /batter-right.png and /batter-left.png; the two are
+// mirror images of each other, so this is the same fraction on both).
+// Flex's gap-0 already closes the *box* gap to zero, but that transparent
+// margin still reads as visible empty space between the zone and the
+// batter -- this is what "the gap doesn't look closed despite gap-0"
+// actually is. translateX pulls the image in by that fraction (a %
+// value in `transform` is relative to the element's *own* box, unlike
+// margin/inset percentages, so this stays correct at any rendered size)
+// plus a further fixed 10px so the visible art overlaps the zone
+// slightly, per spec. Sign flips with which side the image is on: the R
+// image needs to move left (negative), the L image right (positive).
+const BATTER_IMAGE_INNER_MARGIN_PCT = 11.5;
+const BATTER_IMAGE_OVERLAP_PX = 10;
+
 function BatterImage({
   hand,
   image,
@@ -1899,6 +1916,7 @@ function BatterImage({
   flash: number;
   onTapHbp: () => void;
 }) {
+  const sign = hand === "R" ? -1 : 1;
   return (
     <div className="relative h-full shrink-0" style={{ opacity: selected ? 1 : 0.5 }}>
       {/* eslint-disable-next-line @next/next/no-img-element -- static /public PNG, not an optimizable next/image candidate */}
@@ -1907,7 +1925,9 @@ function BatterImage({
         alt={`${hand === "L" ? "Left" : "Right"}-handed batter`}
         onClick={onTapHbp}
         className={`block h-full w-auto cursor-pointer ${selected ? "batter-glow-selected" : ""}`}
-        style={{ transform: `translateY(${BATTER_IMAGE_VERTICAL_OFFSET_PX}px)` }}
+        style={{
+          transform: `translateX(calc(${sign * BATTER_IMAGE_INNER_MARGIN_PCT}% + ${sign * BATTER_IMAGE_OVERLAP_PX}px)) translateY(${BATTER_IMAGE_VERTICAL_OFFSET_PX}px)`,
+        }}
       />
       {flash > 0 && <div key={flash} className="batter-hbp-flash pointer-events-none absolute inset-0" />}
     </div>
