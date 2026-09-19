@@ -14,12 +14,24 @@ const REASONS: { value: SubReason; label: string }[] = [
   { value: "pinch_run", label: "Pinch run" },
 ];
 
+// Fix 6 (baseball-logic-fixes batch): both selects list the full roster
+// (never hidden -- an "already used"/"not in game" option label plus a
+// disabled state is the required UI, not a shorter list the operator
+// can't make sense of) but disable whichever players aren't a legal
+// choice for that slot right now:
+//  - Player out: only someone currently active can be taken out.
+//  - Player in: not someone already active elsewhere, and not someone
+//    already substituted out earlier this game (no re-entry).
 export function SubstitutionPanel({
   players,
+  activePlayerIds,
+  substitutedOutIds,
   onConfirm,
   onClose,
 }: {
   players: Player[];
+  activePlayerIds: Set<string>;
+  substitutedOutIds: Set<string>;
   onConfirm: (playerOutId: string, playerInId: string, reason: SubReason) => void;
   onClose: () => void;
 }) {
@@ -43,11 +55,15 @@ export function SubstitutionPanel({
               className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white"
             >
               <option value="">Select…</option>
-              {players.map((p) => (
-                <option key={p.id} value={p.id}>
-                  #{p.jersey_number ?? "—"} {p.name}
-                </option>
-              ))}
+              {players.map((p) => {
+                const eligible = activePlayerIds.has(p.id);
+                return (
+                  <option key={p.id} value={p.id} disabled={!eligible}>
+                    #{p.jersey_number ?? "—"} {p.name}
+                    {eligible ? "" : " (not in game)"}
+                  </option>
+                );
+              })}
             </select>
           </label>
 
@@ -59,11 +75,17 @@ export function SubstitutionPanel({
               className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white"
             >
               <option value="">Select…</option>
-              {players.map((p) => (
-                <option key={p.id} value={p.id}>
-                  #{p.jersey_number ?? "—"} {p.name}
-                </option>
-              ))}
+              {players.map((p) => {
+                const alreadyActive = activePlayerIds.has(p.id);
+                const alreadyUsed = substitutedOutIds.has(p.id);
+                const eligible = !alreadyActive && !alreadyUsed;
+                return (
+                  <option key={p.id} value={p.id} disabled={!eligible}>
+                    #{p.jersey_number ?? "—"} {p.name}
+                    {alreadyActive ? " (currently in game)" : alreadyUsed ? " (already used this game)" : ""}
+                  </option>
+                );
+              })}
             </select>
           </label>
 
@@ -86,7 +108,14 @@ export function SubstitutionPanel({
         <div className="mt-5 flex gap-3">
           <button
             type="button"
-            disabled={!playerOut || !playerIn || playerOut === playerIn}
+            disabled={
+              !playerOut ||
+              !playerIn ||
+              playerOut === playerIn ||
+              !activePlayerIds.has(playerOut) ||
+              activePlayerIds.has(playerIn) ||
+              substitutedOutIds.has(playerIn)
+            }
             onClick={() => onConfirm(playerOut, playerIn, reason)}
             className="flex-1 rounded-md bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
           >

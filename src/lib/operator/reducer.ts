@@ -35,6 +35,7 @@ export function initialOperatorState(gameId: string): OperatorState {
     opponentBatterName: "",
     runners: {},
     runnersAtAtBatStart: null,
+    currentPlayForceOuts: [],
     currentAtBatId: null,
     balls: 0,
     strikes: 0,
@@ -91,9 +92,19 @@ export type OperatorAction =
   | { type: "SET_FIELD_TAP"; x: number; y: number }
   | { type: "SET_FIELDING"; position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null }
   | { type: "CONFIRM_RUNNERS_SUGGESTION" }
-  | { type: "APPLY_RUNNER_ACTION"; base: Base; action: RunnerQuickAction; scoreMethod?: ScoreMethod }
-  | { type: "CONFIRM_LOCAL"; atBatId: string; outsRecorded: number; accuracyRatio: number }
-  | { type: "CONFIRM_DOUBLE_PLAY"; atBatId: string; secondAtBatId: string; removedBase: Base; accuracyRatio: number }
+  | { type: "APPLY_RUNNER_ACTION"; base: Base; action: RunnerQuickAction; scoreMethod?: ScoreMethod; forced?: boolean }
+  | { type: "CONFIRM_LOCAL"; atBatId: string; outsRecorded: number; accuracyRatio: number; voidRuns?: boolean }
+  | {
+      type: "CONFIRM_DOUBLE_PLAY";
+      atBatId: string;
+      secondAtBatId: string;
+      removedBase: Base;
+      accuracyRatio: number;
+      // Fix 8 (baseball-logic-fixes batch, minor tier): present only for a
+      // triple play -- both undefined/null together, or both set together.
+      thirdAtBatId?: string | null;
+      thirdRemovedBase?: Base | null;
+    }
   | { type: "CONFIRM_INTENTIONAL_WALK"; atBatId: string; runners: Runners; runsScored: number; runnersBeforeAtBat: Runners }
   | { type: "UNDO_LOCAL" }
   | { type: "CLEAR_LAST_CONFIRMED" }
@@ -124,7 +135,13 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       return { ...state, selectedZone: null };
 
     case "START_DRAFT_LOCAL":
-      return { ...state, currentAtBatId: action.atBatId, runnersAtAtBatStart: state.runners, dirty: true };
+      return {
+        ...state,
+        currentAtBatId: action.atBatId,
+        runnersAtAtBatStart: state.runners,
+        currentPlayForceOuts: [],
+        dirty: true,
+      };
 
     case "LOG_PITCH_LOCAL": {
       const pitch = {
@@ -146,7 +163,10 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           awaitingResult = true;
           suggestedResult = "walk";
         }
-      } else if (action.outcome === "strike") {
+      } else if (action.outcome === "strike" || action.outcome === "foul_tip") {
+        // Fix 3: a caught foul tip counts as a real strike, including
+        // strike 3 -- unlike a plain foul (below), which is capped at 2
+        // and can never end the at-bat on its own.
         strikes = Math.min(3, strikes + 1);
         if (strikes >= 3) {
           awaitingResult = true;
@@ -262,11 +282,21 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         };
       }
       if (action.action === "out" || action.action === "picked_off") {
+        // Fix 1: only a genuine force out (the caller derives this via
+        // isForced() against runnersAtAtBatStart -- "picked_off" is never
+        // forced, it's a tag play by definition) gets recorded toward
+        // this play's force-out list, deduped since the same base can't
+        // meaningfully be flagged twice in one play.
+        const nextForceOuts =
+          action.action === "out" && action.forced && !state.currentPlayForceOuts.includes(action.base)
+            ? [...state.currentPlayForceOuts, action.base]
+            : state.currentPlayForceOuts;
         return {
           ...state,
           runners: { ...state.runners, [action.base]: null },
           outs: Math.min(3, state.outs + 1),
           runnersPendingConfirmation: false,
+          currentPlayForceOuts: nextForceOuts,
           dirty: true,
         };
       }
@@ -291,7 +321,16 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
     }
 
     case "CONFIRM_LOCAL": {
-      const runsScored = state.scoredThisAtBat.length;
+      // Fix 1: the caller (handleConfirm in operator-console.tsx) computes
+      // voidRuns by checking whether this play's outs bring the
+      // half-inning to 3 AND at least one of those outs was a force
+      // (state.currentPlayForceOuts, or the batter's own groundout being
+      // forced at first) -- see the OperatorState.currentPlayForceOuts
+      // comment for the rule this enforces. When true, no run that
+      // crossed home this play counts, even though the runner did
+      // actually leave their base for good (so `runners` itself is
+      // untouched here, same as any other confirm).
+      const runsScored = action.voidRuns ? 0 : state.scoredThisAtBat.length;
       const result = state.suggestedResult;
       const nextBattingOrder =
         state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
@@ -325,6 +364,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         battingOrderPosition: nextBattingOrder,
         currentAtBatId: null,
         runnersAtAtBatStart: null,
+        currentPlayForceOuts: [],
         balls: 0,
         strikes: 0,
         pendingPitches: [],
@@ -352,9 +392,11 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         lastConfirmed: {
           atBatId: action.atBatId,
           secondAtBatId: null,
+          thirdAtBatId: null,
           mode: state.mode,
           runsScored,
           outsRecorded: action.outsRecorded,
+          pitchesThisAtBat: state.pendingPitches.length,
           runnersBeforeAtBat: state.runnersAtAtBatStart ?? {},
           prevAccuracyRatioSum: state.accuracyRatioSum,
           prevAccuracyAtBatCount: state.accuracyAtBatCount,
@@ -380,13 +422,22 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         errorsGame: state.errorsGame,
         kGame: state.kGame,
       };
+      // Fix 8 (baseball-logic-fixes batch, minor tier): a triple play is
+      // this same confirm with one more out folded in -- outsRecorded/
+      // runners both scale with whether a third out was actually logged.
+      const outsRecorded = action.thirdAtBatId ? 3 : 2;
       return {
         ...state,
-        outs: Math.min(3, state.outs + 2),
-        runners: { ...state.runners, [action.removedBase]: null },
+        outs: Math.min(3, state.outs + outsRecorded),
+        runners: {
+          ...state.runners,
+          [action.removedBase]: null,
+          ...(action.thirdRemovedBase ? { [action.thirdRemovedBase]: null } : {}),
+        },
         battingOrderPosition: nextBattingOrder,
         currentAtBatId: null,
         runnersAtAtBatStart: null,
+        currentPlayForceOuts: [],
         balls: 0,
         strikes: 0,
         pendingPitches: [],
@@ -406,9 +457,11 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         lastConfirmed: {
           atBatId: action.atBatId,
           secondAtBatId: action.secondAtBatId,
+          thirdAtBatId: action.thirdAtBatId ?? null,
           mode: state.mode,
           runsScored: 0,
-          outsRecorded: 2,
+          outsRecorded,
+          pitchesThisAtBat: state.pendingPitches.length,
           runnersBeforeAtBat: state.runnersAtAtBatStart ?? {},
           prevAccuracyRatioSum: state.accuracyRatioSum,
           prevAccuracyAtBatCount: state.accuracyAtBatCount,
@@ -450,12 +503,17 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         runsThisInning: state.runsThisInning + runsDelta,
         runsGame: state.runsGame + runsDelta,
         runnersPendingConfirmation: false,
+        currentPlayForceOuts: [],
         lastConfirmed: {
           atBatId: action.atBatId,
           secondAtBatId: null,
+          thirdAtBatId: null,
           mode: state.mode,
           runsScored: action.runsScored,
           outsRecorded: 0,
+          // Fix 7: an IBB always adds exactly 4, regardless of how many
+          // (zero) real pitches were logged -- see the field's own comment.
+          pitchesThisAtBat: 4,
           runnersBeforeAtBat: action.runnersBeforeAtBat,
           prevAccuracyRatioSum: state.accuracyRatioSum,
           prevAccuracyAtBatCount: state.accuracyAtBatCount,
@@ -480,12 +538,28 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         ourScore: state.lastConfirmed.mode === "hitting" ? Math.max(0, state.ourScore - state.lastConfirmed.runsScored) : state.ourScore,
         opponentScore:
           state.lastConfirmed.mode === "pitching" ? Math.max(0, state.opponentScore - state.lastConfirmed.runsScored) : state.opponentScore,
+        // Fix 7 (baseball-logic-fixes batch): previously neither counter
+        // was touched by Undo at all -- an undone at-bat's pitches stayed
+        // permanently counted against whichever pitcher/opponent total
+        // they were attributed to. Math.max(0, ...) guards the same way
+        // outs/score already do above (e.g. if a pitching change happened
+        // since this at-bat, pitchCountForCurrentPitcher may already be
+        // lower than what this specific at-bat added).
+        pitchCountForCurrentPitcher:
+          state.lastConfirmed.mode === "pitching"
+            ? Math.max(0, state.pitchCountForCurrentPitcher - state.lastConfirmed.pitchesThisAtBat)
+            : state.pitchCountForCurrentPitcher,
+        opponentPitchCount:
+          state.lastConfirmed.mode === "hitting"
+            ? Math.max(0, state.opponentPitchCount - state.lastConfirmed.pitchesThisAtBat)
+            : state.opponentPitchCount,
         accuracyRatioSum: state.lastConfirmed.prevAccuracyRatioSum,
         accuracyAtBatCount: state.lastConfirmed.prevAccuracyAtBatCount,
         showLowAccuracyWarning:
           runningAccuracy(state.lastConfirmed.prevAccuracyRatioSum, state.lastConfirmed.prevAccuracyAtBatCount) < RUNNING_ACCURACY_WARNING_THRESHOLD,
         ...state.lastConfirmed.prevBoxScore,
         lastConfirmed: null,
+        currentPlayForceOuts: [],
         dirty: true,
       };
     }
@@ -522,6 +596,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
         outs: 0,
         runners: {},
         runnersAtAtBatStart: null,
+        currentPlayForceOuts: [],
         currentAtBatId: null,
         balls: 0,
         strikes: 0,

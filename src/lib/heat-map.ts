@@ -1,7 +1,9 @@
 import type { AtBatResult } from "@/lib/supabase/types";
 
-export const HIT_RESULTS = new Set<AtBatResult>(["single", "double", "triple", "hr"]);
-const EXTRA_BASE_HIT_RESULTS = new Set<AtBatResult>(["double", "triple"]);
+// ground_rule_double counts as a double everywhere a regular double does
+// (Fix 9, baseball-logic-fixes batch, minor tier).
+export const HIT_RESULTS = new Set<AtBatResult>(["single", "double", "triple", "hr", "ground_rule_double"]);
+const EXTRA_BASE_HIT_RESULTS = new Set<AtBatResult>(["double", "triple", "ground_rule_double"]);
 
 // Same 3x3 thirds as the operator's strike zone grid (33.33/66.67
 // boundaries), 0-8 reading left-to-right, top-to-bottom. Returns null for

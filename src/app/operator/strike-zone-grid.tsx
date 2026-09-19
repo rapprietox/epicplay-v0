@@ -8,6 +8,10 @@ export const OUTCOME_COLOR: Record<PitchOutcome, string> = {
   ball: "#24A058",
   strike: "#E24B4A",
   foul: "#EF9F27",
+  // Fix 3 (baseball-logic-fixes batch): same red family as a plain strike
+  // (it counts as one, including completing strike 3) but a distinct
+  // shade so it's still visually distinguishable on the pitch log/heat map.
+  foul_tip: "#C23838",
   hbp: "#B060F0",
   inplay: "#2ECC71",
 };

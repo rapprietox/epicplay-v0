@@ -50,9 +50,10 @@ export default async function OperatorPage({
     );
   }
 
-  const [{ data: players }, { data: lineup }] = await Promise.all([
+  const [{ data: players }, { data: lineup }, { data: substitutions }] = await Promise.all([
     supabase.from("players").select("*").eq("team_id", teamId).order("jersey_number"),
     supabase.from("lineup").select("*").eq("game_id", game.id),
+    supabase.from("substitutions").select("player_out_id, player_in_id").eq("game_id", game.id),
   ]);
 
   const gameState = await getOrCreateGameState(game.id);
@@ -122,6 +123,7 @@ export default async function OperatorPage({
       seasonBattingLines={Object.fromEntries(seasonBattingLines)}
       teamName={team?.name ?? "Us"}
       opponentPitchCountSeed={opponentPitchCountSeed ?? 0}
+      initialSubstitutions={substitutions ?? []}
     />
   );
 }

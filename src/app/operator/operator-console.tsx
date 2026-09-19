@@ -17,7 +17,7 @@ import type {
   SubReason,
 } from "@/lib/supabase/types";
 import { operatorReducer, UNDO_WINDOW_MS } from "@/lib/operator/reducer";
-import { advanceOneRunner, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
+import { advanceOneRunner, isForced, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
 import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
 import {
   RESULT_IS_OUT,
@@ -77,10 +77,18 @@ const PITCH_TYPES: PitchType[] = ["fastball", "curveball", "changeup", "slider",
 const SCORE_METHODS: ScoreMethod[] = ["hit", "sac_fly", "forced_walk_hbp", "wild_pitch", "passed_ball", "balk", "error"];
 
 interface DpWizardState {
-  step: "runner" | "type" | "fielding1" | "fielding2";
+  step: "runner" | "type" | "fielding1" | "fielding2" | "thirdOutAsk" | "thirdOutRunner" | "thirdOutType" | "thirdOutFielding";
   base?: Base;
   outType: OutType;
   firstFielding?: ResolvedFielder;
+  // Fix 8 (baseball-logic-fixes batch, minor tier): held onto once known
+  // so it can be passed to handleConfirmDoublePlay only once the wizard
+  // fully resolves -- confirming used to happen immediately after this
+  // was picked, before there was a "was there a third out?" step to defer
+  // past.
+  secondFielding?: ResolvedFielder;
+  thirdBase?: Base;
+  thirdOutType?: OutType;
 }
 
 // Runner-actions consolidation: the reasons behind "Advance", replacing
@@ -111,6 +119,7 @@ export function OperatorConsole({
   seasonBattingLines,
   teamName,
   opponentPitchCountSeed,
+  initialSubstitutions,
 }: {
   game: Game;
   players: Player[];
@@ -133,6 +142,12 @@ export function OperatorConsole({
   // through hitting-mode at-bats) since there's no game_state column to
   // read it from directly -- the reducer increments it live from here.
   opponentPitchCountSeed: number;
+  // Fix 6 (baseball-logic-fixes batch): every substitution logged so far
+  // this game, seeded server-side and appended to locally as new subs are
+  // made -- drives which players are eligible for "Player out"/"Player
+  // in"/pitcher-change (no re-entry, no double-booking a player already
+  // active elsewhere). Only the two id columns are needed here.
+  initialSubstitutions: { player_out_id: string; player_in_id: string }[];
 }) {
   const router = useRouter();
   // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
@@ -209,6 +224,22 @@ export function OperatorConsole({
   // 250ms for the existing 30s Undo bar, reused here rather than adding a
   // second timer for the same purpose.
   const [autoScoreBanners, setAutoScoreBanners] = useState<AutoScoreBanner[]>([]);
+  // Fix 6: seeded from the server, appended to locally the moment a sub is
+  // confirmed (same optimistic-local-first pattern as every other write in
+  // this console) so the eligibility filters below react immediately
+  // rather than waiting on a reload.
+  const [substitutionLog, setSubstitutionLog] = useState(initialSubstitutions);
+  // Fix 2 (baseball-logic-fixes batch): the two-step dropped-third-strike
+  // prompt -- null means no prompt is active.
+  const [dropThirdStep, setDropThirdStep] = useState<"caught_or_dropped" | "safe_or_out" | null>(null);
+  // Fix 5 (baseball-logic-fixes batch): shown right after a strikeout
+  // confirms with runners on base -- "Yes" hands off to the normal
+  // per-runner diamond Advance flow (postStrikeoutWildPitch tells
+  // handleAdvanceReason to skip logging a second phantom pitch, since the
+  // real pitch that got away was already logged as the strikeout's own
+  // strike 3).
+  const [wildPitchKPrompt, setWildPitchKPrompt] = useState(false);
+  const [postStrikeoutWildPitch, setPostStrikeoutWildPitch] = useState(false);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
@@ -371,6 +402,37 @@ export function OperatorConsole({
     setAutoScoreBanners((bs) => bs.filter((b) => b.deadline > now));
   }, [now, autoScoreBanners]);
 
+  // Fix 5 (baseball-logic-fixes batch): the wild-pitch-on-K window closes
+  // once a new draft at-bat starts -- same "the window has implicitly
+  // passed" reasoning the tag-up appeal panel already uses elsewhere.
+  // Without this, an ignored prompt (or a "Yes" the operator never
+  // followed through on by tapping a runner) would stay armed and could
+  // wrongly attach a much later, unrelated wild pitch to this at-bat.
+  useEffect(() => {
+    if (!state.currentAtBatId) return;
+    setWildPitchKPrompt(false);
+    setPostStrikeoutWildPitch(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.currentAtBatId]);
+
+  // Fix 6 (baseball-logic-fixes batch): who's currently on the field for
+  // our team, and who's already been used up this game -- derived from
+  // the starting lineup plus every substitution logged so far, no
+  // re-entry (once a player is substituted out, they stay out for good;
+  // this app has no mechanism to bring them back, matching the "does not
+  // fix re-entry" scope of the fixes this batch is building). Order of
+  // substitutions doesn't matter for either set: a player who was ever a
+  // player_out this game is permanently ineligible, and everyone else who
+  // started or was ever brought in and never taken back out is active.
+  const substitutedOutIds = useMemo(() => new Set(substitutionLog.map((s) => s.player_out_id)), [substitutionLog]);
+  const activePlayerIds = useMemo(() => {
+    const startingIds = lineup.map((l) => l.player_id);
+    const broughtInIds = substitutionLog.map((s) => s.player_in_id);
+    const active = new Set([...startingIds, ...broughtInIds]);
+    substitutedOutIds.forEach((id) => active.delete(id));
+    return active;
+  }, [lineup, substitutionLog, substitutedOutIds]);
+
   const battingPlayer = useMemo(
     () => (state.mode === "hitting" ? lineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
     [lineup, state.mode, state.battingOrderPosition]
@@ -485,7 +547,19 @@ export function OperatorConsole({
     let autoResult: AtBatResult | null = null;
     if (outcome === "hbp") autoResult = "hbp";
     else if (outcome === "ball" && state.balls + 1 >= 4) autoResult = "walk";
-    else if (outcome === "strike" && state.strikes + 1 >= 3) autoResult = "strikeout";
+    // Fix 3: a caught foul tip completes strike 3 exactly like a plain
+    // strike does.
+    else if ((outcome === "strike" || outcome === "foul_tip") && state.strikes + 1 >= 3) autoResult = "strikeout";
+
+    // Fix 2: eligibility for the "was it caught?" prompt, decided on the
+    // pre-dispatch snapshot -- a foul tip is caught by definition (that's
+    // what makes it a foul tip and not a plain foul), so it never prompts.
+    // Standard rule: dropped third strike doesn't apply (batter is out no
+    // matter what) when 1st is occupied with fewer than 2 outs, since
+    // letting the batter run there would hand the defense a cheap
+    // force-play double play the rule exists to prevent.
+    const isDroppableStrikeout = autoResult === "strikeout" && outcome === "strike";
+    const dropThirdEligible = isDroppableStrikeout && (!state.runners.first || state.outs >= 2);
 
     dispatch({ type: "LOG_PITCH_LOCAL", outcome, swing });
     // Fix 5: confirmation flash for every outcome except "In Play" -- that
@@ -507,7 +581,63 @@ export function OperatorConsole({
       })
     );
 
+    if (dropThirdEligible) {
+      // Deferred: handleDropThirdDecision (below) calls pickResult once
+      // the operator answers "caught?" (and, if dropped, "safe?").
+      setDropThirdStep("caught_or_dropped");
+      return;
+    }
     if (autoResult) pickResult(autoResult);
+  }
+
+  // Fix 2 (baseball-logic-fixes batch): resolves the two-step
+  // dropped-third-strike prompt. "Caught" is just a normal strikeout --
+  // nothing was actually dropped, so no game_events row. "Dropped" logs
+  // the event regardless of the throw's outcome (the drop itself is what
+  // happened, whether or not the defense recovers), then either
+  // "Safe" (dropped_third_strike_safe, batter reaches 1st, is_out=false)
+  // or "Thrown Out" (a plain strikeout -- the K stands, the drop just
+  // didn't matter in the end).
+  function handleDropThirdCaught() {
+    setDropThirdStep(null);
+    pickResult("strikeout");
+  }
+
+  function handleDropThirdDropped() {
+    setDropThirdStep("safe_or_out");
+  }
+
+  // Fix 4 (baseball-logic-fixes batch): a bunt attempt fouled off with 2
+  // strikes already is an automatic strikeout (rule 6.03(a)(2)) -- unlike
+  // any other foul, which just caps at 2 strikes and waits for the next
+  // pitch. Reuses handlePitchOutcome verbatim for the actual pitch
+  // logging (still just outcome "foul", swing true -- indistinguishable
+  // from a regular foul in the data), then layers the strikeout
+  // completion on top using the strike count from *before* this pitch
+  // (captured synchronously, ahead of handlePitchOutcome's own await).
+  async function handlePitchPopupPick(outcome: PitchOutcome, swing: boolean, isBunt?: boolean) {
+    const isBuntStrikeout = outcome === "foul" && isBunt === true && state.strikes >= 2;
+    await handlePitchOutcome(outcome, swing);
+    if (isBuntStrikeout) {
+      setSummaryFlash("Foul bunt — 2 strikes — STRIKEOUT");
+      pickResult("strikeout");
+    }
+  }
+
+  function handleDropThirdResolution(safe: boolean) {
+    setDropThirdStep(null);
+    const fielder = resolve("C");
+    void withOfflineRetry(`dts-${game.id}-${Date.now()}`, () =>
+      logGameEvent(game.id, {
+        eventType: "dropped_third_strike",
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        mode: state.mode,
+        playerId: fielder?.playerId ?? null,
+        opponentPlayerId: fielder?.opponentPlayerId ?? null,
+      })
+    );
+    pickResult(safe ? "dropped_third_strike_safe" : "strikeout");
   }
 
   function handleHitTypeTap(hitType: HitType) {
@@ -683,18 +813,41 @@ export function OperatorConsole({
     const atBatId = state.currentAtBatId;
     if (!result || !atBatId) return;
     const isOut = RESULT_IS_OUT[result];
-    const runsScored = state.scoredThisAtBat.length;
+    // Fix 1 (force-play validation): a groundout is always a force out at
+    // first (the batter-runner has no choice but to run) -- this is the
+    // same rule as "a runner forced out elsewhere," not a separate one,
+    // so it folds into the same currentPlayForceOuts check rather than a
+    // standalone "batter out before first" flag. flyout/lineout/strikeout
+    // are never forces (batter is retired without anyone being forced to
+    // advance); double_play never reaches this function (its own confirm
+    // path hardcodes runsScored to 0 already, so nothing to void here).
+    const batterForcedAtFirst = isOut && result === "groundout";
+    const outsAfterThisPlay = state.outs + (isOut ? 1 : 0);
+    // Rule 5.09(b)/4.09(b): if the out that ends the half-inning is a
+    // force out, no run scores on that same play, no matter when the
+    // runner crossed home relative to the out. Deliberately NOT "batter
+    // out before first always cancels the run" as a separate rule --
+    // that would incorrectly block the legal, common "productive out"
+    // case (runner scores from 3rd on a routine, non-force groundout
+    // with fewer than 2 outs and 1st base open).
+    const voidRuns = outsAfterThisPlay >= 3 && (batterForcedAtFirst || state.currentPlayForceOuts.length > 0);
+    const runsScored = voidRuns ? 0 : state.scoredThisAtBat.length;
+    const rbi = voidRuns ? 0 : state.pendingRbi;
     const accuracyRatio = atBatAccuracyRatio(result, state.pendingPitches.length);
     const hitType = state.pendingHitType;
     const fieldX = state.fieldTap?.x ?? null;
     const fieldY = state.fieldTap?.y ?? null;
-    const rbi = state.pendingRbi;
     const mode = state.mode;
     const fielding = state.pendingFielding;
-    const scoredRunners = state.scoredThisAtBat;
+    const scoredRunners = voidRuns ? [] : state.scoredThisAtBat;
     const batterName = battingPlayerInfo?.name ?? "Batter";
 
-    dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, accuracyRatio });
+    dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, accuracyRatio, voidRuns });
+    if (voidRuns && state.scoredThisAtBat.length > 0) {
+      setBanner(
+        `${state.scoredThisAtBat.length > 1 ? "Runs" : "Run"} did not count — the 3rd out was a force play (rule 5.09)`
+      );
+    }
 
     // Celebrate -- hitting mode only, per spec. Reads the pre-dispatch
     // snapshot captured above (state.scoredThisAtBat/pendingRbi are
@@ -784,6 +937,14 @@ export function OperatorConsole({
     // Addition 1: squeeze-play prompt -- see squeezePrompt's own comment
     // above for why "single" never reaches this.
     if (hitType === "bunt" && state.runners.third) setSqueezePrompt(true);
+    // Fix 5 (baseball-logic-fixes batch): a plain caught strikeout (not
+    // dropped-third-strike-safe, which already covers "the catcher
+    // couldn't handle it" via its own Fix 2 prompt) with runners on base
+    // -- ask whether the pitch that ended the at-bat also got away enough
+    // to let someone else advance.
+    if (result === "strikeout" && (state.runners.first || state.runners.second || state.runners.third)) {
+      setWildPitchKPrompt(true);
+    }
 
     void withOfflineRetry(`confirm-${atBatId}`, async () => {
       await confirmAtBat({
@@ -810,13 +971,16 @@ export function OperatorConsole({
     outType: OutType;
     batterFielding: ResolvedFielder;
     secondFielding: ResolvedFielder;
+    // Fix 8 (baseball-logic-fixes batch, minor tier): present only when
+    // the wizard's "was there a third out?" step was answered yes.
+    thirdOut?: { base: Base; runner: RunnerState; outType: OutType; fielding: ResolvedFielder };
   }) {
     const atBatId = state.currentAtBatId;
     if (!atBatId) return;
     setDpWizard(null);
     setBanner(null);
     try {
-      const { secondAtBatId } = await confirmDoublePlay({
+      const { secondAtBatId, thirdAtBatId } = await confirmDoublePlay({
         gameId: game.id,
         atBatId,
         mode: state.mode,
@@ -838,14 +1002,37 @@ export function OperatorConsole({
           playerId: input.secondFielding.playerId,
           opponentPlayerId: input.secondFielding.opponentPlayerId,
         },
+        thirdOut: input.thirdOut
+          ? {
+              runner: { type: input.thirdOut.runner.type, id: input.thirdOut.runner.id },
+              outType: input.thirdOut.outType,
+              fielding: {
+                position: input.thirdOut.fielding.position,
+                playerId: input.thirdOut.fielding.playerId,
+                opponentPlayerId: input.thirdOut.fielding.opponentPlayerId,
+              },
+            }
+          : undefined,
       });
       const accuracyRatio = atBatAccuracyRatio("double_play", state.pendingPitches.length);
-      dispatch({ type: "CONFIRM_DOUBLE_PLAY", atBatId, secondAtBatId, removedBase: input.base, accuracyRatio });
-      setSummaryFlash("Double Play");
+      dispatch({
+        type: "CONFIRM_DOUBLE_PLAY",
+        atBatId,
+        secondAtBatId,
+        removedBase: input.base,
+        accuracyRatio,
+        thirdAtBatId,
+        thirdRemovedBase: input.thirdOut?.base ?? null,
+      });
+      setSummaryFlash(input.thirdOut ? "Triple Play" : "Double Play");
       void withOfflineRetry(`dp-state-${game.id}-${Date.now()}`, () =>
         syncGameState(game.id, {
-          runners: { ...state.runners, [input.base]: null },
-          outs: Math.min(3, state.outs + 2),
+          runners: {
+            ...state.runners,
+            [input.base]: null,
+            ...(input.thirdOut ? { [input.thirdOut.base]: null } : {}),
+          },
+          outs: Math.min(3, state.outs + (input.thirdOut ? 3 : 2)),
           current_at_bat_id: null,
         })
       );
@@ -856,11 +1043,26 @@ export function OperatorConsole({
 
   async function handleUndo() {
     if (!state.lastConfirmed) return;
-    const { atBatId, secondAtBatId, mode, runsScored, runnersBeforeAtBat } = state.lastConfirmed;
+    const { atBatId, secondAtBatId, thirdAtBatId, mode, runsScored, runnersBeforeAtBat, pitchesThisAtBat } = state.lastConfirmed;
     dispatch({ type: "UNDO_LOCAL" });
     syncRunners(runnersBeforeAtBat);
+    // Fix 7 (baseball-logic-fixes batch): UNDO_LOCAL already corrects the
+    // local pitchCountForCurrentPitcher, but that counter is also
+    // persisted server-side in game_state (logPitch increments it there
+    // directly, unlike opponentPitchCount which is never stored and just
+    // gets recomputed fresh from real pitch rows on reload) -- without
+    // this, a reload after an Undo would resurrect the stale, too-high
+    // count from the DB. Computed from the pre-dispatch snapshot (the
+    // same math UNDO_LOCAL just applied), not read back from `state`,
+    // since this render's `state` hasn't caught up to that dispatch yet.
+    if (mode === "pitching" && pitchesThisAtBat > 0) {
+      const corrected = Math.max(0, state.pitchCountForCurrentPitcher - pitchesThisAtBat);
+      void withOfflineRetry(`undo-pitchcount-${atBatId}`, () =>
+        syncGameState(game.id, { pitch_count_for_current_pitcher: corrected })
+      );
+    }
     void withOfflineRetry(`undo-${atBatId}`, () =>
-      undoAtBat({ gameId: game.id, atBatId, secondAtBatId, mode, runsScoredToReverse: runsScored })
+      undoAtBat({ gameId: game.id, atBatId, secondAtBatId, thirdAtBatId, mode, runsScoredToReverse: runsScored })
     );
   }
 
@@ -881,6 +1083,10 @@ export function OperatorConsole({
     void withOfflineRetry(`sub-${game.id}-${Date.now()}`, () =>
       saveSubstitution(game.id, { playerOutId, playerInId, reason, inning: state.inning, inningHalf: state.inningHalf })
     );
+    // Fix 6: recorded immediately (not awaited) so the eligibility filters
+    // on both selects and the pitcher picker exclude this pair on the very
+    // next render, same as every other optimistic-local-first write here.
+    setSubstitutionLog((log) => [...log, { player_out_id: playerOutId, player_in_id: playerInId }]);
     dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
 
     const occupiedBase = (["first", "second", "third"] as Base[]).find(
@@ -899,7 +1105,7 @@ export function OperatorConsole({
     syncRunners({ ...state.runners, [occupiedBase]: newRunner });
   }
 
-  function applyRunnerAction(base: Base, action: RunnerQuickAction, scoreMethod?: ScoreMethod) {
+  function applyRunnerAction(base: Base, action: RunnerQuickAction, scoreMethod?: ScoreMethod, forced?: boolean) {
     const runner = state.runners[base];
     if (!runner) return;
 
@@ -909,7 +1115,7 @@ export function OperatorConsole({
       return;
     }
 
-    dispatch({ type: "APPLY_RUNNER_ACTION", base, action, scoreMethod });
+    dispatch({ type: "APPLY_RUNNER_ACTION", base, action, scoreMethod, forced });
     setRunnerActionMenu(null);
     setScoreMethodPrompt(null);
 
@@ -985,32 +1191,59 @@ export function OperatorConsole({
     }
 
     if (reason === "wild_pitch" || reason === "passed_ball") {
-      // Always a ball -- logs a real "ball" pitches row (per the earlier
-      // wild-pitch/passed-ball fix) so the count survives a reload,
-      // rather than a local-only counter bump.
-      let atBatId: string;
-      try {
-        atBatId = await ensureDraftAtBat();
-      } catch (err) {
-        setBanner(err instanceof Error ? err.message : "Could not start at-bat -- check connection and try again");
+      // Fix 5 (baseball-logic-fixes batch): if this wild pitch/passed ball
+      // is the follow-up to a strikeout that just completed on strike 3
+      // (postStrikeoutWildPitch), the pitch that got away was already
+      // logged correctly as "strike" (it's what completed the K) -- there
+      // is no longer a draft at-bat to attach a second, phantom pitch to
+      // (this one's confirmed, the next batter hasn't stepped in). Skip
+      // straight to the runner advance + event log. Otherwise, unchanged:
+      // always a ball -- logs a real "ball" pitches row so the count
+      // survives a reload, rather than a local-only counter bump.
+      if (!postStrikeoutWildPitch) {
+        let atBatId: string;
+        try {
+          atBatId = await ensureDraftAtBat();
+        } catch (err) {
+          setBanner(err instanceof Error ? err.message : "Could not start at-bat -- check connection and try again");
+          return;
+        }
+        const pitchNumber = state.pendingPitches.length + 1;
+        const ballsAfter = Math.min(4, state.balls + 1);
+        dispatch({ type: "LOG_PITCH_LOCAL", outcome: "ball", swing: false });
+        void withOfflineRetry(`pitch-${atBatId}-${pitchNumber}`, () =>
+          logPitch({
+            gameId: game.id,
+            atBatId,
+            pitchNumber,
+            pitchType: null,
+            zoneX: null,
+            zoneY: null,
+            outcome: "ball",
+            swing: false,
+            isPitchingMode: state.mode === "pitching",
+          })
+        );
+        const advanced = advanceRunnerWithMethod(base, reason);
+        const eventFielder = reason === "wild_pitch" ? resolve("P") : resolve("C");
+        void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+          logGameEvent(game.id, {
+            eventType: reason,
+            inning: state.inning,
+            inningHalf: state.inningHalf,
+            mode: state.mode,
+            runsScored: advanced.scored.length,
+            playerId: eventFielder?.playerId ?? null,
+            opponentPlayerId: eventFielder?.opponentPlayerId ?? null,
+          })
+        );
+        // The walk's own force-cascade applies on top of this runner's own
+        // advance, not the pre-advance positions.
+        if (ballsAfter >= 4) pickResult("walk", advanced.runners);
         return;
       }
-      const pitchNumber = state.pendingPitches.length + 1;
-      const ballsAfter = Math.min(4, state.balls + 1);
-      dispatch({ type: "LOG_PITCH_LOCAL", outcome: "ball", swing: false });
-      void withOfflineRetry(`pitch-${atBatId}-${pitchNumber}`, () =>
-        logPitch({
-          gameId: game.id,
-          atBatId,
-          pitchNumber,
-          pitchType: null,
-          zoneX: null,
-          zoneY: null,
-          outcome: "ball",
-          swing: false,
-          isPitchingMode: state.mode === "pitching",
-        })
-      );
+
+      setPostStrikeoutWildPitch(false);
       const advanced = advanceRunnerWithMethod(base, reason);
       const eventFielder = reason === "wild_pitch" ? resolve("P") : resolve("C");
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
@@ -1024,9 +1257,6 @@ export function OperatorConsole({
           opponentPlayerId: eventFielder?.opponentPlayerId ?? null,
         })
       );
-      // The walk's own force-cascade applies on top of this runner's own
-      // advance, not the pre-advance positions.
-      if (ballsAfter >= 4) pickResult("walk", advanced.runners);
       return;
     }
 
@@ -1085,7 +1315,15 @@ export function OperatorConsole({
   // than a separate confirmation step.
   function handleRunnerOutWithReason(base: Base, eventType: GameEventType) {
     setOutReasonPrompt(null);
-    applyRunnerAction(base, "out");
+    // Fix 1 (force-play validation): "Out at Next Base" is the one reason
+    // in this menu that represents a runner forced out advancing on a
+    // batted ball -- the other five (pickoff, caught stealing, rundown,
+    // passed-a-runner, out-on-appeal) are all tag plays or independent
+    // violations, never forces, regardless of who else is on base.
+    // isForced() checks the pre-play snapshot, not live state, since force
+    // status doesn't change mid-play under standard rules.
+    const forced = eventType === "out_at_next_base" && isForced(base, state.runnersAtAtBatStart);
+    applyRunnerAction(base, "out", undefined, forced);
     void withOfflineRetry(`outreason-${game.id}-${Date.now()}`, () =>
       logGameEvent(game.id, {
         eventType,
@@ -1370,6 +1608,8 @@ export function OperatorConsole({
   // which is also what makes a strict two-panel, no-scroll layout
   // possible -- there's nowhere to put a second simultaneous panel.
   type RightPanelMode =
+    | "dropThird"
+    | "wildPitchK"
     | "sacFly"
     | "squeeze"
     | "runnerPicker"
@@ -1380,7 +1620,11 @@ export function OperatorConsole({
     | "flow"
     | "diamond";
   const FLOW_STEPS_IN_RIGHT_PANEL = new Set<FlowStep>(["field", "hitType", "result", "hitRunners", "fielding", "runnerConfirm"]);
-  const rightPanelMode: RightPanelMode = sacFlyQueue.length > 0
+  const rightPanelMode: RightPanelMode = dropThirdStep
+    ? "dropThird"
+    : wildPitchKPrompt
+    ? "wildPitchK"
+    : sacFlyQueue.length > 0
     ? "sacFly"
     : squeezePrompt
       ? "squeeze"
@@ -1621,7 +1865,7 @@ export function OperatorConsole({
                         <PitchOutcomePopup
                           zone={classifyZone(state.selectedZone.x, state.selectedZone.y)}
                           battingHand={state.mode === "hitting" ? atBatBattingHand : null}
-                          onPick={handlePitchOutcome}
+                          onPick={handlePitchPopupPick}
                           onClose={() => dispatch({ type: "CLEAR_ZONE_SELECTION" })}
                         />
                       ) : (
@@ -1818,6 +2062,70 @@ export function OperatorConsole({
               the diamond's own wrapper below claims all of it as a rule
               rather than a byproduct. */}
           <div className="flex flex-1 flex-col items-center justify-center gap-2 overflow-hidden py-1">
+            {rightPanelMode === "dropThird" && dropThirdStep === "caught_or_dropped" && (
+              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-red/50 bg-accent-red/10 p-3 text-center">
+                <p className="text-sm font-semibold text-white">Strike 3 — was it caught?</p>
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={handleDropThirdCaught}
+                    className="min-h-[44px] flex-1 rounded-md bg-accent-primary px-3 text-sm font-semibold text-white"
+                  >
+                    Caught
+                  </button>
+                  <button
+                    onClick={handleDropThirdDropped}
+                    className="min-h-[44px] flex-1 rounded-md border border-accent-red px-3 text-sm font-semibold text-accent-red"
+                  >
+                    Dropped
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {rightPanelMode === "dropThird" && dropThirdStep === "safe_or_out" && (
+              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-red/50 bg-accent-red/10 p-3 text-center">
+                <p className="text-sm font-semibold text-white">Dropped third strike — batter safe at 1st?</p>
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={() => handleDropThirdResolution(true)}
+                    className="min-h-[44px] flex-1 rounded-md bg-accent-green px-3 text-sm font-semibold text-background"
+                  >
+                    Safe
+                  </button>
+                  <button
+                    onClick={() => handleDropThirdResolution(false)}
+                    className="min-h-[44px] flex-1 rounded-md border border-accent-red px-3 text-sm font-semibold text-accent-red"
+                  >
+                    Thrown Out
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {rightPanelMode === "wildPitchK" && (
+              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3 text-center">
+                <p className="text-sm font-semibold text-white">Was this pitch a wild pitch or passed ball?</p>
+                <p className="mt-1 text-xs text-accent-amber">The strikeout stands either way — tap a runner on the diamond next if Yes</p>
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={() => {
+                      setWildPitchKPrompt(false);
+                      setPostStrikeoutWildPitch(true);
+                    }}
+                    className="min-h-[44px] flex-1 rounded-md bg-accent-primary px-3 text-sm font-semibold text-white"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    onClick={() => setWildPitchKPrompt(false)}
+                    className="min-h-[44px] flex-1 rounded-md border border-border px-3 text-sm font-medium text-foreground/70"
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+            )}
+
             {rightPanelMode === "sacFly" && sacFlyQueue[0] && state.runners[sacFlyQueue[0]] && (
               <SacFlyPanel
                 base={sacFlyQueue[0]}
@@ -2121,16 +2429,42 @@ export function OperatorConsole({
           onChangeType={(outType) => setDpWizard((w) => (w ? { ...w, outType } : w))}
           onProceedToFielding1={() => setDpWizard((w) => (w ? { ...w, step: "fielding1" } : w))}
           onFirstFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "fielding2", firstFielding: f } : w))}
-          onSecondFielding={(f) => {
-            if (!dpWizard.base || !dpWizard.firstFielding) return;
+          // Fix 8 (baseball-logic-fixes batch, minor tier): no longer
+          // confirms immediately -- holds the fielder and asks "was there
+          // a third out?" first, since a triple play needs one more
+          // runner/type/fielding round before there's anything to confirm.
+          onSecondFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "thirdOutAsk", secondFielding: f } : w))}
+          onThirdOutAsk={(hasThirdOut) => {
+            if (!dpWizard.base || !dpWizard.firstFielding || !dpWizard.secondFielding) return;
             const runner = state.runners[dpWizard.base];
             if (!runner) return;
+            if (!hasThirdOut) {
+              void handleConfirmDoublePlay({
+                base: dpWizard.base,
+                runner,
+                outType: dpWizard.outType,
+                batterFielding: dpWizard.firstFielding,
+                secondFielding: dpWizard.secondFielding,
+              });
+              return;
+            }
+            setDpWizard((w) => (w ? { ...w, step: "thirdOutRunner" } : w));
+          }}
+          onChangeThirdBase={(base) => setDpWizard((w) => (w ? { ...w, step: "thirdOutType", thirdBase: base } : w))}
+          onChangeThirdType={(outType) => setDpWizard((w) => (w ? { ...w, step: "thirdOutFielding", thirdOutType: outType } : w))}
+          onThirdFielding={(f) => {
+            if (!dpWizard.base || !dpWizard.firstFielding || !dpWizard.secondFielding) return;
+            if (!dpWizard.thirdBase || !dpWizard.thirdOutType) return;
+            const runner = state.runners[dpWizard.base];
+            const thirdRunner = state.runners[dpWizard.thirdBase];
+            if (!runner || !thirdRunner) return;
             void handleConfirmDoublePlay({
               base: dpWizard.base,
               runner,
               outType: dpWizard.outType,
               batterFielding: dpWizard.firstFielding,
-              secondFielding: f,
+              secondFielding: dpWizard.secondFielding,
+              thirdOut: { base: dpWizard.thirdBase, runner: thirdRunner, outType: dpWizard.thirdOutType, fielding: f },
             });
           }}
           onCancel={() => setDpWizard(null)}
@@ -2152,19 +2486,29 @@ export function OperatorConsole({
           <div className="w-full max-w-xs rounded-lg border border-border bg-surface p-4">
             <p className="mb-2 text-xs uppercase tracking-wide text-foreground/40">Select pitcher</p>
             <div className="flex flex-col gap-1.5">
-              {players.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    dispatch({ type: "SET_PITCHER", playerId: p.id });
-                    void syncGameState(game.id, { current_pitcher_id: p.id, pitch_count_for_current_pitcher: 0 });
-                    setPitcherPickerOpen(false);
-                  }}
-                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
-                >
-                  #{p.jersey_number ?? "—"} {p.name}
-                </button>
-              ))}
+              {players.map((p) => {
+                // Fix 6: same no-re-entry rule as the Substitution panel --
+                // a player already substituted out of this game can't come
+                // back in to pitch either. Not hidden, just disabled with a
+                // reason, so the operator can see why they're missing
+                // rather than assuming a roster bug.
+                const usedOut = substitutedOutIds.has(p.id);
+                return (
+                  <button
+                    key={p.id}
+                    disabled={usedOut}
+                    onClick={() => {
+                      dispatch({ type: "SET_PITCHER", playerId: p.id });
+                      void syncGameState(game.id, { current_pitcher_id: p.id, pitch_count_for_current_pitcher: 0 });
+                      setPitcherPickerOpen(false);
+                    }}
+                    className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border"
+                  >
+                    #{p.jersey_number ?? "—"} {p.name}
+                    {usedOut ? <span className="ml-2 text-[11px] text-accent-red">(already used this game)</span> : null}
+                  </button>
+                );
+              })}
             </div>
             <button onClick={() => setPitcherPickerOpen(false)} className="mt-3 w-full text-xs text-foreground/50">
               Cancel
@@ -2176,6 +2520,8 @@ export function OperatorConsole({
       {state.substitutionPanelOpen && (
         <SubstitutionPanel
           players={players}
+          activePlayerIds={activePlayerIds}
+          substitutedOutIds={substitutedOutIds}
           onClose={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: false })}
           onConfirm={handleSubstitutionConfirm}
         />
@@ -2184,7 +2530,17 @@ export function OperatorConsole({
       {state.endGameConfirmOpen && (
         <ConfirmDialog
           title="End game?"
-          message="This will move to the post-game summary. You can still review before final submit."
+          message={
+            // Fix 10 (baseball-logic-fixes batch, minor tier): flag ending
+            // mid-inning -- state.outs is always < 3 while play is live
+            // (3 outs triggers the blocking ThreeOutsModal instead, which
+            // the operator must clear via its own "End Inning" before
+            // reaching this dialog at all), so this only ever fires for a
+            // genuine "ending before the half-inning is over" case.
+            state.outs < 3
+              ? `Warning: only ${state.outs} out${state.outs === 1 ? "" : "s"} recorded this half-inning — ending now leaves it incomplete. This will move to the post-game summary. You can still review before final submit.`
+              : "This will move to the post-game summary. You can still review before final submit."
+          }
           confirmLabel="End Game"
           onConfirm={() => {
             dispatch({ type: "SET_PANEL", panel: "endGame", open: false });
@@ -2417,7 +2773,7 @@ function PitchOutcomePopup({
 }: {
   zone: { col: number; row: number; isBallZone: boolean };
   battingHand: BattingHand | null;
-  onPick: (outcome: PitchOutcome, swing: boolean) => void;
+  onPick: (outcome: PitchOutcome, swing: boolean, isBunt?: boolean) => void;
   onClose: () => void;
 }) {
   const showHbp = hbpEligible(zone, battingHand);
@@ -2430,6 +2786,16 @@ function PitchOutcomePopup({
         )}
         <PopupButton label="Strike (Swinging)" color={OUTCOME_COLOR.strike} onClick={() => onPick("strike", true)} />
         <PopupButton label="Foul" color={OUTCOME_COLOR.foul} onClick={() => onPick("foul", true)} />
+        {/* Fix 3 (baseball-logic-fixes batch): a caught foul tip -- contact
+            is possible on any pitch the batter reaches for, in or out of
+            the zone, so this is unconditional like Foul/Strike Swinging/In
+            Play, not gated by isBallZone the way Strike Looking/Ball are. */}
+        <PopupButton label="Foul Tip" color={OUTCOME_COLOR.foul_tip} onClick={() => onPick("foul_tip", true)} />
+        {/* Fix 4 (baseball-logic-fixes batch): logged as a plain "foul"
+            pitch (same outcome value, no schema change) -- the isBunt flag
+            only changes what operator-console.tsx's handler does next
+            (auto-strikeout if this is strike 3), it never reaches the DB. */}
+        <PopupButton label="Foul Bunt" color={OUTCOME_COLOR.foul} onClick={() => onPick("foul", true, true)} />
         {zone.isBallZone && <PopupButton label="Ball" color={OUTCOME_COLOR.ball} onClick={() => onPick("ball", false)} />}
         {showHbp && <PopupButton label="HBP" color="#B060F0" onClick={() => onPick("hbp", false)} />}
         <PopupButton label="In Play" color={OUTCOME_COLOR.inplay} onClick={() => onPick("inplay", true)} />
@@ -3089,6 +3455,10 @@ function DoublePlayWizard({
   onProceedToFielding1,
   onFirstFielding,
   onSecondFielding,
+  onThirdOutAsk,
+  onChangeThirdBase,
+  onChangeThirdType,
+  onThirdFielding,
   onCancel,
 }: {
   wizard: DpWizardState;
@@ -3099,14 +3469,24 @@ function DoublePlayWizard({
   onProceedToFielding1: () => void;
   onFirstFielding: (f: ResolvedFielder) => void;
   onSecondFielding: (f: ResolvedFielder) => void;
+  // Fix 8 (baseball-logic-fixes batch, minor tier): the four new steps
+  // that generalize this wizard to a triple play -- unused/no-ops for a
+  // regular double play, which never leaves the original four steps.
+  onThirdOutAsk: (hasThirdOut: boolean) => void;
+  onChangeThirdBase: (base: Base) => void;
+  onChangeThirdType: (t: OutType) => void;
+  onThirdFielding: (f: ResolvedFielder) => void;
   onCancel: () => void;
 }) {
   const occupied = (["first", "second", "third"] as Base[]).filter((b) => runners[b]);
+  // The runner already picked for the second out can't also be the third.
+  const occupiedForThird = occupied.filter((b) => b !== wizard.base);
+  const title = wizard.step.startsWith("thirdOut") ? "Triple Play" : "Double Play";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
       <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-5">
-        <h3 className="font-heading text-lg font-bold text-white">Double Play</h3>
+        <h3 className="font-heading text-lg font-bold text-white">{title}</h3>
 
         {wizard.step === "runner" && (
           <>
@@ -3160,6 +3540,69 @@ function DoublePlayWizard({
         {wizard.step === "fielding2" && (
           <div className="mt-2">
             <FieldingPositionPicker title="Second out — who fielded it?" onSelect={onSecondFielding} resolve={resolve} />
+          </div>
+        )}
+
+        {wizard.step === "thirdOutAsk" && (
+          <>
+            <p className="mt-2 text-sm text-foreground/60">Was there a third out? (Triple Play)</p>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => onThirdOutAsk(true)}
+                className="min-h-[48px] flex-1 rounded-md bg-accent-primary px-3 text-sm font-semibold text-white"
+              >
+                Yes
+              </button>
+              <button
+                onClick={() => onThirdOutAsk(false)}
+                className="min-h-[48px] flex-1 rounded-md border border-border px-3 text-sm font-medium text-foreground/70"
+              >
+                No — confirm double play
+              </button>
+            </div>
+          </>
+        )}
+
+        {wizard.step === "thirdOutRunner" && (
+          <>
+            <p className="mt-2 text-sm text-foreground/60">Which runner was the third out?</p>
+            <div className="mt-3 flex flex-col gap-2">
+              {occupiedForThird.map((b) => (
+                <button
+                  key={b}
+                  onClick={() => onChangeThirdBase(b)}
+                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
+                >
+                  {runners[b]?.name} ({b})
+                </button>
+              ))}
+              {occupiedForThird.length === 0 && <p className="text-sm text-foreground/40">No other runners on base.</p>}
+            </div>
+          </>
+        )}
+
+        {wizard.step === "thirdOutType" && (
+          <>
+            <p className="mt-2 text-sm text-foreground/60">Force out or tag out (the third runner)?</p>
+            <div className="mt-3 flex gap-2">
+              {(["force", "tag"] as OutType[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => onChangeThirdType(t)}
+                  className={`flex-1 rounded-md border px-3 py-2 text-sm capitalize ${
+                    wizard.thirdOutType === t ? "border-accent-primary bg-accent-primary text-white" : "border-border text-foreground/70"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {wizard.step === "thirdOutFielding" && (
+          <div className="mt-2">
+            <FieldingPositionPicker title="Third out — who fielded it?" onSelect={onThirdFielding} resolve={resolve} />
           </div>
         )}
 

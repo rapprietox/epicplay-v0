@@ -59,7 +59,10 @@ export function HitterExtendedStats({
         const decided = pitchTypeAtBats.filter((ab) => ab.pitchType === value);
         const abEligible = decided.filter((ab) => !NOT_AB_RESULTS.has(ab.result));
         const hits = abEligible.filter((ab) => HIT_RESULTS.has(ab.result)).length;
-        const strikeouts = decided.filter((ab) => ab.result === "strikeout").length;
+        // dropped_third_strike_safe still counts toward K rate -- it's a
+        // strikeout by scoring rule, just not an out (Fix 2, baseball-
+        // logic-fixes batch).
+        const strikeouts = decided.filter((ab) => ab.result === "strikeout" || ab.result === "dropped_third_strike_safe").length;
         const typePitches = pitches.filter((p) => p.pitch_type === value);
         const strikes = typePitches.filter((p) => STRIKE_OUTCOMES.has(p.outcome)).length;
         return {

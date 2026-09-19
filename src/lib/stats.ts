@@ -4,7 +4,10 @@ type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
 
-const HIT_RESULTS = new Set(["single", "double", "triple", "hr"]);
+// ground_rule_double counts as a double everywhere a regular double does
+// (Fix 9, baseball-logic-fixes batch, minor tier) -- same 2 total bases,
+// same RBI eligibility, just a different circumstance.
+const HIT_RESULTS = new Set(["single", "double", "triple", "hr", "ground_rule_double"]);
 
 export interface BattingLine {
   playerId: string;
@@ -85,7 +88,7 @@ export function computeBattingLines(
 
     line.ab += 1;
     if (HIT_RESULTS.has(ab.result)) line.h += 1;
-    if (ab.result === "double") line.doubles += 1;
+    if (ab.result === "double" || ab.result === "ground_rule_double") line.doubles += 1;
     if (ab.result === "triple") line.triples += 1;
     if (ab.result === "hr") line.hr += 1;
   }
@@ -158,7 +161,11 @@ export function computePitchingLines(
     if (!ab.pitcher_id || !ab.result) continue;
     const line = get(ab.pitcher_id);
     if (ab.is_out) line.outs += 1;
-    if (ab.result === "strikeout") line.k += 1;
+    // Fix 2 (baseball-logic-fixes batch): a dropped third strike the
+    // batter reaches base safely on still credits the pitcher with a
+    // strikeout under standard scoring rules -- it just isn't an out (no
+    // outs increment above, matching is_out=false for this result).
+    if (ab.result === "strikeout" || ab.result === "dropped_third_strike_safe") line.k += 1;
     if (ab.result === "walk" || ab.result === "intentional_walk") line.bbAllowed += 1;
     if (HIT_RESULTS.has(ab.result)) line.hAllowed += 1;
     line.runsAllowed += ab.runs_scored;

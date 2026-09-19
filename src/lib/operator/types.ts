@@ -83,7 +83,13 @@ export const SCORE_METHOD_EVENT: Partial<Record<ScoreMethod, "wild_pitch" | "pas
 // walk/hbp -> forced; error/fc -> no RBI, same as a manual "Error" pick).
 export function resultToScoreMethod(result: AtBatResult): ScoreMethod {
   if (result === "walk" || result === "intentional_walk" || result === "hbp") return "forced_walk_hbp";
-  if (result === "error" || result === "fc") return "error";
+  // Fix 2 (baseball-logic-fixes batch): a strikeout never earns an RBI
+  // under standard scoring rules, even one where the batter reaches base
+  // and forces a run home -- the run scored because of the defensive
+  // miscue (the drop), not anything the batter did at the plate.
+  // "error" is reused here (closest existing non-RBI ScoreMethod) rather
+  // than adding a new value just for a label.
+  if (result === "error" || result === "fc" || result === "dropped_third_strike_safe") return "error";
   return "hit";
 }
 
@@ -126,6 +132,16 @@ export interface OperatorState {
   // Snapshot of `runners` taken when the current draft at-bat started, so
   // Undo can restore base state exactly, not just score/outs/batting order.
   runnersAtAtBatStart: Runners | null;
+  // Fix 1 (force-play validation, baseball-logic audit batch): bases where
+  // a runner was put out on a force play during the CURRENT play (reset
+  // whenever a new draft at-bat starts). At Confirm At-Bat time, if this
+  // play's outs bring the half-inning to 3 and at least one of them was a
+  // force out -- including the batter-runner being forced out at first on
+  // a groundout, which is the same rule, not a separate one -- no run that
+  // crossed home on this same play counts (rule 5.09(b)/4.09(b): a run
+  // cannot score on a play ending in a force out for the 3rd out,
+  // regardless of when the runner touched home relative to the out).
+  currentPlayForceOuts: Base[];
 
   currentAtBatId: string | null;
   balls: number;
@@ -201,9 +217,21 @@ export interface OperatorState {
   lastConfirmed: {
     atBatId: string;
     secondAtBatId: string | null;
+    // Fix 8 (baseball-logic-fixes batch, minor tier): a triple play's
+    // third logged out, alongside secondAtBatId -- null for anything
+    // else (a regular at-bat, or a double play).
+    thirdAtBatId: string | null;
     mode: AtBatMode;
     runsScored: number;
     outsRecorded: number;
+    // Fix 7 (baseball-logic-fixes batch): how many pitches this at-bat
+    // added to pitchCountForCurrentPitcher (mode 'pitching') or
+    // opponentPitchCount (mode 'hitting') -- state.pendingPitches.length
+    // at confirm time for a normal/double-play at-bat, or the flat 4 an
+    // intentional walk always adds (it bypasses real pitch logging
+    // entirely, so there's nothing to count). UNDO_LOCAL subtracts this
+    // back out; previously neither counter was touched by Undo at all.
+    pitchesThisAtBat: number;
     runnersBeforeAtBat: Runners;
     prevAccuracyRatioSum: number;
     prevAccuracyAtBatCount: number;
@@ -243,6 +271,11 @@ export const RESULT_IS_OUT: Record<AtBatResult, boolean> = {
   fc: false,
   double_play: true,
   intentional_walk: false,
+  // Fix 2: batter is safe (that's the whole point of this result value --
+  // see its own comment in supabase/types.ts).
+  dropped_third_strike_safe: false,
+  // Fix 9: an automatic double, batter always safe at 2nd.
+  ground_rule_double: false,
 };
 
 export const RESULT_LABELS: Record<AtBatResult, string> = {
@@ -260,6 +293,8 @@ export const RESULT_LABELS: Record<AtBatResult, string> = {
   fc: "FC",
   double_play: "Double Play",
   intentional_walk: "Intentional Walk",
+  dropped_third_strike_safe: "K — Dropped 3rd (safe)",
+  ground_rule_double: "Ground Rule Double",
 };
 
 // Results where the ball was put in play and an out was recorded --
@@ -293,8 +328,12 @@ export const RESULT_BUTTON_ORDER: AtBatResult[] = [
 // same "what can this batted ball actually become" logic.
 export const HIT_TYPE_RESULT_OPTIONS: Record<HitType, AtBatResult[]> = {
   groundball: ["groundout", "single", "double", "error", "fc", "double_play"],
-  flyball: ["flyout", "single", "double", "triple", "hr"],
-  linedrive: ["lineout", "single", "double", "triple", "hr"],
+  // Fix 9 (baseball-logic-fixes batch, minor tier): "Ground Rule Double" on
+  // fly ball/line drive only -- realistically always a deep fly that
+  // bounces over the fence, occasionally a hard-hit liner; never a
+  // groundball/popup/bunt.
+  flyball: ["flyout", "single", "double", "triple", "hr", "ground_rule_double"],
+  linedrive: ["lineout", "single", "double", "triple", "hr", "ground_rule_double"],
   popup: ["flyout", "single", "error", "fc"],
   bunt: ["groundout", "single", "error", "fc"],
   hr: ["hr"],
@@ -322,6 +361,7 @@ export const OUTCOME_LABELS: Record<PitchOutcome, string> = {
   ball: "Ball",
   strike: "Strike",
   foul: "Foul",
+  foul_tip: "Foul Tip",
   hbp: "HBP",
   inplay: "In Play",
 };

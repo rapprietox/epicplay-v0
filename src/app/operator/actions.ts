@@ -251,6 +251,15 @@ export interface ConfirmDoublePlayInput {
   secondOutRunner: { type: "player" | "opponent"; id: string | null };
   outType: OutType;
   secondOutFielding: { position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null } | null;
+  // Fix 8 (baseball-logic-fixes batch, minor tier): present only for a
+  // triple play -- structurally identical to the second out (its own
+  // at_bats row, is_out true, fielded_by_*), so confirmDoublePlay handles
+  // both rather than duplicating this whole function for one extra row.
+  thirdOut?: {
+    runner: { type: "player" | "opponent"; id: string | null };
+    outType: OutType;
+    fielding: { position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null } | null;
+  };
 }
 
 // The batter's own draft row becomes the batter's out (always a force at
@@ -258,7 +267,9 @@ export interface ConfirmDoublePlayInput {
 // put out -- see 20260908150001_double_play_and_fielding.sql for why two
 // rows (correct is_out-based innings-pitched counting while pitching; a
 // documented minor over-count in the runner's own batting AB while hitting).
-export async function confirmDoublePlay(input: ConfirmDoublePlayInput): Promise<{ secondAtBatId: string }> {
+export async function confirmDoublePlay(
+  input: ConfirmDoublePlayInput
+): Promise<{ secondAtBatId: string; thirdAtBatId: string | null }> {
   const { supabase } = await requireOperatorGame(input.gameId);
 
   const { error: batterError } = await supabase
@@ -303,10 +314,37 @@ export async function confirmDoublePlay(input: ConfirmDoublePlayInput): Promise<
     .single();
   if (secondError || !secondRow) throw new Error(secondError?.message ?? "Failed to log second out");
 
+  let thirdAtBatId: string | null = null;
+  if (input.thirdOut) {
+    const { data: thirdRow, error: thirdError } = await supabase
+      .from("at_bats")
+      .insert({
+        game_id: input.gameId,
+        mode: input.mode,
+        player_id: input.thirdOut.runner.type === "player" ? input.thirdOut.runner.id : null,
+        pitcher_id: input.pitcherId,
+        inning: input.inning,
+        inning_half: input.inningHalf,
+        result: "double_play",
+        is_out: true,
+        out_type: input.thirdOut.outType,
+        rbi: 0,
+        runs_scored: 0,
+        fielded_by_position: input.thirdOut.fielding?.position ?? null,
+        fielded_by_player_id: input.thirdOut.fielding?.playerId ?? null,
+        fielded_by_opponent_player_id: input.thirdOut.fielding?.opponentPlayerId ?? null,
+        confirmed_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
+    if (thirdError || !thirdRow) throw new Error(thirdError?.message ?? "Failed to log third out");
+    thirdAtBatId = thirdRow.id;
+  }
+
   await supabase.from("game_state").update({ current_at_bat_id: null }).eq("game_id", input.gameId);
 
   revalidatePath("/operator");
-  return { secondAtBatId: secondRow.id };
+  return { secondAtBatId: secondRow.id, thirdAtBatId };
 }
 
 export interface ConfirmIntentionalWalkInput {
@@ -385,11 +423,18 @@ export async function undoAtBat(input: {
   gameId: string;
   atBatId: string;
   secondAtBatId?: string | null;
+  // Fix 8 (baseball-logic-fixes batch, minor tier): a triple play's third
+  // logged out, deleted the same way as the second.
+  thirdAtBatId?: string | null;
   mode: AtBatMode;
   runsScoredToReverse: number;
 }) {
   const { supabase, game } = await requireOperatorGame(input.gameId);
 
+  if (input.thirdAtBatId) {
+    await supabase.from("pitches").delete().eq("at_bat_id", input.thirdAtBatId);
+    await supabase.from("at_bats").delete().eq("id", input.thirdAtBatId);
+  }
   if (input.secondAtBatId) {
     await supabase.from("pitches").delete().eq("at_bat_id", input.secondAtBatId);
     await supabase.from("at_bats").delete().eq("id", input.secondAtBatId);

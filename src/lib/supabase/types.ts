@@ -27,10 +27,26 @@ export type AtBatResult =
   | "error"
   | "fc"
   | "double_play"
-  | "intentional_walk";
+  | "intentional_walk"
+  // Fix 2 (baseball-logic-fixes batch): a strikeout the catcher dropped,
+  // where the batter reached first safely (1st was open, or 2 outs --
+  // see isForced/dropped-third-strike eligibility in operator-console.tsx).
+  // A caught third strike, or a dropped one the batter is thrown out on,
+  // both stay a plain "strikeout" -- this value only exists for the
+  // "batter safe" branch.
+  | "dropped_third_strike_safe"
+  // Fix 9 (baseball-logic-fixes batch, minor tier): automatic, no operator
+  // judgment on runner advancement -- distinct from a regular "double" so
+  // it's never confused with one in the box score.
+  | "ground_rule_double";
 export type HitType = "groundball" | "linedrive" | "flyball" | "bunt" | "popup" | "hr";
 export type PitchType = "fastball" | "curveball" | "changeup" | "slider" | "2seam" | "other";
-export type PitchOutcome = "strike" | "ball" | "foul" | "hbp" | "inplay";
+// Fix 3 (baseball-logic-fixes batch): "foul_tip" is a caught foul tip --
+// counts as a strike including strike 3 (ends the at-bat as a strikeout),
+// unlike a regular "foul" which can never complete strike 3. Always
+// caught by definition (if it weren't caught, it would just be a "foul"),
+// so it never triggers the Fix 2 dropped-third-strike prompt.
+export type PitchOutcome = "strike" | "ball" | "foul" | "foul_tip" | "hbp" | "inplay";
 export type AtBatMode = "hitting" | "pitching";
 export type SubReason = "tactical" | "injury" | "ejection" | "defensive" | "pinch_hit" | "pinch_run";
 export type GameEventType =
@@ -47,7 +63,8 @@ export type GameEventType =
   | "rundown_out"
   | "runner_passed"
   | "out_at_next_base"
-  | "squeeze_play";
+  | "squeeze_play"
+  | "dropped_third_strike";
 export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";

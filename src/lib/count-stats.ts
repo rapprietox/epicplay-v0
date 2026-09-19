@@ -27,7 +27,10 @@ export function reconstructCounts(pitches: CountPitch[]): CountState[] {
   for (const p of sorted) {
     counts.push({ balls, strikes });
     if (p.outcome === "ball") balls += 1;
-    else if (p.outcome === "strike") strikes += 1;
+    // foul_tip counts as a real strike (can complete strike 3), unlike a
+    // regular foul which is capped at 2 -- same distinction the live
+    // reducer's LOG_PITCH_LOCAL makes (Fix 3, baseball-logic-fixes batch).
+    else if (p.outcome === "strike" || p.outcome === "foul_tip") strikes += 1;
     else if (p.outcome === "foul") strikes = Math.min(2, strikes + 1);
   }
   return counts;
@@ -68,4 +71,4 @@ export const PITCH_TYPES: { value: PitchType; label: string }[] = [
 // outcome, not a true swing-and-miss (see the Strike Rate disclaimer on
 // the pitcher heat map) -- reused wherever this app computes a strike
 // rate from raw pitch outcomes.
-export const STRIKE_OUTCOMES = new Set<PitchOutcome>(["strike", "foul", "inplay"]);
+export const STRIKE_OUTCOMES = new Set<PitchOutcome>(["strike", "foul", "foul_tip", "inplay"]);

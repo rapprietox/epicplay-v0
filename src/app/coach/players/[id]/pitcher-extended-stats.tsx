@@ -55,7 +55,12 @@ export function PitcherExtendedStats({
   const maxCommand = Math.max(...commandCounts, 0);
 
   const strikeoutsByCount = useMemo(() => {
-    const kAtBats = countAtBats.filter((ab) => ab.result === "strikeout" && ab.finalCount);
+    // dropped_third_strike_safe still counts as a strikeout for this
+    // breakdown (Fix 2, baseball-logic-fixes batch) -- see the same note
+    // on hitter-extended-stats.tsx's kRate.
+    const kAtBats = countAtBats.filter(
+      (ab) => (ab.result === "strikeout" || ab.result === "dropped_third_strike_safe") && ab.finalCount
+    );
     return TRACKED_COUNTS.map(({ state, label }) => {
       const count = kAtBats.filter(
         (ab) => ab.finalCount!.balls === state.balls && ab.finalCount!.strikes === state.strikes
