@@ -118,3 +118,35 @@ export function Fireworks({ triggerKey }: { triggerKey: number }) {
     </div>
   );
 }
+
+// Pitching-mode reactions batch -- Fix 3: last-out-of-inning burst, 8
+// particles radiating evenly from one point positioned at an
+// approximate "diamond center" (a fixed viewport percentage -- see the
+// .inning-end-particle comment in globals.css for why this isn't a live
+// DOM measurement of the diamond's actual position).
+export function InningEndBurst({ triggerKey }: { triggerKey: number }) {
+  const particles = useMemo(() => {
+    const radius = 60;
+    return Array.from({ length: 8 }, (_, i) => {
+      const angle = (i / 8) * 2 * Math.PI;
+      return { id: i, dx: Math.cos(angle) * radius, dy: Math.sin(angle) * radius };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerKey]);
+
+  if (triggerKey === 0) return null;
+
+  return (
+    <div key={triggerKey} className="pointer-events-none fixed inset-0 z-[9999] overflow-hidden">
+      <div className="absolute" style={{ left: "75%", top: "55%" }}>
+        {particles.map((p) => (
+          <span
+            key={p.id}
+            className="inning-end-particle absolute h-2 w-2 rounded-full bg-accent-green"
+            style={{ "--dx": `${p.dx}px`, "--dy": `${p.dy}px` } as React.CSSProperties}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}

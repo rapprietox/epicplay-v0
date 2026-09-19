@@ -126,6 +126,7 @@ export function StrikeZoneGrid({
   onTap,
   popupContent,
   flashKey,
+  strikeoutFlashKey,
   disabled,
 }: {
   selectedZone: { x: number; y: number } | null;
@@ -146,6 +147,11 @@ export function StrikeZoneGrid({
   // foul/HBP confirmation. Never bumped for "In Play" -- that transitions
   // straight to the field diagram instead.
   flashKey?: number;
+  // Pitching-mode strikeout reaction: bumped by the caller once per
+  // strikeout, remounting a blue overlay scoped to just this box (not a
+  // full-screen flash -- "on the zone only" per spec). Same
+  // remount-to-restart idiom as flashKey.
+  strikeoutFlashKey?: number;
   // Fix 1 (batter handedness): true while the operator hasn't picked a
   // stance yet for an unknown batter -- taps are inert and the grid reads
   // as visually inactive until a stance is chosen.
@@ -235,24 +241,31 @@ export function StrikeZoneGrid({
           {/* Outer boundary of the ball-zone ring itself */}
           <rect x={EXT_MIN_X} y={EXT_MIN_Y} width={EXT_SPAN_X} height={EXT_SPAN_Y} fill="none" stroke="#FF3333" strokeWidth={0.8} opacity={0.9} />
 
-          {/* Strike-zone interior. "Grid lines" (the request's own
-              term) reads as the whole line family here, not just the
-              already-bright thirds/boundary -- so the previously-muted
-              9x9 subdivision lines (#1A3D28) get the same vivid #00CC55
-              as the thirds/boundary, rather than only the lines that were
-              already vivid changing while the genuinely muted ones don't. */}
+          {/* Strike-zone interior. A previous pass made the 9x9
+              subdivision lines and the 3x3 thirds dividers the same
+              color/weight (#00CC55, 0.4 vs 0.8 stroke) -- too close to
+              read as two tiers at a glance. Now clearly split: the 9x9
+              lines stay thin and translucent (secondary detail), the 3x3
+              dividers below get a distinct brighter green + a glow so
+              the 9 main zones read first, sub-zones second. */}
           {INNER_LINES.map((pos) => (
-            <line key={`v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#00CC55" strokeWidth={0.4} />
+            <line key={`v-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="rgba(0,204,80,0.3)" strokeWidth={0.5} />
           ))}
           {INNER_LINES.map((pos) => (
-            <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#00CC55" strokeWidth={0.4} />
+            <line key={`h-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="rgba(0,204,80,0.3)" strokeWidth={0.5} />
           ))}
-          {THIRDS.map((pos) => (
-            <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#00CC55" strokeWidth={0.8} opacity={0.6} />
-          ))}
-          {THIRDS.map((pos) => (
-            <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#00CC55" strokeWidth={0.8} opacity={0.6} />
-          ))}
+          {/* Main 3x3 dividers -- the thick, glowing lines that separate
+              the 9 real zones. Grouped in one <g filter="..."> rather
+              than a per-line filter attribute so the glow is computed
+              once for the whole set, not four times over. */}
+          <g filter="drop-shadow(0 0 3px #00FF66)">
+            {THIRDS.map((pos) => (
+              <line key={`V-${pos}`} x1={pos} y1={0} x2={pos} y2={100} stroke="#00FF66" strokeWidth={2.5} />
+            ))}
+            {THIRDS.map((pos) => (
+              <line key={`H-${pos}`} x1={0} y1={pos} x2={100} y2={pos} stroke="#00FF66" strokeWidth={2.5} />
+            ))}
+          </g>
 
           {/* Strike-zone boundary -- bright green, separates it from the
               ball-zone ring */}
@@ -306,6 +319,13 @@ export function StrikeZoneGrid({
             bottom: `${ZONE_INSET_Y_PCT}%`,
           }}
         />
+
+        {/* Pitching-mode strikeout reaction -- scoped to this box only
+            (unlike the other celebration flashes, which are full-screen),
+            per spec. Only rendered once triggered, same "don't play on
+            mount" guard every other flashKey-driven overlay in this app
+            uses. */}
+        {!!strikeoutFlashKey && <div key={strikeoutFlashKey} className="zone-strikeout-flash pointer-events-none absolute inset-0" />}
 
         {pendingPitches
           .filter((p): p is ZonePitch & { zone_x: number; zone_y: number } => p.zone_x !== null && p.zone_y !== null)

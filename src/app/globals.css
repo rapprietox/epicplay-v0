@@ -413,3 +413,172 @@ body {
   display: inline-block;
   animation: score-scale-hr 600ms ease-out, score-glow 800ms ease-out;
 }
+
+/* Pitching-mode reactions batch -- Fix 3: strikeout flash, scoped to the
+   strike-zone-grid container only (see the zone-strikeout-flash div in
+   strike-zone-grid.tsx), not full-screen like every other flash in this
+   file. */
+@keyframes zone-strikeout-flash {
+  0% {
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.zone-strikeout-flash {
+  opacity: 0;
+  background: rgba(59, 130, 246, 0.3);
+  animation: zone-strikeout-flash 400ms ease-out;
+}
+
+/* Fix 2: opponent run/HR full-screen reactions -- the "opposite energy"
+   from the hitting-mode celebrations (red/dark instead of green/gold,
+   no confetti). */
+@keyframes celebration-flash-opp-run {
+  0% {
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.celebration-flash-opp-run {
+  opacity: 0;
+  background: rgba(226, 75, 74, 0.15);
+  animation: celebration-flash-opp-run 600ms ease-out;
+}
+
+/* Opponent HR: a dark "gut punch" beat first, then three rapid red
+   flashes -- two separate elements/animations (see
+   celebration-flash-opp-hr-dark and -red below), fired together by the
+   caller, rather than one combined keyframe, since they're conceptually
+   two different beats with two different colors. */
+@keyframes celebration-flash-opp-hr-dark {
+  0% {
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.celebration-flash-opp-hr-dark {
+  opacity: 0;
+  background: rgba(0, 0, 0, 0.4);
+  animation: celebration-flash-opp-hr-dark 300ms ease-out;
+}
+
+/* Three ~80ms red flashes, tighter/more rapid spacing than the
+   hitting-mode HR's white triple-flash (no explicit gap given here, so
+   "rapid" is read as tighter than that one's ~200ms). Approximate
+   percentage-keyframe timing, same caveat as every other hand-tuned
+   animation in this file. */
+@keyframes celebration-flash-opp-hr-red {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  6% {
+    opacity: 1;
+  }
+  18% {
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  47% {
+    opacity: 0;
+  }
+  65% {
+    opacity: 1;
+  }
+  77% {
+    opacity: 0;
+  }
+}
+.celebration-flash-opp-hr-red {
+  opacity: 0;
+  background: rgba(226, 75, 74, 0.3);
+  animation: celebration-flash-opp-hr-red 340ms ease-out;
+}
+
+/* Opponent score number reactions -- a small red pulse for a plain run
+   against, a shake for a home run against. Mirror the hitting-mode
+   score-celebrate/-hr pair but in red and without the scale-up-and-glow
+   drama (per spec, "the opposite energy" -- negative, not celebratory). */
+@keyframes opp-score-pulse {
+  0% {
+    transform: scale(1);
+    color: #ffffff;
+  }
+  50% {
+    transform: scale(1.2);
+    color: #e24b4a;
+  }
+  100% {
+    transform: scale(1);
+    color: #ffffff;
+  }
+}
+.opp-score-pulse {
+  display: inline-block;
+  animation: opp-score-pulse 400ms ease-out;
+}
+@keyframes opp-score-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  12.5% {
+    transform: translateX(-8px);
+  }
+  37.5% {
+    transform: translateX(8px);
+  }
+  62.5% {
+    transform: translateX(-8px);
+  }
+  87.5% {
+    transform: translateX(8px);
+  }
+}
+.opp-score-shake {
+  display: inline-block;
+  animation: opp-score-shake 400ms ease-in-out;
+}
+
+/* Fix 3: inning-over particle burst -- 8 particles from an approximate
+   "diamond center" point (the diamond's exact on-screen position isn't
+   measured live -- it varies with viewport size/rightPanelMode -- so
+   this targets roughly where the diamond sits in the right panel, a
+   fixed viewport percentage, not a DOM measurement). "Fade in 600ms" per
+   spec is read as "the whole burst plays out over 600ms" rather than
+   "ends at full opacity and stays" -- a burst that never fades back out
+   would leave 8 green dots permanently on screen, which doesn't fit
+   "brief," so this fades in quickly then back out by the end. */
+@keyframes inning-end-particle {
+  0% {
+    transform: translate(0, 0) scale(0.5);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(1);
+    opacity: 0;
+  }
+}
+.inning-end-particle {
+  animation: inning-end-particle 600ms ease-out forwards;
+}

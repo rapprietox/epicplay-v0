@@ -45,6 +45,8 @@ export function Scoreboard({
   isLive,
   celebrateKey,
   celebrateTier,
+  opponentCelebrateKey,
+  opponentCelebrateTier,
 }: {
   teamName: string;
   opponentName: string;
@@ -67,6 +69,13 @@ export function Scoreboard({
   // inferred, since by the time this renders the caller's own
   // "was it a home run" context is gone.
   celebrateTier: "normal" | "hr";
+  // Pitching-mode reactions batch: same remount idiom as
+  // celebrateKey/celebrateTier above, but for the *opponent's* score --
+  // a red pulse for a run against, a shake for a home run against.
+  // Independent state/key from our own score's celebration so the two
+  // can never accidentally trigger each other.
+  opponentCelebrateKey: number;
+  opponentCelebrateTier: "run" | "hr";
 }) {
   return (
     <div className="w-[220px] shrink-0 rounded-lg border border-accent-green/40 bg-[#080E08]" style={{ padding: "10px 14px" }}>
@@ -75,12 +84,16 @@ export function Scoreboard({
         <div className="flex shrink-0 items-center gap-1.5">
           <span
             key={celebrateKey}
-            className={`${celebrateTier === "hr" ? "score-celebrate-hr" : "score-celebrate"} font-heading text-[42px] font-bold leading-none text-accent-green`}
+            className={`${celebrateKey > 0 ? (celebrateTier === "hr" ? "score-celebrate-hr" : "score-celebrate") : ""} font-heading text-[42px] font-bold leading-none text-accent-green`}
           >
             {ourScore}
           </span>
           <span className="text-[20px] text-foreground/40">:</span>
-          <span className="font-heading text-[42px] font-bold leading-none" style={{ color: "rgba(255,255,255,0.9)" }}>
+          <span
+            key={opponentCelebrateKey}
+            className={`${opponentCelebrateKey > 0 ? (opponentCelebrateTier === "hr" ? "opp-score-shake" : "opp-score-pulse") : ""} font-heading text-[42px] font-bold leading-none`}
+            style={{ color: "rgba(255,255,255,0.9)" }}
+          >
             {opponentScore}
           </span>
         </div>

@@ -59,7 +59,7 @@ import { StrikeZoneGrid, OUTCOME_COLOR, classifyZone } from "./strike-zone-grid"
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
 import { Scoreboard } from "./scoreboard";
-import { ConfettiBurst, Fireworks } from "./celebration";
+import { ConfettiBurst, Fireworks, InningEndBurst } from "./celebration";
 import { SubstitutionPanel } from "./substitution-panel";
 import { PitchCountModal } from "./pitch-count-modal";
 import { PostGameSummary } from "./post-game-summary";
@@ -288,9 +288,10 @@ export function OperatorConsole({
   // flagged" precedent as this codebase's other documented
   // simplifications (Whiff Rate, chase rate, etc.), not silently assumed
   // complete.
-  const [celebrationToasts, setCelebrationToasts] = useState<
-    { id: number; kind: "rbi" | "run" | "hr"; text: string; leaving: boolean }[]
-  >([]);
+  type ToastKind = "rbi" | "run" | "hr" | "opp_run" | "opp_hr" | "k" | "inning_over";
+  const [celebrationToasts, setCelebrationToasts] = useState<{ id: number; kind: ToastKind; text: string; leaving: boolean }[]>(
+    []
+  );
   // Three separate full-screen flashes (plain run / RBI / home run all
   // read differently per spec -- see .celebration-flash/-rbi/-hr in
   // globals.css) plus confetti (RBI) and fireworks (HR) particle bursts,
@@ -305,6 +306,29 @@ export function OperatorConsole({
   // alongside the bump key so Scoreboard knows which class to apply for
   // *this* remount without needing two independent key props.
   const [scoreCelebrate, setScoreCelebrate] = useState<{ key: number; tier: "normal" | "hr" }>({ key: 0, tier: "normal" });
+  // Pitching-mode reactions batch (Fix 2/3): opponent run/HR flashes,
+  // the opponent score's own pulse/shake, the strike-zone-scoped
+  // strikeout flash, and the last-out-of-inning burst -- all the same
+  // bump-a-counter-and-remount idiom as the hitting-mode celebration
+  // state above, just the "opposite energy" set.
+  const [oppRunFlash, setOppRunFlash] = useState(0);
+  const [oppHrDarkFlash, setOppHrDarkFlash] = useState(0);
+  const [oppHrRedFlash, setOppHrRedFlash] = useState(0);
+  const [opponentScoreCelebrate, setOpponentScoreCelebrate] = useState<{ key: number; tier: "run" | "hr" }>({
+    key: 0,
+    tier: "run",
+  });
+  const [strikeoutFlashKey, setStrikeoutFlashKey] = useState(0);
+  const [inningEndBurstKey, setInningEndBurstKey] = useState(0);
+  // True for a 1.5s window after the pitching-mode last-out-of-inning
+  // toast fires -- ThreeOutsModal checks this and stays hidden until it
+  // clears, per spec ("toast... THEN the inning-end modal appears on
+  // top"). Reset by its own timeout, not by the next at-bat starting
+  // (unlike the sac-fly/squeeze prompts) since the inning genuinely has
+  // ended at this point -- there's no "next pitch" to key a cleanup
+  // effect off until the *next* half-inning's first pitch, which is more
+  // machinery than a plain timeout needs.
+  const [inningEndCelebrating, setInningEndCelebrating] = useState(false);
   const toastIdRef = useRef(0);
 
   // durationMs is the toast's total on-screen time including its 250ms
@@ -312,7 +336,7 @@ export function OperatorConsole({
   // are inclusive of the transition, not additional to it) -- `leaving`
   // flips 300ms before removal so .toast-slide-out can play first
   // instead of the toast just vanishing.
-  function pushCelebrationToast(kind: "rbi" | "run" | "hr", text: string, durationMs = 2500) {
+  function pushCelebrationToast(kind: ToastKind, text: string, durationMs = 2500) {
     const id = ++toastIdRef.current;
     setCelebrationToasts((prev) => [...prev, { id, kind, text, leaving: false }]);
     setTimeout(() => {
@@ -699,6 +723,49 @@ export function OperatorConsole({
           setRbiFlash((k) => k + 1);
           pushCelebrationToast("rbi", `⚾ RBI — ${batterName}!`, 2500);
         }
+      }
+    } else if (mode === "pitching") {
+      // Pitching-mode reactions batch (Fix 2/3): the "opposite energy" --
+      // red/dark flashes and no confetti for a run or HR against, a
+      // scoped blue zone-flash for a strikeout, and a green burst +
+      // banked toast for the last out of the inning. Regular outs
+      // (flyout/groundout/lineout that don't end the inning) stay
+      // silent, per spec -- only the four cases below ever fire
+      // anything here.
+      const outsAfter = state.outs + (isOut ? 1 : 0);
+      const isLastOut = isOut && outsAfter >= 3;
+      const isStrikeout = result === "strikeout";
+      const opponentBatterLabel = state.opponentBatterName || "Batter";
+
+      if (isStrikeout) {
+        setStrikeoutFlashKey((k) => k + 1);
+        pushCelebrationToast("k", `⚡ K — ${opponentBatterLabel} STRUCK OUT!`, 2000);
+      }
+
+      if (result === "hr") {
+        setOppHrDarkFlash((k) => k + 1);
+        setOppHrRedFlash((k) => k + 1);
+        setOpponentScoreCelebrate((prev) => ({ key: prev.key + 1, tier: "hr" }));
+        pushCelebrationToast("opp_hr", `💥 HOME RUN — ${opponentBatterLabel}`, 3000);
+      } else if (runsScored > 0) {
+        scoredRunners.forEach((s) => pushCelebrationToast("opp_run", `💀 Run scored — ${s.runner.name}`));
+        setOppRunFlash((k) => k + 1);
+        setOpponentScoreCelebrate((prev) => ({ key: prev.key + 1, tier: "run" }));
+      }
+
+      if (isLastOut) {
+        // Strikeout-as-last-out sequences the blue flash first (per
+        // spec, "blue flash first (200ms) then green burst") -- a plain
+        // setTimeout rather than useEffect machinery, since this is a
+        // one-shot delay triggered from an event handler, not something
+        // that needs to react to state changes.
+        const delay = isStrikeout ? 200 : 0;
+        setTimeout(() => {
+          setInningEndBurstKey((k) => k + 1);
+          pushCelebrationToast("inning_over", `🔒 INNING OVER — ${teamName} holds!`, 1500);
+          setInningEndCelebrating(true);
+          setTimeout(() => setInningEndCelebrating(false), 1500);
+        }, delay);
       }
     }
     setSummaryFlash(
@@ -1350,14 +1417,26 @@ export function OperatorConsole({
       <ConfettiBurst triggerKey={confettiKey} />
       <Fireworks triggerKey={fireworksKey} />
 
-      {/* RBI / run-scored / home-run toasts, stacked top-center. The
-          horizontal centering (-translate-x-1/2) is static, applied once
-          to this container -- not part of each toast's own slide
-          animation, which only needs to animate vertically. The home-run
-          toast gets its own larger, full-width-banner treatment;
-          RBI/run share the smaller pill style. `leaving` swaps the
-          slide-in class for slide-out 300ms before the toast is removed
-          from the array entirely. */}
+      {/* Pitching-mode reactions batch: opponent run/HR flashes ("the
+          opposite energy" -- red/dark, no confetti) and the inning-end
+          burst. Same remount-only-once-fired pattern as the hitting-mode
+          flashes above. */}
+      {oppRunFlash > 0 && <div key={`orf-${oppRunFlash}`} className="celebration-flash-opp-run pointer-events-none fixed inset-0 z-[9999]" />}
+      {oppHrDarkFlash > 0 && (
+        <div key={`ohd-${oppHrDarkFlash}`} className="celebration-flash-opp-hr-dark pointer-events-none fixed inset-0 z-[9999]" />
+      )}
+      {oppHrRedFlash > 0 && (
+        <div key={`ohr-${oppHrRedFlash}`} className="celebration-flash-opp-hr-red pointer-events-none fixed inset-0 z-[9999]" />
+      )}
+      <InningEndBurst triggerKey={inningEndBurstKey} />
+
+      {/* All toast kinds, stacked top-center. The horizontal centering
+          (-translate-x-1/2) is static, applied once to this container --
+          not part of each toast's own slide animation, which only needs
+          to animate vertically. `leaving` swaps the slide-in class for
+          slide-out 300ms before the toast is removed from the array
+          entirely. hr/opp_hr get a larger full-width banner treatment;
+          everything else shares the smaller pill style, colored per kind. */}
       <div className="pointer-events-none fixed left-1/2 top-4 z-[9999] flex w-full max-w-md -translate-x-1/2 flex-col items-center gap-2 px-4">
         {celebrationToasts.map((t) => (
           <div
@@ -1365,8 +1444,18 @@ export function OperatorConsole({
             className={`${t.leaving ? "toast-slide-out" : "toast-slide-in"} rounded-md border font-bold shadow-lg ${
               t.kind === "hr"
                 ? "w-full whitespace-normal px-5 py-3 text-center text-lg border-accent-gold bg-gradient-to-r from-[#0A2214] via-[#123018] to-[#0A2214] text-accent-gold"
-                : "whitespace-nowrap px-4 py-2 text-sm " +
-                  (t.kind === "rbi" ? "border-accent-gold/60 bg-[#0A2214] text-accent-gold" : "border-accent-green/60 bg-[#0A2214] text-accent-green")
+                : t.kind === "opp_hr"
+                  ? "w-full whitespace-normal px-5 py-3 text-center text-lg border-accent-red bg-gradient-to-r from-[#2A0808] via-[#3D0B0B] to-[#2A0808] text-white"
+                  : "whitespace-nowrap px-4 py-2 text-sm " +
+                    (t.kind === "rbi"
+                      ? "border-accent-gold/60 bg-[#0A2214] text-accent-gold"
+                      : t.kind === "run"
+                        ? "border-accent-green/60 bg-[#0A2214] text-accent-green"
+                        : t.kind === "opp_run"
+                          ? "border-accent-red/60 bg-[#2A0808] text-white"
+                          : t.kind === "k"
+                            ? "border-[#1D4ED8]/60 bg-[#1D4ED8] text-white"
+                            : "border-accent-green/60 bg-accent-green text-white")
             }`}
           >
             {t.text}
@@ -1524,6 +1613,7 @@ export function OperatorConsole({
                 pendingPitches={state.pendingPitches}
                 onTap={(x, y) => dispatch({ type: "TAP_ZONE", x, y })}
                 flashKey={flashKey}
+                strikeoutFlashKey={strikeoutFlashKey}
                 disabled={flowStep !== "pitch" || (state.mode === "hitting" && atBatBattingHand === null)}
                 popupContent={
                   state.selectedZone
@@ -1684,6 +1774,8 @@ export function OperatorConsole({
               isLive={game.status === "active"}
               celebrateKey={scoreCelebrate.key}
               celebrateTier={scoreCelebrate.tier}
+              opponentCelebrateKey={opponentScoreCelebrate.key}
+              opponentCelebrateTier={opponentScoreCelebrate.tier}
             />
           </div>
 
@@ -2138,7 +2230,13 @@ export function OperatorConsole({
         />
       )}
 
-      {state.outs >= 3 && (
+      {/* Pitching-mode reactions batch: held back for up to 1.5s by
+          inningEndCelebrating so the "INNING OVER" toast/burst plays
+          first, per spec ("...THEN the inning-end modal appears on
+          top"). Outside that window (hitting mode's own 3rd out, or once
+          the celebration timer clears) this is unchanged -- appears the
+          instant outs hits 3. */}
+      {state.outs >= 3 && !inningEndCelebrating && (
         <ThreeOutsModal
           hits={state.hitsThisInning}
           runs={state.runsThisInning}
