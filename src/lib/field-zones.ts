@@ -36,12 +36,15 @@ function dist(a: Vec, b: Vec): number {
 function lerp(a: Vec, b: Vec, t: number): Vec {
   return { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) };
 }
-// Moves `point` further away from `home` along the home->point line, by a
-// fraction `t` of that line's own length -- used to place infielders a
-// step off the bag itself (real infielders don't literally stand on the
-// base) and the catcher a short step behind home (t negative there).
-function extendFromHome(point: Vec, home: Vec, t: number): Vec {
-  return { x: point.x + t * (point.x - home.x), y: point.y + t * (point.y - home.y) };
+function add(a: Vec, b: Vec): Vec {
+  return { x: a.x + b.x, y: a.y + b.y };
+}
+function scale(v: Vec, s: number): Vec {
+  return { x: v.x * s, y: v.y * s };
+}
+function normalize(v: Vec): Vec {
+  const len = Math.hypot(v.x, v.y);
+  return len === 0 ? { x: 0, y: 0 } : { x: v.x / len, y: v.y / len };
 }
 // Signed angle (radians) of `v` relative to `forward`, positive = clockwise
 // (toward the right side of the field as viewed top-down with home plate
@@ -129,71 +132,49 @@ export function zoneForPoint(x: number, y: number, cal: FieldCalibrationPoints):
 }
 
 // Feature 2 (visual lineup builder batch), corrected in the
-// lineup-builder-fixes batch: a fixed "standard" on-field spot for each
-// of the 9 defensive positions, synthesized from the same 7 calibration
-// anchors zoneForPoint already uses -- there's no dedicated calibration
-// step for these, so every one is a reasonable, documented default depth
-// an operator can always drag/retap off of, not an authoritative rule.
-// Nothing here is persisted -- lineup.position stays the single source
-// of truth (a plain "SS"/"CF"/etc. string); this function just answers
-// "where should that player's avatar render" at display time, recomputed
-// fresh from whatever's currently calibrated.
-//
-// The calibration anchors mark the BASE BAGS, not where a fielder
-// actually stands -- a real infielder plays off the bag, and the
-// distances below approximate real defensive depth as a fraction of the
-// relevant baseline's own length (not a fixed pixel/percent offset),
-// which is what makes this work for any field image regardless of its
-// proportions: a baseline is always ~90ft in real life, so "8-10ft off
-// the bag" is always roughly the same *fraction* of that baseline's
-// on-screen length, however large or skewed the calibration turns out
-// to be.
+// lineup-builder-fixes batch, then replaced with the user's own exact
+// formulas in this batch (every position below is a direct transcription
+// of what was specified, not a re-derivation) -- a fixed "standard"
+// on-field spot for each of the 9 defensive positions, synthesized
+// entirely from the 7 live field_calibration anchors passed in as `cal`
+// (fetched from the database by the caller -- see LineupBuilder's
+// fieldCalibration2d prop -- never hardcoded here). Nothing here is
+// persisted -- lineup.position stays the single source of truth (a
+// plain "SS"/"CF"/etc. string); this function just answers "where
+// should that player's avatar render" at display time, recomputed fresh
+// from whatever's currently calibrated.
 export function standardPositionLocations(cal: FieldCalibrationPoints): Record<FieldingPosition, Vec> {
-  const home = cal.home_plate;
-  const first = cal.first_base;
-  const second = cal.second_base;
-  const third = cal.third_base;
+  const HP = cal.home_plate;
+  const F1 = cal.first_base;
+  const F2 = cal.second_base;
+  const F3 = cal.third_base;
+  const LFW = cal.lf_wall;
+  const CFW = cal.cf_wall;
+  const RFW = cal.rf_wall;
 
-  // Pitcher: 60.5ft from home along the home-to-2nd diagonal --
-  // ~127.3ft (90ft bases * sqrt(2)), so 60.5/127.3 =~ 0.475 of that
-  // line's length.
-  const mound = lerp(home, second, 0.475);
+  // 2B/SS's "shifted toward RF/LF side" is a lateral nudge across the
+  // infield, not along either baseline -- the 3rd-to-1st line is the
+  // natural "left side of the infield to right side" axis to nudge along
+  // (mirrored for LF), scaled to an exact fraction of the relevant
+  // baseline's length via normalize() rather than reusing HP/F1/F3
+  // vectors of arbitrary length.
+  const towardRF = normalize(sub(F1, F3));
+  const towardLF = normalize(sub(F3, F1));
 
   return {
-    P: mound,
-    // Catcher: a short step behind home, away from the infield (negative
-    // = the opposite direction from the mound).
-    C: extendFromHome(home, mound, -0.12),
-    // 1B/3B: not the bag itself -- a real corner infielder plays roughly
-    // 8-10ft off it, pulled in toward home (shallower than the base
-    // path) *and* shaded toward their own foul line. That foul-line
-    // direction is the 2nd-base-through-the-corner-base line continued
-    // past the bag (the same line the runner's base path already
-    // follows, just extended outward) -- there's no separate foul-line
-    // anchor to reference instead. ~0.11 of a ~90ft baseline is
-    // ~10ft, applied to both the home-ward and foul-line-ward nudges.
-    "1B": {
-      x: first.x + 0.11 * (home.x - first.x) + 0.11 * (first.x - second.x),
-      y: first.y + 0.11 * (home.y - first.y) + 0.11 * (first.y - second.y),
-    },
-    "3B": {
-      x: third.x + 0.11 * (home.x - third.x) + 0.11 * (third.x - second.x),
-      y: third.y + 0.11 * (home.y - third.y) + 0.11 * (third.y - second.y),
-    },
-    // 2B/SS: never on a bag -- roughly the midpoint of the baseline to
-    // the adjacent corner base, then nudged further toward it (2B plays
-    // noticeably toward 1st, SS noticeably toward 3rd, not dead center).
-    "2B": lerp(second, first, 0.65),
-    SS: lerp(second, third, 0.65),
-    // Standard outfield depth reads as meaningfully shallower than the
-    // wall itself, not playing the track -- each wall anchor already
-    // marks the center of its own LF/CF/RF angular sector (zoneForPoint
-    // splits fair territory into thirds using these same three points),
-    // so pulling straight in along the home->wall line stays centered in
-    // that zone by construction, no separate centering step needed.
-    LF: lerp(home, cal.lf_wall, 0.6),
-    CF: lerp(home, cal.cf_wall, 0.6),
-    RF: lerp(home, cal.rf_wall, 0.6),
+    P: lerp(HP, F2, 0.605),
+    // Behind home plate, away from the infield (negative t).
+    C: lerp(HP, F2, -0.12),
+    // Near the 1B/3B bag, shifted toward home along a line 30% of the
+    // way from home to the RF/LF wall (a stand-in for the foul line,
+    // since there's no dedicated foul-line anchor).
+    "1B": lerp(F1, lerp(HP, RFW, 0.3), 0.25),
+    "3B": lerp(F3, lerp(HP, LFW, 0.3), 0.25),
+    "2B": add(lerp(F1, F2, 0.6), scale(towardRF, 0.08 * dist(F1, F2))),
+    SS: add(lerp(F2, F3, 0.45), scale(towardLF, 0.08 * dist(F2, F3))),
+    LF: lerp(lerp(HP, LFW, 0.62), lerp(F3, LFW, 0.55), 0.5),
+    CF: lerp(HP, CFW, 0.63),
+    RF: lerp(lerp(HP, RFW, 0.62), lerp(F1, RFW, 0.55), 0.5),
   };
 }
 
