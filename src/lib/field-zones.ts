@@ -128,35 +128,72 @@ export function zoneForPoint(x: number, y: number, cal: FieldCalibrationPoints):
   return 3; // 1B
 }
 
-// Feature 2 (visual lineup builder batch): a fixed "standard" on-field
-// spot for each of the 9 defensive positions, synthesized from the same
-// 7 calibration anchors zoneForPoint already uses -- there's no
-// dedicated calibration step for these, so every one is a reasonable,
-// documented default depth an operator can always drag/retap off of, not
-// an authoritative rule. Nothing here is persisted -- lineup.position
-// stays the single source of truth (a plain "SS"/"CF"/etc. string); this
-// function just answers "where should that player's avatar render" at
-// display time, recomputed fresh from whatever's currently calibrated.
+// Feature 2 (visual lineup builder batch), corrected in the
+// lineup-builder-fixes batch: a fixed "standard" on-field spot for each
+// of the 9 defensive positions, synthesized from the same 7 calibration
+// anchors zoneForPoint already uses -- there's no dedicated calibration
+// step for these, so every one is a reasonable, documented default depth
+// an operator can always drag/retap off of, not an authoritative rule.
+// Nothing here is persisted -- lineup.position stays the single source
+// of truth (a plain "SS"/"CF"/etc. string); this function just answers
+// "where should that player's avatar render" at display time, recomputed
+// fresh from whatever's currently calibrated.
+//
+// The calibration anchors mark the BASE BAGS, not where a fielder
+// actually stands -- a real infielder plays off the bag, and the
+// distances below approximate real defensive depth as a fraction of the
+// relevant baseline's own length (not a fixed pixel/percent offset),
+// which is what makes this work for any field image regardless of its
+// proportions: a baseline is always ~90ft in real life, so "8-10ft off
+// the bag" is always roughly the same *fraction* of that baseline's
+// on-screen length, however large or skewed the calibration turns out
+// to be.
 export function standardPositionLocations(cal: FieldCalibrationPoints): Record<FieldingPosition, Vec> {
   const home = cal.home_plate;
-  const mound = lerp(home, cal.second_base, 0.475);
+  const first = cal.first_base;
+  const second = cal.second_base;
+  const third = cal.third_base;
+
+  // Pitcher: 60.5ft from home along the home-to-2nd diagonal --
+  // ~127.3ft (90ft bases * sqrt(2)), so 60.5/127.3 =~ 0.475 of that
+  // line's length.
+  const mound = lerp(home, second, 0.475);
+
   return {
     P: mound,
-    // A short step behind home, away from the infield (negative = the
-    // opposite direction from the mound).
+    // Catcher: a short step behind home, away from the infield (negative
+    // = the opposite direction from the mound).
     C: extendFromHome(home, mound, -0.12),
-    "1B": extendFromHome(cal.first_base, home, 0.1),
-    "2B": extendFromHome(cal.second_base, home, 0.1),
-    "3B": extendFromHome(cal.third_base, home, 0.1),
-    // Between 2nd and 3rd, then a step back -- real shortstops play
-    // noticeably behind the baseline, not on it.
-    SS: extendFromHome(lerp(cal.second_base, cal.third_base, 0.5), home, 0.15),
+    // 1B/3B: not the bag itself -- a real corner infielder plays roughly
+    // 8-10ft off it, pulled in toward home (shallower than the base
+    // path) *and* shaded toward their own foul line. That foul-line
+    // direction is the 2nd-base-through-the-corner-base line continued
+    // past the bag (the same line the runner's base path already
+    // follows, just extended outward) -- there's no separate foul-line
+    // anchor to reference instead. ~0.11 of a ~90ft baseline is
+    // ~10ft, applied to both the home-ward and foul-line-ward nudges.
+    "1B": {
+      x: first.x + 0.11 * (home.x - first.x) + 0.11 * (first.x - second.x),
+      y: first.y + 0.11 * (home.y - first.y) + 0.11 * (first.y - second.y),
+    },
+    "3B": {
+      x: third.x + 0.11 * (home.x - third.x) + 0.11 * (third.x - second.x),
+      y: third.y + 0.11 * (home.y - third.y) + 0.11 * (third.y - second.y),
+    },
+    // 2B/SS: never on a bag -- roughly the midpoint of the baseline to
+    // the adjacent corner base, then nudged further toward it (2B plays
+    // noticeably toward 1st, SS noticeably toward 3rd, not dead center).
+    "2B": lerp(second, first, 0.65),
+    SS: lerp(second, third, 0.65),
     // Standard outfield depth reads as meaningfully shallower than the
-    // wall itself (typically 65-75% of the way out), not playing the
-    // track.
-    LF: lerp(home, cal.lf_wall, 0.7),
-    CF: lerp(home, cal.cf_wall, 0.7),
-    RF: lerp(home, cal.rf_wall, 0.7),
+    // wall itself, not playing the track -- each wall anchor already
+    // marks the center of its own LF/CF/RF angular sector (zoneForPoint
+    // splits fair territory into thirds using these same three points),
+    // so pulling straight in along the home->wall line stays centered in
+    // that zone by construction, no separate centering step needed.
+    LF: lerp(home, cal.lf_wall, 0.6),
+    CF: lerp(home, cal.cf_wall, 0.6),
+    RF: lerp(home, cal.rf_wall, 0.6),
   };
 }
 
