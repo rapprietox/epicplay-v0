@@ -9,25 +9,23 @@ type Player = Database["public"]["Tables"]["players"]["Row"];
 
 const SLOTS = Array.from({ length: 9 }, (_, i) => i + 1);
 const ALL_POSITIONS: FieldingPosition[] = ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"];
+// Fix 3: DH is a real batting-order slot (position stored as plain text,
+// same as any other -- "DH" needs no schema change) but never rendered
+// on the field diagram, since it has no defensive position.
+const DH = "DH";
 
-interface Assignment {
+// Fix 1 (lineup-builder fixes batch): position and batting order are now
+// two independent, separately-set attributes of a placement -- dragging
+// onto the field/DH slot sets position immediately; tapping the placed
+// avatar sets batting order afterward, whenever the operator gets to it.
+// Keyed by playerId (not battingOrder, unlike the previous tap-driven
+// version) specifically because a placement can exist with position set
+// and battingOrder still null.
+interface Placement {
   playerId: string;
   position: string;
+  battingOrder: number | null;
 }
-
-// Feature 2 (visual lineup builder batch): one small state machine drives
-// the whole tap sequence -- which prompt (if any) is currently open, and
-// for what. "battingOrder" and "position" are the two steps a *fresh*
-// assignment always goes through in order; "edit" is the menu opened by
-// tapping an already-placed player (roster row, batting-order strip, or
-// on-field avatar -- all three routes lead here), which can re-enter
-// either of the first two steps pre-seeded with what that player already
-// has.
-type Prompt =
-  | { kind: "battingOrder"; playerId: string; editingOrder: number | null }
-  | { kind: "position"; playerId: string; battingOrder: number }
-  | { kind: "edit"; battingOrder: number }
-  | null;
 
 export function LineupBuilder({
   gameId,
@@ -40,24 +38,26 @@ export function LineupBuilder({
   players: Player[];
   initialLineup: { batting_order: number; player_id: string; position: string | null }[];
   initialUmpireName: string | null;
-  // Feature 2 (visual lineup builder batch): null when the coach hasn't
-  // calibrated the 2D field yet -- a real, expected state (this page can
-  // be reached before /coach/calibrate-field ever has been), so the field
-  // diagram degrades to a plain, unsuggested 9-button position picker
-  // instead of blocking lineup-building entirely.
+  // Fix 1: null when the coach hasn't calibrated the 2D field yet -- a
+  // real, expected state (this page can be reached before
+  // /coach/calibrate-field ever has been), so the field diagram degrades
+  // to a plain, still drag-and-drop 9-button grid of drop targets instead
+  // of blocking lineup-building entirely.
   fieldCalibration2d: FieldCalibrationPoints | null;
 }) {
-  const [assignments, setAssignments] = useState<Record<number, Assignment>>(() => {
-    const map: Record<number, Assignment> = {};
-    for (const l of initialLineup) map[l.batting_order] = { playerId: l.player_id, position: l.position ?? "" };
-    return map;
-  });
+  const [placements, setPlacements] = useState<Placement[]>(() =>
+    initialLineup.map((l) => ({ playerId: l.player_id, position: l.position ?? "", battingOrder: l.batting_order }))
+  );
   const [umpireName, setUmpireName] = useState(initialUmpireName ?? "");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [isSaving, startSave] = useTransition();
   const [isStarting, startStart] = useTransition();
-  const [prompt, setPrompt] = useState<Prompt>(null);
+  // Fix 1: the only prompt left is "pick a batting order for this
+  // player" -- position no longer has a tap-driven prompt at all, it's
+  // set purely by where a drag lands.
+  const [orderPrompt, setOrderPrompt] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<"field" | "dh" | FieldingPosition | null>(null);
   const fieldRef = useRef<HTMLDivElement>(null);
 
   const positionLocations = useMemo(
@@ -65,88 +65,72 @@ export function LineupBuilder({
     [fieldCalibration2d]
   );
 
-  const filledSlots = SLOTS.filter((s) => assignments[s]?.playerId).length;
-  const battingOrderFor = (playerId: string) => SLOTS.find((s) => assignments[s]?.playerId === playerId) ?? null;
-  const nextAvailableSlot = () => SLOTS.find((s) => !assignments[s]?.playerId) ?? null;
+  // Fix 2: the roster only ever lists players with no placement yet --
+  // once dragged onto the field or DH, they disappear from here
+  // immediately (derived, not a separate "hide" flag, so removing them
+  // always brings them back with no extra bookkeeping).
+  const placedPlayerIds = useMemo(() => new Set(placements.map((p) => p.playerId)), [placements]);
+  const availablePlayers = players.filter((p) => !placedPlayerIds.has(p.id));
+
+  const battingOrderTaken = (order: number, exceptPlayerId?: string) =>
+    placements.some((p) => p.battingOrder === order && p.playerId !== exceptPlayerId);
+  const filledCount = placements.filter((p) => p.battingOrder !== null).length;
+  const nextAvailableOrder = () => SLOTS.find((s) => !battingOrderTaken(s)) ?? null;
 
   function playerName(playerId: string): string {
     const p = players.find((pl) => pl.id === playerId);
     return p ? `#${p.jersey_number ?? "—"} ${p.name}` : "Player";
   }
 
-  // A player already in the lineup: tapping them (roster row, strip slot,
-  // or on-field avatar -- all three call this) opens the edit menu
-  // instead of restarting the assign-from-scratch flow.
-  function tapPlayer(playerId: string) {
-    setError(null);
-    const order = battingOrderFor(playerId);
-    if (order) {
-      setPrompt({ kind: "edit", battingOrder: order });
-    } else {
-      setPrompt({ kind: "battingOrder", playerId, editingOrder: null });
-    }
-  }
-
-  function pickBattingOrder(order: number) {
-    if (!prompt || prompt.kind !== "battingOrder") return;
-    setError(null);
-    setSaved(false);
-    // Editing an existing player's batting order (reached via "Change
-    // batting order" in the edit menu) only moves them -- their position
-    // stays what it already was, no need to force a redundant re-pick.
-    // A fresh assignment (editingOrder null) has no position yet, so it
-    // has to continue into that step.
-    if (prompt.editingOrder !== null) {
-      const editingOrder = prompt.editingOrder;
-      const current = assignments[editingOrder];
-      setAssignments((prev) => {
-        const next = { ...prev };
-        delete next[editingOrder];
-        if (current) next[order] = current;
-        return next;
-      });
-      setPrompt(null);
-      return;
-    }
-    setPrompt({ kind: "position", playerId: prompt.playerId, battingOrder: order });
-  }
-
-  function assignPosition(position: FieldingPosition) {
-    if (!prompt || prompt.kind !== "position") return;
-    const { playerId, battingOrder } = prompt;
-    const conflict = SLOTS.find((s) => s !== battingOrder && assignments[s]?.position === position);
+  function placePlayer(playerId: string, position: string) {
+    const conflict = placements.find((p) => p.position === position && p.playerId !== playerId);
     if (conflict) {
-      setError(`${position} is already assigned to ${playerName(assignments[conflict].playerId)} — change their position first.`);
+      setError(`${position} is already taken by ${playerName(conflict.playerId)} — remove them from ${position} first.`);
       return;
     }
     setError(null);
     setSaved(false);
-    setAssignments((prev) => ({ ...prev, [battingOrder]: { playerId, position } }));
-    setPrompt(null);
+    setPlacements((prev) => [...prev.filter((p) => p.playerId !== playerId), { playerId, position, battingOrder: null }]);
   }
 
-  function handleFieldTap(x: number, y: number) {
-    if (!fieldCalibration2d || !prompt || prompt.kind !== "position") return;
-    assignPosition(FIELDER_NUMBER_TO_POSITION[zoneForPoint(x, y, fieldCalibration2d)]);
-  }
-
-  function removeFromLineup(battingOrder: number) {
+  function pickBattingOrder(playerId: string, order: number) {
+    if (battingOrderTaken(order, playerId)) return;
     setError(null);
     setSaved(false);
-    setAssignments((prev) => {
-      const next = { ...prev };
-      delete next[battingOrder];
-      return next;
-    });
-    setPrompt(null);
+    setPlacements((prev) => prev.map((p) => (p.playerId === playerId ? { ...p, battingOrder: order } : p)));
+    setOrderPrompt(null);
+  }
+
+  // Fix 2: removing a placement just drops it from the array -- the
+  // roster-membership filter above picks the player back up on its own.
+  function removePlayer(playerId: string) {
+    setError(null);
+    setSaved(false);
+    setPlacements((prev) => prev.filter((p) => p.playerId !== playerId));
+    setOrderPrompt(null);
+  }
+
+  function handleDragStart(e: React.DragEvent, playerId: string) {
+    e.dataTransfer.setData("text/plain", playerId);
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  function handleFieldDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragOver(null);
+    const playerId = e.dataTransfer.getData("text/plain");
+    if (!playerId || !fieldCalibration2d) return;
+    const rect = fieldRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    placePlayer(playerId, FIELDER_NUMBER_TO_POSITION[zoneForPoint(x, y, fieldCalibration2d)]);
   }
 
   function buildLineupPayload(): LineupSlot[] {
-    return SLOTS.filter((s) => assignments[s]?.playerId && assignments[s]?.position).map((s) => ({
-      batting_order: s,
-      player_id: assignments[s].playerId,
-      position: assignments[s].position,
-    }));
+    return placements
+      .filter((p) => p.battingOrder !== null)
+      .map((p) => ({ batting_order: p.battingOrder!, player_id: p.playerId, position: p.position }));
   }
 
   function save() {
@@ -179,45 +163,45 @@ export function LineupBuilder({
     });
   }
 
-  const canStart = filledSlots >= 9 && umpireName.trim().length > 0;
-  const editingPlayerId = prompt?.kind === "battingOrder" || prompt?.kind === "position" ? prompt.playerId : null;
+  const canStart = filledCount >= 9 && umpireName.trim().length > 0;
+  const dhPlacement = placements.find((p) => p.position === DH) ?? null;
 
   return (
     <div>
       {!fieldCalibration2d && (
         <p className="mb-3 rounded-md border border-accent-amber/40 bg-accent-amber/10 px-3 py-2 text-xs text-accent-amber">
-          The 2D field hasn&apos;t been calibrated yet, so positions are picked from a plain list instead of tapped on the
-          diagram.{" "}
+          The 2D field hasn&apos;t been calibrated yet, so dropping a player snaps to a labeled grid instead of their exact
+          spot on the diagram.{" "}
           <a href="/coach/calibrate-field" className="underline hover:text-white">
             Calibrate it
           </a>{" "}
-          for the tap-to-place experience.
+          for the full tap-to-place experience.
         </p>
       )}
 
       <p className="text-xs uppercase tracking-wide text-foreground/40">
-        Tap a player, pick their batting order, then tap their position on the field.
+        Drag a player onto the field (or DH) to set their position, then tap their avatar to set batting order.
       </p>
 
       {/* Batting order strip */}
       <div className="mt-3 flex flex-wrap gap-1.5">
         {SLOTS.map((slot) => {
-          const a = assignments[slot];
+          const p = placements.find((pl) => pl.battingOrder === slot);
           return (
             <button
               key={slot}
               type="button"
-              onClick={() => a && tapPlayer(a.playerId)}
-              disabled={!a}
+              onClick={() => p && setOrderPrompt(p.playerId)}
+              disabled={!p}
               className={`flex min-h-[44px] min-w-[64px] flex-col items-center justify-center rounded-md border px-2 py-1 text-center ${
-                a ? "border-accent-primary bg-surface hover:border-accent-gold" : "border-dashed border-border bg-background/40"
+                p ? "border-accent-primary bg-surface hover:border-accent-gold" : "border-dashed border-border bg-background/40"
               }`}
             >
               <span className="text-[10px] font-semibold text-accent-primary">{slot}</span>
-              {a ? (
+              {p ? (
                 <>
-                  <span className="truncate text-[11px] text-white">{playerName(a.playerId)}</span>
-                  <span className="text-[10px] text-foreground/40">{a.position || "—"}</span>
+                  <span className="truncate text-[11px] text-white">{playerName(p.playerId)}</span>
+                  <span className="text-[10px] text-foreground/40">{p.position}</span>
                 </>
               ) : (
                 <span className="text-[10px] text-foreground/30">Empty</span>
@@ -228,139 +212,177 @@ export function LineupBuilder({
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[220px_1fr]">
-        {/* Roster */}
+        {/* Roster + DH slot */}
         <div>
           <p className="text-xs uppercase tracking-wide text-foreground/40">Roster</p>
-          <ul className="mt-2 flex max-h-[420px] flex-col gap-1.5 overflow-y-auto pr-1">
-            {players.map((p) => {
-              const order = battingOrderFor(p.id);
-              const selected = editingPlayerId === p.id;
-              return (
-                <li key={p.id}>
-                  <button
-                    type="button"
-                    onClick={() => tapPlayer(p.id)}
-                    className={`flex w-full items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-left text-sm transition ${
-                      selected
-                        ? "border-accent-gold bg-accent-gold/10 text-white shadow-[0_0_12px_rgba(240,192,96,0.4)]"
-                        : order
-                          ? "border-accent-primary/40 bg-surface text-white"
-                          : "border-border bg-background/40 text-foreground/70 hover:border-accent-primary"
-                    }`}
-                  >
-                    <span>
-                      #{p.jersey_number ?? "—"} {p.name}
-                    </span>
-                    {order && (
-                      <span className="shrink-0 text-[10px] text-foreground/40">
-                        {order} · {assignments[order]?.position || "—"}
-                      </span>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
+          <ul className="mt-2 flex max-h-[340px] flex-col gap-1.5 overflow-y-auto pr-1">
+            {availablePlayers.map((p) => (
+              <li key={p.id}>
+                <div
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, p.id)}
+                  // Defensive cleanup: a drag that ends outside any drop
+                  // zone (cancelled, dropped somewhere invalid) doesn't
+                  // always fire the target's own dragLeave first, which
+                  // could otherwise leave a drop zone's gold highlight
+                  // stuck on.
+                  onDragEnd={() => setDragOver(null)}
+                  className="cursor-grab rounded-md border border-border bg-background/40 px-3 py-1.5 text-sm text-white transition hover:border-accent-primary active:cursor-grabbing"
+                >
+                  #{p.jersey_number ?? "—"} {p.name}
+                </div>
+              </li>
+            ))}
+            {availablePlayers.length === 0 && <li className="text-xs text-foreground/30">Everyone is placed.</li>}
           </ul>
+
+          {/* Fix 3: DH -- a drop target, not a field position. */}
+          <p className="mt-4 text-xs uppercase tracking-wide text-foreground/40">Designated Hitter</p>
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver("dh");
+            }}
+            onDragLeave={() => setDragOver((d) => (d === "dh" ? null : d))}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(null);
+              const playerId = e.dataTransfer.getData("text/plain");
+              if (playerId) placePlayer(playerId, DH);
+            }}
+            className={`mt-2 flex min-h-[56px] items-center justify-center rounded-md border-2 border-dashed p-2 text-center transition ${
+              dragOver === "dh" ? "border-accent-gold bg-accent-gold/10" : "border-border bg-background/40"
+            }`}
+          >
+            {dhPlacement ? (
+              <PlacedAvatarChip
+                playerId={dhPlacement.playerId}
+                battingOrder={dhPlacement.battingOrder}
+                jersey={players.find((pl) => pl.id === dhPlacement.playerId)?.jersey_number ?? null}
+                name={playerName(dhPlacement.playerId)}
+                onTap={() => setOrderPrompt(dhPlacement.playerId)}
+                onRemove={() => removePlayer(dhPlacement.playerId)}
+              />
+            ) : (
+              <span className="text-xs text-foreground/40">Drag a player here for DH</span>
+            )}
+          </div>
         </div>
 
         {/* Field diagram */}
         <div>
           <div
             ref={fieldRef}
-            onClick={(e) => {
-              const rect = fieldRef.current?.getBoundingClientRect();
-              if (!rect) return;
-              handleFieldTap(((e.clientX - rect.left) / rect.width) * 100, ((e.clientY - rect.top) / rect.height) * 100);
+            onDragOver={(e) => {
+              if (!fieldCalibration2d) return;
+              e.preventDefault();
+              setDragOver("field");
             }}
-            className={`glossy relative aspect-square w-full max-w-[420px] overflow-hidden rounded-lg border bg-background ${
-              prompt?.kind === "position" && fieldCalibration2d
-                ? "cursor-crosshair border-accent-gold shadow-[0_0_16px_rgba(240,192,96,0.35)]"
-                : "border-border"
+            onDragLeave={() => setDragOver((d) => (d === "field" ? null : d))}
+            onDrop={handleFieldDrop}
+            className={`glossy relative aspect-square w-full max-w-[420px] overflow-hidden rounded-lg border bg-background transition ${
+              dragOver === "field" ? "border-accent-gold shadow-[0_0_16px_rgba(240,192,96,0.35)]" : "border-border"
             }`}
             style={{ backgroundImage: "url('/field-2d.png')", backgroundSize: "cover", backgroundPosition: "center" }}
           >
             {positionLocations &&
-              SLOTS.map((slot) => {
-                const a = assignments[slot];
-                if (!a || !a.position) return null;
-                const loc = positionLocations[a.position as FieldingPosition];
-                if (!loc) return null;
-                const player = players.find((p) => p.id === a.playerId);
-                return (
-                  <button
-                    key={`${slot}-${a.position}`}
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      tapPlayer(a.playerId);
-                    }}
-                    // Feature 2: keyed on slot+position, not just slot -- a
-                    // position change is a real move, so this remounts the
-                    // element and replays the CSS "avatar-snap" entrance
-                    // animation (globals.css) each time, the same
-                    // flashKey-remount idiom used throughout the operator
-                    // screen for one-shot animations.
-                    className="avatar-snap absolute flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 flex-col items-center"
-                    style={{ left: `${loc.x}%`, top: `${loc.y}%` }}
-                  >
-                    <span
-                      className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-background text-xs font-bold text-background shadow-lg"
-                      style={{ backgroundColor: "#F0C060" }}
+              placements
+                .filter((p) => p.position !== DH)
+                .map((p) => {
+                  const loc = positionLocations[p.position as FieldingPosition];
+                  if (!loc) return null;
+                  return (
+                    <div
+                      // Fix 1: keyed on playerId+position, not batting order
+                      // (which can be null / can change independently) --
+                      // a position change is what should replay the
+                      // "avatar-snap" entrance animation.
+                      key={`${p.playerId}-${p.position}`}
+                      className="avatar-snap absolute -translate-x-1/2 -translate-y-1/2"
+                      style={{ left: `${loc.x}%`, top: `${loc.y}%` }}
                     >
-                      {player?.jersey_number ?? "?"}
-                    </span>
-                    <span className="mt-0.5 rounded bg-background/80 px-1 text-[9px] font-semibold text-white">{a.position}</span>
-                  </button>
-                );
-              })}
+                      <FieldAvatar
+                        playerId={p.playerId}
+                        position={p.position}
+                        battingOrder={p.battingOrder}
+                        jersey={players.find((pl) => pl.id === p.playerId)?.jersey_number ?? null}
+                        onTap={() => setOrderPrompt(p.playerId)}
+                        onRemove={() => removePlayer(p.playerId)}
+                      />
+                    </div>
+                  );
+                })}
 
-            {prompt?.kind === "position" && fieldCalibration2d && (
-              <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
-                <span className="rounded bg-background/90 px-2 py-1 text-[11px] font-semibold text-accent-gold">
-                  Tap {playerName(prompt.playerId)}&apos;s position
-                </span>
+            {!fieldCalibration2d && dragOver !== "field" && (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40 p-4 text-center">
+                <p className="text-xs text-foreground/60">Not calibrated — use the position grid below to drop players.</p>
               </div>
             )}
           </div>
 
-          {prompt?.kind === "position" && !fieldCalibration2d && (
-            <div className="mt-3 w-full max-w-[420px] rounded-md border border-border bg-surface p-3">
-              <p className="mb-2 text-xs uppercase tracking-wide text-foreground/40">
-                {playerName(prompt.playerId)}&apos;s position
-              </p>
-              <div className="grid grid-cols-3 gap-1.5">
-                {ALL_POSITIONS.map((pos) => (
-                  <button
+          {/* Fix 1: when the field hasn't been calibrated, dropping still
+              works -- each labeled button below is its own drop target,
+              same drag-and-drop model as the real diagram, just without
+              a precise spot to snap to. */}
+          {!fieldCalibration2d && (
+            <div className="mt-3 grid w-full max-w-[420px] grid-cols-3 gap-1.5">
+              {ALL_POSITIONS.map((pos) => {
+                const p = placements.find((pl) => pl.position === pos);
+                return (
+                  <div
                     key={pos}
-                    type="button"
-                    onClick={() => assignPosition(pos)}
-                    className="min-h-[40px] rounded border border-border text-sm font-semibold text-white hover:border-accent-primary"
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragOver(pos);
+                    }}
+                    onDragLeave={() => setDragOver((d) => (d === pos ? null : d))}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragOver(null);
+                      const playerId = e.dataTransfer.getData("text/plain");
+                      if (playerId) placePlayer(playerId, pos);
+                    }}
+                    className={`flex min-h-[56px] flex-col items-center justify-center gap-0.5 rounded-md border-2 border-dashed p-1 text-center transition ${
+                      dragOver === pos ? "border-accent-gold bg-accent-gold/10" : "border-border bg-background/40"
+                    }`}
                   >
-                    {pos}
-                  </button>
-                ))}
-              </div>
+                    <span className="text-[10px] font-semibold text-foreground/50">{pos}</span>
+                    {p ? (
+                      <PlacedAvatarChip
+                        playerId={p.playerId}
+                        battingOrder={p.battingOrder}
+                        jersey={players.find((pl) => pl.id === p.playerId)?.jersey_number ?? null}
+                        name={playerName(p.playerId)}
+                        compact
+                        onTap={() => setOrderPrompt(p.playerId)}
+                        onRemove={() => removePlayer(p.playerId)}
+                      />
+                    ) : (
+                      <span className="text-[10px] text-foreground/30">Empty</span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
       </div>
 
-      {prompt?.kind === "battingOrder" && (
-        <PromptOverlay title={`${playerName(prompt.playerId)} — batting order`} onCancel={() => setPrompt(null)}>
+      {orderPrompt && (
+        <PromptOverlay title={`${playerName(orderPrompt)} — batting order`} onCancel={() => setOrderPrompt(null)}>
           <div className="grid grid-cols-3 gap-2">
             {SLOTS.map((slot) => {
-              const takenBy = assignments[slot]?.playerId;
-              const isOwnCurrentSlot = takenBy === prompt.playerId;
-              const disabled = !!takenBy && !isOwnCurrentSlot;
-              const suggested = (!takenBy || isOwnCurrentSlot) && slot === (prompt.editingOrder ?? nextAvailableSlot());
+              const isOwn = placements.find((p) => p.playerId === orderPrompt)?.battingOrder === slot;
+              const disabled = battingOrderTaken(slot, orderPrompt);
+              const suggested = !disabled && slot === (placements.find((p) => p.playerId === orderPrompt)?.battingOrder ?? nextAvailableOrder());
               return (
                 <button
                   key={slot}
                   type="button"
                   disabled={disabled}
-                  onClick={() => pickBattingOrder(slot)}
+                  onClick={() => pickBattingOrder(orderPrompt, slot)}
                   className={`min-h-[48px] rounded-md border text-lg font-bold disabled:cursor-not-allowed disabled:opacity-30 ${
-                    suggested ? "border-accent-gold bg-accent-gold/10 text-white" : "border-border text-white hover:border-accent-primary"
+                    isOwn || suggested ? "border-accent-gold bg-accent-gold/10 text-white" : "border-border text-white hover:border-accent-primary"
                   }`}
                 >
                   {slot}
@@ -368,36 +390,13 @@ export function LineupBuilder({
               );
             })}
           </div>
-        </PromptOverlay>
-      )}
-
-      {prompt?.kind === "edit" && assignments[prompt.battingOrder] && (
-        <PromptOverlay title={playerName(assignments[prompt.battingOrder].playerId)} onCancel={() => setPrompt(null)}>
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={() =>
-                setPrompt({ kind: "battingOrder", playerId: assignments[prompt.battingOrder].playerId, editingOrder: prompt.battingOrder })
-              }
-              className="min-h-[44px] rounded-md border border-border px-3 text-sm font-medium text-white hover:border-accent-primary"
-            >
-              Change batting order
-            </button>
-            <button
-              type="button"
-              onClick={() => setPrompt({ kind: "position", playerId: assignments[prompt.battingOrder].playerId, battingOrder: prompt.battingOrder })}
-              className="min-h-[44px] rounded-md border border-border px-3 text-sm font-medium text-white hover:border-accent-primary"
-            >
-              Change position
-            </button>
-            <button
-              type="button"
-              onClick={() => removeFromLineup(prompt.battingOrder)}
-              className="min-h-[44px] rounded-md border border-accent-red/50 px-3 text-sm font-medium text-accent-red hover:bg-accent-red/10"
-            >
-              Remove from lineup
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => removePlayer(orderPrompt)}
+            className="mt-3 w-full min-h-[40px] rounded-md border border-accent-red/50 text-sm font-medium text-accent-red hover:bg-accent-red/10"
+          >
+            Remove from lineup
+          </button>
         </PromptOverlay>
       )}
 
@@ -436,9 +435,92 @@ export function LineupBuilder({
         </button>
       </div>
       {!canStart && (
-        <p className="mt-1 text-xs text-foreground/40">Needs 9 players placed (batting order + position) and an umpire name.</p>
+        <p className="mt-1 text-xs text-foreground/40">Needs 9 players with a position and batting order, plus an umpire name.</p>
       )}
       {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
+    </div>
+  );
+}
+
+// The on-field gold-circle avatar -- Feature 2's original design (jersey
+// number, "future: photo" hook point), now with a small batting-order
+// badge (the "?" state is exactly what Fix 1 means by "a simple 1-9
+// number badge... to assign" -- shown unset until tapped) and a remove
+// "x", since removal no longer lives behind a separate edit menu.
+function FieldAvatar({
+  jersey,
+  battingOrder,
+  onTap,
+  onRemove,
+}: {
+  playerId: string;
+  position: string;
+  jersey: number | null;
+  battingOrder: number | null;
+  onTap: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="relative flex flex-col items-center">
+      <button
+        type="button"
+        onClick={onTap}
+        className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-background text-xs font-bold text-background shadow-lg"
+        style={{ backgroundColor: "#F0C060" }}
+      >
+        {jersey ?? "?"}
+      </button>
+      <span
+        className={`absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-background text-[9px] font-bold ${
+          battingOrder ? "bg-accent-primary text-white" : "bg-accent-red text-white"
+        }`}
+      >
+        {battingOrder ?? "?"}
+      </span>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="mt-1 rounded bg-background/80 px-1 text-[9px] font-semibold text-foreground/50 hover:text-accent-red"
+      >
+        remove
+      </button>
+    </div>
+  );
+}
+
+// The uncalibrated-field fallback grid's compact version of the same
+// chip -- no absolute positioning, just sits inside its labeled cell.
+function PlacedAvatarChip({
+  name,
+  jersey,
+  battingOrder,
+  compact,
+  onTap,
+  onRemove,
+}: {
+  playerId: string;
+  name: string;
+  jersey: number | null;
+  battingOrder: number | null;
+  compact?: boolean;
+  onTap: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <button
+        type="button"
+        onClick={onTap}
+        className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-background text-[11px] font-bold text-background shadow-lg"
+        style={{ backgroundColor: "#F0C060" }}
+      >
+        {jersey ?? "?"}
+      </button>
+      {!compact && <span className="text-[10px] text-white">{name}</span>}
+      <span className="text-[9px] text-foreground/50">Order: {battingOrder ?? "?"}</span>
+      <button type="button" onClick={onRemove} className="text-[9px] text-foreground/40 hover:text-accent-red">
+        remove
+      </button>
     </div>
   );
 }
@@ -446,10 +528,7 @@ export function LineupBuilder({
 function PromptOverlay({ title, children, onCancel }: { title: string; children: React.ReactNode; onCancel: () => void }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4" onClick={onCancel}>
-      <div
-        className="w-full max-w-xs rounded-lg border border-border bg-surface p-4"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="w-full max-w-xs rounded-lg border border-border bg-surface p-4" onClick={(e) => e.stopPropagation()}>
         <p className="mb-3 text-sm font-semibold text-white">{title}</p>
         {children}
         <button type="button" onClick={onCancel} className="mt-3 w-full text-xs text-foreground/50 hover:text-white">
