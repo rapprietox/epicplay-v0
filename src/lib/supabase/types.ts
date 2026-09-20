@@ -69,6 +69,21 @@ export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";
 export type ThrowingHand = "L" | "R";
+export type FieldType = "2d" | "3d";
+
+// Field calibration tool: 7 anchor points mapping a field image's pixel
+// space (as a 0-100 percentage of the image's own width/height) onto the
+// same 0-100 scale at_bats.field_x/field_y already uses. Key names match
+// the calibration tool's own point order exactly.
+export interface FieldCalibrationPoints {
+  home_plate: { x: number; y: number };
+  first_base: { x: number; y: number };
+  second_base: { x: number; y: number };
+  third_base: { x: number; y: number };
+  lf_wall: { x: number; y: number };
+  cf_wall: { x: number; y: number };
+  rf_wall: { x: number; y: number };
+}
 
 export interface RunnerState {
   type: "player" | "opponent";
@@ -453,6 +468,24 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["game_events"]["Insert"]>;
+        Relationships: [];
+      };
+      field_calibration: {
+        Row: {
+          id: string;
+          team_id: string | null;
+          field_type: FieldType | null;
+          calibration_points: FieldCalibrationPoints | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          team_id?: string | null;
+          field_type?: FieldType | null;
+          calibration_points?: FieldCalibrationPoints | null;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["field_calibration"]["Insert"]>;
         Relationships: [];
       };
     };

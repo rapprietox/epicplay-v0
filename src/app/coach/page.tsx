@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
 import { StadiumBackground } from "@/components/stadium-background";
@@ -133,6 +134,12 @@ export default async function CoachPage() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <RosterSection players={players ?? []} />
           <SeasonImportSection />
+        </div>
+
+        <div className="flex justify-end">
+          <Link href="/coach/calibrate-field" className="text-xs text-foreground/40 hover:text-accent-primary">
+            Calibrate field diagram
+          </Link>
         </div>
       </div>
     </main>
