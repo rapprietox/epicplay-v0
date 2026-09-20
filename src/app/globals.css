@@ -582,3 +582,26 @@ body {
 .inning-end-particle {
   animation: inning-end-particle 600ms ease-out forwards;
 }
+
+/* Feature 2 (visual lineup builder batch): a placed/moved lineup avatar's
+   entrance -- keyed by slot+position in lineup-builder.tsx so React
+   remounts the element (and this animation replays) on every position
+   change, the same flashKey-remount idiom used everywhere else in this
+   app for a one-shot CSS animation. */
+@keyframes avatar-snap-pulse {
+  0% {
+    transform: translate(-50%, -50%) scale(0.4);
+    opacity: 0;
+  }
+  60% {
+    transform: translate(-50%, -50%) scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+}
+.avatar-snap {
+  animation: avatar-snap-pulse 300ms ease-out;
+}

@@ -6,6 +6,7 @@ import type {
   AtBatResult,
   BattingHand,
   Database,
+  FieldCalibrationPoints,
   FieldingPosition,
   GameEventType,
   HitType,
@@ -16,6 +17,16 @@ import type {
   Runners,
   SubReason,
 } from "@/lib/supabase/types";
+import {
+  FIELDER_NUMBER_TO_POSITION,
+  FIELDING_POSITION_TO_NUMBER,
+  OUT_BASE_LABELS,
+  computeGroundBallNotation,
+  notationForSingleFielderPlay,
+  standardCoveringFielder,
+  zoneForPoint,
+  type OutBase,
+} from "@/lib/field-zones";
 import { operatorReducer, UNDO_WINDOW_MS } from "@/lib/operator/reducer";
 import { advanceOneRunner, isForced, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
 import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
@@ -77,7 +88,16 @@ const PITCH_TYPES: PitchType[] = ["fastball", "curveball", "changeup", "slider",
 const SCORE_METHODS: ScoreMethod[] = ["hit", "sac_fly", "forced_walk_hbp", "wild_pitch", "passed_ball", "balk", "error"];
 
 interface DpWizardState {
-  step: "runner" | "type" | "fielding1" | "fielding2" | "thirdOutAsk" | "thirdOutRunner" | "thirdOutType" | "thirdOutFielding";
+  step:
+    | "initialFielding"
+    | "runner"
+    | "type"
+    | "fielding1"
+    | "fielding2"
+    | "thirdOutAsk"
+    | "thirdOutRunner"
+    | "thirdOutType"
+    | "thirdOutFielding";
   base?: Base;
   outType: OutType;
   firstFielding?: ResolvedFielder;
@@ -89,6 +109,14 @@ interface DpWizardState {
   secondFielding?: ResolvedFielder;
   thirdBase?: Base;
   thirdOutType?: OutType;
+  // Feature 1 (fielding-play logging batch): who fielded the batted ball
+  // originally -- the scorebook chain's first number. Asked as the
+  // wizard's own first step when "Double Play" is picked directly (skips
+  // straight past the field-tap auto-suggest that normally captures
+  // this); pre-filled instead when the wizard is entered via the new
+  // dynamic "was there another out?" upgrade from a plain groundout,
+  // which already collected it.
+  initialFielding?: ResolvedFielder;
 }
 
 // Runner-actions consolidation: the reasons behind "Advance", replacing
@@ -120,6 +148,7 @@ export function OperatorConsole({
   teamName,
   opponentPitchCountSeed,
   initialSubstitutions,
+  fieldCalibration2d,
 }: {
   game: Game;
   players: Player[];
@@ -148,6 +177,10 @@ export function OperatorConsole({
   // in"/pitcher-change (no re-entry, no double-booking a player already
   // active elsewhere). Only the two id columns are needed here.
   initialSubstitutions: { player_out_id: string; player_in_id: string }[];
+  // Feature 1 (fielding-play logging batch): null when the coach hasn't
+  // calibrated the 2D field yet (a real, expected state) -- the
+  // auto-suggest UI degrades to a plain, unsuggested fielder picker.
+  fieldCalibration2d: FieldCalibrationPoints | null;
 }) {
   const router = useRouter();
   // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
@@ -240,6 +273,24 @@ export function OperatorConsole({
   // strike 3).
   const [wildPitchKPrompt, setWildPitchKPrompt] = useState(false);
   const [postStrikeoutWildPitch, setPostStrikeoutWildPitch] = useState(false);
+  // Feature 1 (fielding-play logging batch): the ground-ball out flow,
+  // steps 2-3 (Step 1 -- "who fielded it" -- reuses the existing
+  // pendingFielding/SET_FIELDING plumbing, just with a zone-derived
+  // suggestion now). Only entered for hitType groundball/bunt with a
+  // plain (not yet double_play) groundout result -- flyouts/lineouts/
+  // errors never need a base tap, the catch/error itself is the whole
+  // play. "secondOutAsk" answered yes hands off entirely to the existing
+  // double-play/triple-play wizard (dpWizard) rather than duplicating its
+  // runner/type/fielding machinery here.
+  const [groundOutSubStep, setGroundOutSubStep] = useState<"location" | "confirmFielder" | "secondOutAsk" | null>(null);
+  const [groundOutInitialFielder, setGroundOutInitialFielder] = useState<ResolvedFielder | null>(null);
+  const [groundOutBatterFielder, setGroundOutBatterFielder] = useState<ResolvedFielder | null>(null);
+  const [groundOutPendingBase, setGroundOutPendingBase] = useState<OutBase | null>(null);
+  // Precomputed the moment enough information exists (a plain groundout
+  // needs nothing further once Step 2 resolves; a flyout/lineout/error
+  // needs nothing beyond Step 1) -- handleConfirm reads this directly
+  // rather than recomputing, so it doesn't need to know which path built it.
+  const [pendingNotation, setPendingNotation] = useState<string | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
@@ -412,6 +463,14 @@ export function OperatorConsole({
     if (!state.currentAtBatId) return;
     setWildPitchKPrompt(false);
     setPostStrikeoutWildPitch(false);
+    // Feature 1 (fielding-play logging batch): same reasoning -- a
+    // ground-out flow left mid-resolution (operator abandoned it, or it
+    // already finished and confirmed) shouldn't leak into the next batter.
+    setGroundOutSubStep(null);
+    setGroundOutInitialFielder(null);
+    setGroundOutBatterFielder(null);
+    setGroundOutPendingBase(null);
+    setPendingNotation(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.currentAtBatId]);
 
@@ -432,6 +491,16 @@ export function OperatorConsole({
     substitutedOutIds.forEach((id) => active.delete(id));
     return active;
   }, [lineup, substitutionLog, substitutedOutIds]);
+
+  // Feature 1 (fielding-play logging batch): which fielder position the
+  // tapped field spot falls in, per the coach's saved calibration -- null
+  // whenever there's no field tap yet or the team hasn't calibrated the
+  // 2D field, both real states the fielder-suggestion UI needs to degrade
+  // gracefully for (falls back to a plain, unsuggested picker).
+  const suggestedFielderPosition = useMemo(() => {
+    if (!state.fieldTap || !fieldCalibration2d) return null;
+    return FIELDER_NUMBER_TO_POSITION[zoneForPoint(state.fieldTap.x, state.fieldTap.y, fieldCalibration2d)];
+  }, [state.fieldTap, fieldCalibration2d]);
 
   const battingPlayer = useMemo(
     () => (state.mode === "hitting" ? lineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
@@ -675,7 +744,11 @@ export function OperatorConsole({
   // caught up to yet within the same synchronous handler.
   function pickResult(result: AtBatResult, baseRunners: Runners = state.runners) {
     if (result === "double_play") {
-      setDpWizard({ step: "runner", outType: "force" });
+      // Feature 1 (fielding-play logging batch): the wizard now starts by
+      // asking who fielded the ball (auto-suggested from the field tap),
+      // the scorebook chain's first number -- previously skipped straight
+      // to "which runner was out" with no record of who fielded it at all.
+      setDpWizard({ step: "initialFielding", outType: "force" });
       return;
     }
 
@@ -729,6 +802,78 @@ export function OperatorConsole({
     const hasMovement = scored.length > 0 || JSON.stringify(suggestion) !== JSON.stringify(baseRunners);
     dispatch({ type: "SET_RESULT", result, suggestion, scored: taggedScored, hasMovement });
     if (hasMovement) syncRunners(suggestion);
+  }
+
+  // Feature 1 (fielding-play logging batch): Step 1's "who fielded it?"
+  // confirm -- replaces the old bare FieldingPositionPicker call site.
+  // Still just SET_FIELDING for every result (flyout/lineout/error keep
+  // working exactly as before, no scorebook detour needed since the catch
+  // itself is the whole play); a plain groundball/bunt groundout
+  // additionally kicks off Step 2 (where the batter's own out was made).
+  function handlePrimaryFielderConfirmed(f: ResolvedFielder) {
+    dispatch({ type: "SET_FIELDING", position: f.position, playerId: f.playerId, opponentPlayerId: f.opponentPlayerId });
+    const isGroundBallOut =
+      state.suggestedResult === "groundout" && (state.pendingHitType === "groundball" || state.pendingHitType === "bunt");
+    if (isGroundBallOut) {
+      setGroundOutInitialFielder(f);
+      setGroundOutSubStep("location");
+    }
+  }
+
+  function anyRunnerOnBase(): boolean {
+    return Boolean(state.runners.first || state.runners.second || state.runners.third);
+  }
+
+  // Step 2: where the batter's own out was made.
+  function handleGroundOutLocation(base: OutBase) {
+    setGroundOutPendingBase(base);
+    setGroundOutSubStep("confirmFielder");
+  }
+
+  // Step 2's fielder confirm (who's credited with the putout at that
+  // base) -- either finalizes a plain groundout right here, or (if
+  // runners are on base with fewer than 2 outs) asks Step 3.
+  function handleGroundOutFielderConfirmed(f: ResolvedFielder) {
+    setGroundOutBatterFielder(f);
+    if (anyRunnerOnBase() && state.outs < 2) {
+      setGroundOutSubStep("secondOutAsk");
+      return;
+    }
+    finalizeGroundOutNotation(f, []);
+  }
+
+  function finalizeGroundOutNotation(batterFielder: ResolvedFielder, extraOutFielders: number[]) {
+    if (!groundOutInitialFielder) return;
+    setPendingNotation(
+      computeGroundBallNotation({
+        initialFielder: FIELDING_POSITION_TO_NUMBER[groundOutInitialFielder.position],
+        batterOutFielder: FIELDING_POSITION_TO_NUMBER[batterFielder.position],
+        extraOutFielders,
+      })
+    );
+    setGroundOutSubStep(null);
+  }
+
+  // Step 3/4 "was there another out?" answered yes -- from here on, the
+  // existing double-play/triple-play wizard (dpWizard) takes over
+  // entirely (same "which runner" -> "force/tag" -> "who covered it" ->
+  // "was there a third out?" steps it already has for a directly-picked
+  // Double Play result), pre-seeded with what this flow already
+  // collected so it doesn't ask about the batter's own out a second time.
+  function handleAnotherOutYes() {
+    if (!groundOutInitialFielder || !groundOutBatterFielder) return;
+    setGroundOutSubStep(null);
+    setDpWizard({
+      step: "runner",
+      outType: "force",
+      initialFielding: groundOutInitialFielder,
+      firstFielding: groundOutBatterFielder,
+    });
+  }
+
+  function handleAnotherOutNo() {
+    if (!groundOutBatterFielder) return;
+    finalizeGroundOutNotation(groundOutBatterFielder, []);
   }
 
   // Fix 3: undo a single auto-scored runner within their 3s window --
@@ -838,9 +983,25 @@ export function OperatorConsole({
     const fieldX = state.fieldTap?.x ?? null;
     const fieldY = state.fieldTap?.y ?? null;
     const mode = state.mode;
-    const fielding = state.pendingFielding;
+    // Feature 1 (fielding-play logging batch): for a plain groundball/bunt
+    // groundout, fielded_by_position means putout credit (who's actually
+    // credited with recording the out, e.g. 1B catching the relay and
+    // stepping on the bag) -- that's groundOutBatterFielder (Step 2), not
+    // state.pendingFielding (Step 1, who fielded the ball -- gets an
+    // assist if that's a different fielder, tracked only in the notation
+    // string, not a separate DB column). Every other fielded result
+    // (flyout/lineout/error) has just the one fielder, and Step 1's *is*
+    // the putout credit there (the catch/error is the whole play).
+    const fielding = groundOutBatterFielder ?? state.pendingFielding;
     const scoredRunners = voidRuns ? [] : state.scoredThisAtBat;
     const batterName = battingPlayerInfo?.name ?? "Batter";
+    // Feature 1 (fielding-play logging batch): a plain groundball/bunt
+    // groundout already computed this via the Step 2-3 flow (pendingNotation);
+    // every other fielded result (flyout/lineout/error) only ever needed
+    // Step 1's single fielder, so it's computed fresh here instead of
+    // routing those simpler cases through the multi-step flow at all.
+    const scorebookNotation =
+      pendingNotation ?? (fielding ? notationForSingleFielderPlay(result, hitType, FIELDING_POSITION_TO_NUMBER[fielding.position]) : null);
 
     dispatch({ type: "CONFIRM_LOCAL", atBatId, outsRecorded: isOut ? 1 : 0, accuracyRatio, voidRuns });
     if (voidRuns && state.scoredThisAtBat.length > 0) {
@@ -922,7 +1083,7 @@ export function OperatorConsole({
       }
     }
     setSummaryFlash(
-      [RESULT_LABELS[result], hitType ? HIT_TYPE_LABELS[hitType] : null, fielding?.position ?? null].filter(Boolean).join(" — ")
+      [RESULT_LABELS[result], hitType ? HIT_TYPE_LABELS[hitType] : null, fielding?.position ?? null, scorebookNotation].filter(Boolean).join(" — ")
     );
     // Addition 1: sac-fly/tag-up decision queue -- fly out or line out,
     // at least one runner still on base, and this out didn't end the
@@ -961,6 +1122,7 @@ export function OperatorConsole({
         fieldedByPosition: fielding?.position ?? null,
         fieldedByPlayerId: fielding?.playerId ?? null,
         fieldedByOpponentPlayerId: fielding?.opponentPlayerId ?? null,
+        scorebookNotation,
       });
     });
   }
@@ -974,11 +1136,30 @@ export function OperatorConsole({
     // Fix 8 (baseball-logic-fixes batch, minor tier): present only when
     // the wizard's "was there a third out?" step was answered yes.
     thirdOut?: { base: Base; runner: RunnerState; outType: OutType; fielding: ResolvedFielder };
+    // Feature 1 (fielding-play logging batch): who fielded the ball
+    // originally -- the scorebook chain's first number, either just
+    // answered fresh (wizard entered via "Double Play" picked directly)
+    // or carried over from the plain-groundout flow that upgraded into
+    // this wizard.
+    initialFielding: ResolvedFielder;
   }) {
     const atBatId = state.currentAtBatId;
     if (!atBatId) return;
     setDpWizard(null);
     setBanner(null);
+    // Feature 1: real double/triple plays almost always retire the lead
+    // runner(s) first and relay back to first for the batter last (that's
+    // why it's a "double play" via the pivot, not two separate unrelated
+    // outs) -- see computeGroundBallNotation's own comment for why the
+    // batter's fielder goes at the end of the chain, not the start.
+    const scorebookNotation = computeGroundBallNotation({
+      initialFielder: FIELDING_POSITION_TO_NUMBER[input.initialFielding.position],
+      batterOutFielder: FIELDING_POSITION_TO_NUMBER[input.batterFielding.position],
+      extraOutFielders: [
+        FIELDING_POSITION_TO_NUMBER[input.secondFielding.position],
+        ...(input.thirdOut ? [FIELDING_POSITION_TO_NUMBER[input.thirdOut.fielding.position]] : []),
+      ],
+    });
     try {
       const { secondAtBatId, thirdAtBatId } = await confirmDoublePlay({
         gameId: game.id,
@@ -990,6 +1171,7 @@ export function OperatorConsole({
         hitType: state.pendingHitType,
         fieldX: state.fieldTap?.x ?? null,
         fieldY: state.fieldTap?.y ?? null,
+        scorebookNotation,
         batterFielding: {
           position: input.batterFielding.position,
           playerId: input.batterFielding.playerId,
@@ -1024,7 +1206,7 @@ export function OperatorConsole({
         thirdAtBatId,
         thirdRemovedBase: input.thirdOut?.base ?? null,
       });
-      setSummaryFlash(input.thirdOut ? "Triple Play" : "Double Play");
+      setSummaryFlash(`${input.thirdOut ? "Triple Play" : "Double Play"} — ${scorebookNotation}`);
       void withOfflineRetry(`dp-state-${game.id}-${Date.now()}`, () =>
         syncGameState(game.id, {
           runners: {
@@ -1540,7 +1722,7 @@ export function OperatorConsole({
   // tracked before this fix (awaitingResult/suggestedResult/fieldTap/
   // pendingHitType/pendingFielding/runnersPendingConfirmation) -- this is
   // purely a view-layer derivation, no new state machine was needed.
-  type FlowStep = "pitch" | "field" | "hitType" | "result" | "hitRunners" | "fielding" | "runnerConfirm";
+  type FlowStep = "pitch" | "field" | "hitType" | "result" | "hitRunners" | "fielding" | "groundOut" | "runnerConfirm";
   const flowStep: FlowStep = hitRunnerQueue.length > 0
     ? "hitRunners"
     : !state.awaitingResult
@@ -1553,7 +1735,14 @@ export function OperatorConsole({
             : "result"
         : showFieldingPicker
           ? "fielding"
-          : "runnerConfirm";
+          // Feature 1 (fielding-play logging batch): a plain groundball/
+          // bunt groundout's Step 2-3 (where was the out made, was there
+          // another out) block auto-confirm the same way "fielding" does
+          // -- groundOutSubStep is only ever non-null for exactly that
+          // case (see handlePrimaryFielderConfirmed).
+          : groundOutSubStep !== null
+            ? "groundOut"
+            : "runnerConfirm";
 
   // Once nothing is left to fill in, confirm automatically instead of
   // making the operator tap a separate "Confirm At-Bat" button -- walks,
@@ -1619,7 +1808,7 @@ export function OperatorConsole({
     | "advanceError"
     | "flow"
     | "diamond";
-  const FLOW_STEPS_IN_RIGHT_PANEL = new Set<FlowStep>(["field", "hitType", "result", "hitRunners", "fielding", "runnerConfirm"]);
+  const FLOW_STEPS_IN_RIGHT_PANEL = new Set<FlowStep>(["field", "hitType", "result", "hitRunners", "fielding", "groundOut", "runnerConfirm"]);
   const rightPanelMode: RightPanelMode = dropThirdStep
     ? "dropThird"
     : wildPitchKPrompt
@@ -2292,11 +2481,49 @@ export function OperatorConsole({
                 )}
 
                 {flowStep === "fielding" && (
-                  <FieldingPositionPicker
+                  <FielderSuggestionPanel
                     title="Who made the play?"
-                    onSelect={(f) => dispatch({ type: "SET_FIELDING", position: f.position, playerId: f.playerId, opponentPlayerId: f.opponentPlayerId })}
+                    suggestedPosition={suggestedFielderPosition}
+                    onSelect={handlePrimaryFielderConfirmed}
                     resolve={resolve}
                   />
+                )}
+
+                {flowStep === "groundOut" && groundOutSubStep === "location" && (
+                  <OutLocationPicker title="Where was the out made?" onSelect={handleGroundOutLocation} />
+                )}
+
+                {flowStep === "groundOut" && groundOutSubStep === "confirmFielder" && groundOutPendingBase && groundOutInitialFielder && (
+                  <FielderSuggestionPanel
+                    title={`Out at ${OUT_BASE_LABELS[groundOutPendingBase]} — who covered it?`}
+                    suggestedPosition={
+                      FIELDER_NUMBER_TO_POSITION[
+                        standardCoveringFielder(groundOutPendingBase, FIELDING_POSITION_TO_NUMBER[groundOutInitialFielder.position])
+                      ]
+                    }
+                    onSelect={handleGroundOutFielderConfirmed}
+                    resolve={resolve}
+                  />
+                )}
+
+                {flowStep === "groundOut" && groundOutSubStep === "secondOutAsk" && (
+                  <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3 text-center">
+                    <p className="text-sm font-semibold text-white">Was there another out on this play?</p>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        onClick={handleAnotherOutYes}
+                        className="min-h-[44px] flex-1 rounded-md bg-accent-primary px-3 text-sm font-semibold text-white"
+                      >
+                        Yes
+                      </button>
+                      <button
+                        onClick={handleAnotherOutNo}
+                        className="min-h-[44px] flex-1 rounded-md border border-border px-3 text-sm font-medium text-foreground/70"
+                      >
+                        No
+                      </button>
+                    </div>
+                  </div>
                 )}
 
                 {flowStep === "runnerConfirm" && state.suggestedResult && (
@@ -2425,9 +2652,19 @@ export function OperatorConsole({
           wizard={dpWizard}
           runners={state.runners}
           resolve={resolve}
-          onChangeBase={(base) => setDpWizard({ step: "type", base, outType: "force" })}
+          suggestedInitialFielderPosition={suggestedFielderPosition}
+          // Feature 1 (fielding-play logging batch): only reached when
+          // "Double Play" was picked directly (pickResult) -- the
+          // dynamic-upgrade entry point (handleAnotherOutYes) pre-fills
+          // initialFielding and starts at "runner" instead.
+          onInitialFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "runner", initialFielding: f } : w))}
+          onChangeBase={(base) => setDpWizard((w) => (w ? { ...w, step: "type", base } : w))}
           onChangeType={(outType) => setDpWizard((w) => (w ? { ...w, outType } : w))}
-          onProceedToFielding1={() => setDpWizard((w) => (w ? { ...w, step: "fielding1" } : w))}
+          // Feature 1: skip straight to fielding2 when firstFielding is
+          // already known (the batter's-own-out fielder, collected by the
+          // plain-groundout flow before this wizard was ever entered) --
+          // asking about it a second time here would be redundant.
+          onProceedToFielding1={() => setDpWizard((w) => (w ? { ...w, step: w.firstFielding ? "fielding2" : "fielding1" } : w))}
           onFirstFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "fielding2", firstFielding: f } : w))}
           // Fix 8 (baseball-logic-fixes batch, minor tier): no longer
           // confirms immediately -- holds the fielder and asks "was there
@@ -2435,7 +2672,7 @@ export function OperatorConsole({
           // runner/type/fielding round before there's anything to confirm.
           onSecondFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "thirdOutAsk", secondFielding: f } : w))}
           onThirdOutAsk={(hasThirdOut) => {
-            if (!dpWizard.base || !dpWizard.firstFielding || !dpWizard.secondFielding) return;
+            if (!dpWizard.base || !dpWizard.firstFielding || !dpWizard.secondFielding || !dpWizard.initialFielding) return;
             const runner = state.runners[dpWizard.base];
             if (!runner) return;
             if (!hasThirdOut) {
@@ -2445,6 +2682,7 @@ export function OperatorConsole({
                 outType: dpWizard.outType,
                 batterFielding: dpWizard.firstFielding,
                 secondFielding: dpWizard.secondFielding,
+                initialFielding: dpWizard.initialFielding,
               });
               return;
             }
@@ -2453,7 +2691,7 @@ export function OperatorConsole({
           onChangeThirdBase={(base) => setDpWizard((w) => (w ? { ...w, step: "thirdOutType", thirdBase: base } : w))}
           onChangeThirdType={(outType) => setDpWizard((w) => (w ? { ...w, step: "thirdOutFielding", thirdOutType: outType } : w))}
           onThirdFielding={(f) => {
-            if (!dpWizard.base || !dpWizard.firstFielding || !dpWizard.secondFielding) return;
+            if (!dpWizard.base || !dpWizard.firstFielding || !dpWizard.secondFielding || !dpWizard.initialFielding) return;
             if (!dpWizard.thirdBase || !dpWizard.thirdOutType) return;
             const runner = state.runners[dpWizard.base];
             const thirdRunner = state.runners[dpWizard.thirdBase];
@@ -2465,9 +2703,20 @@ export function OperatorConsole({
               batterFielding: dpWizard.firstFielding,
               secondFielding: dpWizard.secondFielding,
               thirdOut: { base: dpWizard.thirdBase, runner: thirdRunner, outType: dpWizard.thirdOutType, fielding: f },
+              initialFielding: dpWizard.initialFielding,
             });
           }}
-          onCancel={() => setDpWizard(null)}
+          onCancel={() => {
+            setDpWizard(null);
+            // Feature 1 (fielding-play logging batch): if this wizard was
+            // entered via the dynamic "was there another out?" upgrade
+            // (groundOutBatterFielder is only ever set by that path, never
+            // by picking "Double Play" directly), cancelling it should
+            // fall back to the plain single groundout already collected
+            // rather than leaving the play to auto-confirm with the wrong
+            // fielder and no notation.
+            if (groundOutBatterFielder) finalizeGroundOutNotation(groundOutBatterFielder, []);
+          }}
         />
       )}
 
@@ -3335,6 +3584,76 @@ function FieldingPositionPicker({
   );
 }
 
+// Feature 1 (fielding-play logging batch): wraps FieldingPositionPicker
+// with an auto-suggested confirm/change step, reused for both Step 1
+// ("who made the play?" -- suggested from the field-tap zone) and the
+// ground-out flow's "who covered this base?" (suggested from the
+// standard-coverage table). `suggestedPosition` null means either no
+// field tap yet or no field calibration saved for this team -- both real
+// states, so this falls back to the plain, unsuggested picker rather than
+// showing a suggestion card with nothing to suggest.
+function FielderSuggestionPanel({
+  title,
+  suggestedPosition,
+  resolve,
+  onSelect,
+}: {
+  title: string;
+  suggestedPosition: FieldingPosition | null;
+  resolve: (position: FieldingPosition) => ResolvedFielder;
+  onSelect: (fielder: ResolvedFielder) => void;
+}) {
+  const [changing, setChanging] = useState(false);
+  if (!suggestedPosition || changing) {
+    return <FieldingPositionPicker title={changing ? "Pick the fielder" : title} onSelect={onSelect} resolve={resolve} />;
+  }
+  const suggested = resolve(suggestedPosition);
+  return (
+    <div className="w-full max-w-[320px] rounded-lg border border-accent-gold/40 bg-surface p-3 text-center">
+      <p className="text-xs uppercase tracking-wide text-foreground/40">{title}</p>
+      <p className="font-heading mt-2 text-xl font-bold text-white">
+        {suggestedPosition} — {suggested.name}?
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={() => onSelect(suggested)}
+          className="min-h-[44px] flex-1 rounded-md bg-accent-primary px-3 text-sm font-semibold text-white"
+        >
+          Confirm
+        </button>
+        <button
+          onClick={() => setChanging(true)}
+          className="min-h-[44px] flex-1 rounded-md border border-border px-3 text-sm font-medium text-foreground/70"
+        >
+          Change
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Feature 1: Step 2/3/4's "where was the out made?" -- every base plus
+// "Tag" for a tag out away from a base, per spec.
+function OutLocationPicker({ title, onSelect }: { title: string; onSelect: (base: OutBase) => void }) {
+  const bases: OutBase[] = ["first", "second", "third", "home", "tag"];
+  return (
+    <div className="w-full max-w-[320px] rounded-lg border border-border bg-surface p-3">
+      <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">{title}</p>
+      <div className="grid grid-cols-2 gap-2">
+        {bases.map((b) => (
+          <button
+            key={b}
+            onClick={() => onSelect(b)}
+            className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-white hover:border-accent-gold"
+          >
+            {OUT_BASE_LABELS[b]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ThreeOutsModal({
   hits,
   runs,
@@ -3446,10 +3765,23 @@ function PickoffWizard({
   );
 }
 
+// Feature 1 (fielding-play logging batch): the runner's current base maps
+// to where a force out on them is actually made -- one base further
+// along (a runner on 3rd forced out goes to home, which isn't a `Base`
+// value, hence the separate OutBase-returning helper rather than reusing
+// the existing NEXT_BASE map).
+function forceDestination(base: Base): OutBase {
+  if (base === "first") return "second";
+  if (base === "second") return "third";
+  return "home";
+}
+
 function DoublePlayWizard({
   wizard,
   runners,
   resolve,
+  suggestedInitialFielderPosition,
+  onInitialFielding,
   onChangeBase,
   onChangeType,
   onProceedToFielding1,
@@ -3464,6 +3796,11 @@ function DoublePlayWizard({
   wizard: DpWizardState;
   runners: Runners;
   resolve: (position: FieldingPosition) => ResolvedFielder;
+  // Feature 1: only meaningful for the "initialFielding" step (reached
+  // when "Double Play" is picked directly, without a prior field-tap
+  // fielding step of its own to derive one from already).
+  suggestedInitialFielderPosition: FieldingPosition | null;
+  onInitialFielding: (f: ResolvedFielder) => void;
   onChangeBase: (base: Base) => void;
   onChangeType: (t: OutType) => void;
   onProceedToFielding1: () => void;
@@ -3482,11 +3819,29 @@ function DoublePlayWizard({
   // The runner already picked for the second out can't also be the third.
   const occupiedForThird = occupied.filter((b) => b !== wizard.base);
   const title = wizard.step.startsWith("thirdOut") ? "Triple Play" : "Double Play";
+  // Feature 1: every fielding sub-step below suggests a covering fielder
+  // from the same standard-coverage table the plain-groundout flow uses,
+  // anchored on whoever fielded the ball originally -- not chained
+  // step-to-step (see standardCoveringFielder's own comment on why that
+  // would need chronological reasoning this UI's ask-order doesn't
+  // actually follow). Always overridable via the picker's own "Change".
+  const initialFielderNumber = wizard.initialFielding ? FIELDING_POSITION_TO_NUMBER[wizard.initialFielding.position] : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
       <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-5">
         <h3 className="font-heading text-lg font-bold text-white">{title}</h3>
+
+        {wizard.step === "initialFielding" && (
+          <div className="mt-2">
+            <FielderSuggestionPanel
+              title="Who fielded the ball?"
+              suggestedPosition={suggestedInitialFielderPosition}
+              onSelect={onInitialFielding}
+              resolve={resolve}
+            />
+          </div>
+        )}
 
         {wizard.step === "runner" && (
           <>
@@ -3533,13 +3888,27 @@ function DoublePlayWizard({
 
         {wizard.step === "fielding1" && (
           <div className="mt-2">
-            <FieldingPositionPicker title="First out (batter, force at 1B) — who fielded it?" onSelect={onFirstFielding} resolve={resolve} />
+            <FielderSuggestionPanel
+              title="First out (batter, force at 1B) — who covered it?"
+              suggestedPosition={initialFielderNumber !== null ? FIELDER_NUMBER_TO_POSITION[standardCoveringFielder("first", initialFielderNumber)] : null}
+              onSelect={onFirstFielding}
+              resolve={resolve}
+            />
           </div>
         )}
 
         {wizard.step === "fielding2" && (
           <div className="mt-2">
-            <FieldingPositionPicker title="Second out — who fielded it?" onSelect={onSecondFielding} resolve={resolve} />
+            <FielderSuggestionPanel
+              title="Second out — who covered it?"
+              suggestedPosition={
+                initialFielderNumber !== null && wizard.base
+                  ? FIELDER_NUMBER_TO_POSITION[standardCoveringFielder(forceDestination(wizard.base), initialFielderNumber)]
+                  : null
+              }
+              onSelect={onSecondFielding}
+              resolve={resolve}
+            />
           </div>
         )}
 
@@ -3602,7 +3971,16 @@ function DoublePlayWizard({
 
         {wizard.step === "thirdOutFielding" && (
           <div className="mt-2">
-            <FieldingPositionPicker title="Third out — who fielded it?" onSelect={onThirdFielding} resolve={resolve} />
+            <FielderSuggestionPanel
+              title="Third out — who covered it?"
+              suggestedPosition={
+                initialFielderNumber !== null && wizard.thirdBase
+                  ? FIELDER_NUMBER_TO_POSITION[standardCoveringFielder(forceDestination(wizard.thirdBase), initialFielderNumber)]
+                  : null
+              }
+              onSelect={onThirdFielding}
+              resolve={resolve}
+            />
           </div>
         )}
 

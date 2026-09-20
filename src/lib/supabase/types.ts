@@ -245,6 +245,10 @@ export interface Database {
           fielded_by_position: FieldingPosition | null;
           fielded_by_player_id: string | null;
           fielded_by_opponent_player_id: string | null;
+          // Feature 1 (fielding-play logging batch): standard scorebook
+          // notation ("6-4-3 DP", "5-3", "F8", "L7", "E5"), computed
+          // client-side and stored once per play on the batter's row.
+          scorebook_notation: string | null;
           confirmed_at: string | null;
           created_at: string;
         };
@@ -268,6 +272,7 @@ export interface Database {
           fielded_by_position?: FieldingPosition | null;
           fielded_by_player_id?: string | null;
           fielded_by_opponent_player_id?: string | null;
+          scorebook_notation?: string | null;
           confirmed_at?: string | null;
           created_at?: string;
         };

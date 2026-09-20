@@ -176,6 +176,9 @@ export interface ConfirmAtBatInput {
   fieldedByPosition?: FieldingPosition | null;
   fieldedByPlayerId?: string | null;
   fieldedByOpponentPlayerId?: string | null;
+  // Feature 1 (fielding-play logging batch): standard scorebook notation
+  // ("F8", "L7", "5-3", "E5"), computed client-side.
+  scorebookNotation?: string | null;
 }
 
 export async function confirmAtBat(input: ConfirmAtBatInput) {
@@ -195,6 +198,7 @@ export async function confirmAtBat(input: ConfirmAtBatInput) {
       fielded_by_position: input.fieldedByPosition ?? null,
       fielded_by_player_id: input.fieldedByPlayerId ?? null,
       fielded_by_opponent_player_id: input.fieldedByOpponentPlayerId ?? null,
+      scorebook_notation: input.scorebookNotation ?? null,
       confirmed_at: new Date().toISOString(),
     })
     .eq("id", input.atBatId);
@@ -260,6 +264,10 @@ export interface ConfirmDoublePlayInput {
     outType: OutType;
     fielding: { position: FieldingPosition; playerId: string | null; opponentPlayerId: string | null } | null;
   };
+  // Feature 1 (fielding-play logging batch): stored once, on the
+  // batter's own row -- matching how a real scorebook writes one
+  // notation per play, not one per out recorded on it.
+  scorebookNotation?: string | null;
 }
 
 // The batter's own draft row becomes the batter's out (always a force at
@@ -286,6 +294,7 @@ export async function confirmDoublePlay(
       fielded_by_position: input.batterFielding?.position ?? null,
       fielded_by_player_id: input.batterFielding?.playerId ?? null,
       fielded_by_opponent_player_id: input.batterFielding?.opponentPlayerId ?? null,
+      scorebook_notation: input.scorebookNotation ?? null,
       confirmed_at: new Date().toISOString(),
     })
     .eq("id", input.atBatId);
