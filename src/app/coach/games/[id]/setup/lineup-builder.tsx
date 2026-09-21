@@ -1,26 +1,33 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
-import type { Database, FieldCalibrationPoints, FieldingPosition } from "@/lib/supabase/types";
-import { FIELDER_NUMBER_TO_POSITION, standardPositionLocations, zoneForPoint } from "@/lib/field-zones";
+import { useRef, useState, useTransition } from "react";
+import type { Database, PlayerPositionCalibration } from "@/lib/supabase/types";
+import { nearestSavedPosition } from "@/lib/field-zones";
 import { saveLineupAndUmpire, startGame, type LineupSlot } from "./actions";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
 
-const SLOTS = Array.from({ length: 9 }, (_, i) => i + 1);
-const ALL_POSITIONS: FieldingPosition[] = ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"];
-// Fix 3: DH is a real batting-order slot (position stored as plain text,
-// same as any other -- "DH" needs no schema change) but never rendered
-// on the field diagram, since it has no defensive position.
+// Change 2 (calibrate-field-tabs batch): 1-10, not 1-9 -- EH is
+// explicitly "the 10th spot in the order" per the request, an added
+// slot rather than one of the usual 9 (DH, by contrast, just occupies
+// one of the normal 9 in place of the pitcher, so it never needs slot 10
+// specifically).
+const SLOTS = Array.from({ length: 10 }, (_, i) => i + 1);
+// Fix 3 (lineup-builder-fixes batch): DH is a real batting-order slot
+// (position stored as plain text, same as any other -- "DH" needs no
+// schema change) but never rendered on the field diagram by default --
+// see the DH-calibrated-point handling below for the one exception.
+// EH (this batch) never renders on the field at all; it's purely an
+// offensive role with no defensive position, calibrated or not.
 const DH = "DH";
+const EH = "EH";
 
-// Fix 1 (lineup-builder fixes batch): position and batting order are now
-// two independent, separately-set attributes of a placement -- dragging
-// onto the field/DH slot sets position immediately; tapping the placed
-// avatar sets batting order afterward, whenever the operator gets to it.
-// Keyed by playerId (not battingOrder, unlike the previous tap-driven
-// version) specifically because a placement can exist with position set
-// and battingOrder still null.
+// Fix 1 (lineup-builder-fixes batch): position and batting order are two
+// independent, separately-set attributes of a placement -- dragging onto
+// the field/DH/EH sets position immediately; tapping the placed avatar
+// sets batting order afterward, whenever the operator gets to it. Keyed
+// by playerId (not battingOrder) specifically because a placement can
+// exist with position set and battingOrder still null.
 interface Placement {
   playerId: string;
   position: string;
@@ -32,18 +39,21 @@ export function LineupBuilder({
   players,
   initialLineup,
   initialUmpireName,
-  fieldCalibration2d,
+  fieldPositionsCalibration,
 }: {
   gameId: string;
   players: Player[];
   initialLineup: { batting_order: number; player_id: string; position: string | null }[];
   initialUmpireName: string | null;
-  // Fix 1: null when the coach hasn't calibrated the 2D field yet -- a
-  // real, expected state (this page can be reached before
-  // /coach/calibrate-field ever has been), so the field diagram degrades
-  // to a plain, still drag-and-drop 9-button grid of drop targets instead
-  // of blocking lineup-building entirely.
-  fieldCalibration2d: FieldCalibrationPoints | null;
+  // Change 2 (calibrate-field-tabs batch): the "Player Positions"
+  // calibration tab's saved points -- null when the coach hasn't
+  // calibrated it yet, a real, expected state. Replaces the old
+  // formula-based standardPositionLocations entirely: dropping a player
+  // now snaps to whichever saved point is closest, no math or
+  // interpolation, and there's no fallback grid anymore -- field
+  // placement is genuinely blocked (DH/EH and batting order still work)
+  // until this is calibrated, per the request.
+  fieldPositionsCalibration: PlayerPositionCalibration | null;
 }) {
   const [placements, setPlacements] = useState<Placement[]>(() =>
     initialLineup.map((l) => ({ playerId: l.player_id, position: l.position ?? "", battingOrder: l.batting_order }))
@@ -57,19 +67,14 @@ export function LineupBuilder({
   // player" -- position no longer has a tap-driven prompt at all, it's
   // set purely by where a drag lands.
   const [orderPrompt, setOrderPrompt] = useState<string | null>(null);
-  const [dragOver, setDragOver] = useState<"field" | "dh" | FieldingPosition | null>(null);
+  const [dragOver, setDragOver] = useState<"field" | "dh" | "eh" | null>(null);
   const fieldRef = useRef<HTMLDivElement>(null);
 
-  const positionLocations = useMemo(
-    () => (fieldCalibration2d ? standardPositionLocations(fieldCalibration2d) : null),
-    [fieldCalibration2d]
-  );
-
   // Fix 2: the roster only ever lists players with no placement yet --
-  // once dragged onto the field or DH, they disappear from here
+  // once dragged onto the field, DH, or EH, they disappear from here
   // immediately (derived, not a separate "hide" flag, so removing them
   // always brings them back with no extra bookkeeping).
-  const placedPlayerIds = useMemo(() => new Set(placements.map((p) => p.playerId)), [placements]);
+  const placedPlayerIds = new Set(placements.map((p) => p.playerId));
   const availablePlayers = players.filter((p) => !placedPlayerIds.has(p.id));
 
   const battingOrderTaken = (order: number, exceptPlayerId?: string) =>
@@ -119,12 +124,14 @@ export function LineupBuilder({
     e.preventDefault();
     setDragOver(null);
     const playerId = e.dataTransfer.getData("text/plain");
-    if (!playerId || !fieldCalibration2d) return;
+    if (!playerId || !fieldPositionsCalibration) return;
     const rect = fieldRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
-    placePlayer(playerId, FIELDER_NUMBER_TO_POSITION[zoneForPoint(x, y, fieldCalibration2d)]);
+    const position = nearestSavedPosition(x, y, fieldPositionsCalibration);
+    if (!position) return; // no defensive points calibrated at all
+    placePlayer(playerId, position);
   }
 
   function buildLineupPayload(): LineupSlot[] {
@@ -163,24 +170,32 @@ export function LineupBuilder({
     });
   }
 
+  // Change 2: unchanged threshold -- 9 is still the minimum to start,
+  // DH/EH are "bonus, not required" in the sense that using them can
+  // push filledCount to 10 but never lowers what's required.
   const canStart = filledCount >= 9 && umpireName.trim().length > 0;
   const dhPlacement = placements.find((p) => p.position === DH) ?? null;
+  const ehPlacement = placements.find((p) => p.position === EH) ?? null;
+  // Change 2: DH shows on the field diagram itself only when the coach
+  // has actually marked a DH spot in the "Player Positions" tab --
+  // otherwise (the common case) it stays in its drop zone below the
+  // field, same as EH always does.
+  const dhFieldLoc = fieldPositionsCalibration?.DH ?? null;
 
   return (
     <div>
-      {!fieldCalibration2d && (
+      {!fieldPositionsCalibration && (
         <p className="mb-3 rounded-md border border-accent-amber/40 bg-accent-amber/10 px-3 py-2 text-xs text-accent-amber">
-          The 2D field hasn&apos;t been calibrated yet, so dropping a player snaps to a labeled grid instead of their exact
-          spot on the diagram.{" "}
+          Calibrate player positions first —{" "}
           <a href="/coach/calibrate-field" className="underline hover:text-white">
-            Calibrate it
-          </a>{" "}
-          for the full tap-to-place experience.
+            /coach/calibrate-field
+          </a>
+          . Batting order and DH/EH still work in the meantime, but field positions can&apos;t be placed until then.
         </p>
       )}
 
       <p className="text-xs uppercase tracking-wide text-foreground/40">
-        Drag a player onto the field (or DH) to set their position, then tap their avatar to set batting order.
+        Drag a player onto the field (or DH/EH) to set their position, then tap their avatar to set batting order.
       </p>
 
       {/* Batting order strip */}
@@ -212,10 +227,10 @@ export function LineupBuilder({
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[220px_1fr]">
-        {/* Roster + DH slot */}
+        {/* Roster */}
         <div>
           <p className="text-xs uppercase tracking-wide text-foreground/40">Roster</p>
-          <ul className="mt-2 flex max-h-[340px] flex-col gap-1.5 overflow-y-auto pr-1">
+          <ul className="mt-2 flex max-h-[420px] flex-col gap-1.5 overflow-y-auto pr-1">
             {availablePlayers.map((p) => (
               <li key={p.id}>
                 <div
@@ -235,46 +250,14 @@ export function LineupBuilder({
             ))}
             {availablePlayers.length === 0 && <li className="text-xs text-foreground/30">Everyone is placed.</li>}
           </ul>
-
-          {/* Fix 3: DH -- a drop target, not a field position. */}
-          <p className="mt-4 text-xs uppercase tracking-wide text-foreground/40">Designated Hitter</p>
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver("dh");
-            }}
-            onDragLeave={() => setDragOver((d) => (d === "dh" ? null : d))}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOver(null);
-              const playerId = e.dataTransfer.getData("text/plain");
-              if (playerId) placePlayer(playerId, DH);
-            }}
-            className={`mt-2 flex min-h-[56px] items-center justify-center rounded-md border-2 border-dashed p-2 text-center transition ${
-              dragOver === "dh" ? "border-accent-gold bg-accent-gold/10" : "border-border bg-background/40"
-            }`}
-          >
-            {dhPlacement ? (
-              <PlacedAvatarChip
-                playerId={dhPlacement.playerId}
-                battingOrder={dhPlacement.battingOrder}
-                jersey={players.find((pl) => pl.id === dhPlacement.playerId)?.jersey_number ?? null}
-                name={playerName(dhPlacement.playerId)}
-                onTap={() => setOrderPrompt(dhPlacement.playerId)}
-                onRemove={() => removePlayer(dhPlacement.playerId)}
-              />
-            ) : (
-              <span className="text-xs text-foreground/40">Drag a player here for DH</span>
-            )}
-          </div>
         </div>
 
-        {/* Field diagram */}
+        {/* Field diagram + DH/EH drop zones */}
         <div>
           <div
             ref={fieldRef}
             onDragOver={(e) => {
-              if (!fieldCalibration2d) return;
+              if (!fieldPositionsCalibration) return;
               e.preventDefault();
               setDragOver("field");
             }}
@@ -285,92 +268,108 @@ export function LineupBuilder({
             }`}
             style={{ backgroundImage: "url('/field-2d.png')", backgroundSize: "cover", backgroundPosition: "center" }}
           >
-            {positionLocations &&
+            {fieldPositionsCalibration &&
               placements
-                .filter((p) => p.position !== DH)
+                .filter((p) => p.position !== DH && p.position !== EH)
                 .map((p) => {
-                  const loc = positionLocations[p.position as FieldingPosition];
+                  const loc = fieldPositionsCalibration[p.position as keyof PlayerPositionCalibration];
                   if (!loc) return null;
                   return (
-                    <div
-                      // Fix 1: keyed on playerId+position, not batting order
-                      // (which can be null / can change independently) --
-                      // a position change is what should replay the
-                      // "avatar-snap" entrance animation.
+                    <PositionedAvatar
                       key={`${p.playerId}-${p.position}`}
-                      className="avatar-snap absolute -translate-x-1/2 -translate-y-1/2"
-                      style={{ left: `${loc.x}%`, top: `${loc.y}%` }}
-                    >
-                      <FieldAvatar
-                        playerId={p.playerId}
-                        position={p.position}
-                        battingOrder={p.battingOrder}
-                        jersey={players.find((pl) => pl.id === p.playerId)?.jersey_number ?? null}
-                        onTap={() => setOrderPrompt(p.playerId)}
-                        onRemove={() => removePlayer(p.playerId)}
-                      />
-                    </div>
+                      x={loc.x}
+                      y={loc.y}
+                      playerId={p.playerId}
+                      battingOrder={p.battingOrder}
+                      jersey={players.find((pl) => pl.id === p.playerId)?.jersey_number ?? null}
+                      onTap={() => setOrderPrompt(p.playerId)}
+                      onRemove={() => removePlayer(p.playerId)}
+                    />
                   );
                 })}
 
-            {!fieldCalibration2d && dragOver !== "field" && (
+            {/* Change 2: DH renders on the field only when a DH point was
+                actually calibrated -- otherwise their avatar lives in the
+                drop zone below like EH always does. */}
+            {dhPlacement && dhFieldLoc && (
+              <PositionedAvatar
+                key={`${dhPlacement.playerId}-dh-field`}
+                x={dhFieldLoc.x}
+                y={dhFieldLoc.y}
+                playerId={dhPlacement.playerId}
+                battingOrder={dhPlacement.battingOrder}
+                jersey={players.find((pl) => pl.id === dhPlacement.playerId)?.jersey_number ?? null}
+                onTap={() => setOrderPrompt(dhPlacement.playerId)}
+                onRemove={() => removePlayer(dhPlacement.playerId)}
+              />
+            )}
+
+            {!fieldPositionsCalibration && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40 p-4 text-center">
-                <p className="text-xs text-foreground/60">Not calibrated — use the position grid below to drop players.</p>
+                <p className="text-xs text-foreground/60">Not calibrated — see the banner above.</p>
               </div>
             )}
           </div>
 
-          {/* Fix 1: when the field hasn't been calibrated, dropping still
-              works -- each labeled button below is its own drop target,
-              same drag-and-drop model as the real diagram, just without
-              a precise spot to snap to. */}
-          {!fieldCalibration2d && (
-            <div className="mt-3 grid w-full max-w-[420px] grid-cols-3 gap-1.5">
-              {ALL_POSITIONS.map((pos) => {
-                const p = placements.find((pl) => pl.position === pos);
-                return (
-                  <div
-                    key={pos}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setDragOver(pos);
-                    }}
-                    onDragLeave={() => setDragOver((d) => (d === pos ? null : d))}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setDragOver(null);
-                      const playerId = e.dataTransfer.getData("text/plain");
-                      if (playerId) placePlayer(playerId, pos);
-                    }}
-                    className={`flex min-h-[56px] flex-col items-center justify-center gap-0.5 rounded-md border-2 border-dashed p-1 text-center transition ${
-                      dragOver === pos ? "border-accent-gold bg-accent-gold/10" : "border-border bg-background/40"
-                    }`}
-                  >
-                    <span className="text-[10px] font-semibold text-foreground/50">{pos}</span>
-                    {p ? (
-                      <PlacedAvatarChip
-                        playerId={p.playerId}
-                        battingOrder={p.battingOrder}
-                        jersey={players.find((pl) => pl.id === p.playerId)?.jersey_number ?? null}
-                        name={playerName(p.playerId)}
-                        compact
-                        onTap={() => setOrderPrompt(p.playerId)}
-                        onRemove={() => removePlayer(p.playerId)}
-                      />
-                    ) : (
-                      <span className="text-[10px] text-foreground/30">Empty</span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          {/* Change 2: "Below the field diagram add two optional drop
+              zones side by side" -- DH and EH, exactly as specified.
+              Always present regardless of calibration (batting order and
+              DH/EH don't depend on the field being calibrated at all). */}
+          <div className="mt-3 grid w-full max-w-[420px] grid-cols-2 gap-2">
+            <DropZone
+              label="DH"
+              hint="Designated Hitter — optional"
+              active={dragOver === "dh"}
+              onDragOver={() => setDragOver("dh")}
+              onDragLeave={() => setDragOver((d) => (d === "dh" ? null : d))}
+              onDrop={(playerId) => placePlayer(playerId, DH)}
+            >
+              {dhPlacement && !dhFieldLoc ? (
+                <PlacedAvatarChip
+                  battingOrder={dhPlacement.battingOrder}
+                  jersey={players.find((pl) => pl.id === dhPlacement.playerId)?.jersey_number ?? null}
+                  name={playerName(dhPlacement.playerId)}
+                  onTap={() => setOrderPrompt(dhPlacement.playerId)}
+                  onRemove={() => removePlayer(dhPlacement.playerId)}
+                />
+              ) : dhPlacement && dhFieldLoc ? (
+                // Placed and shown on the field already -- avoid a
+                // confusing duplicate avatar down here too.
+                <p className="text-[10px] text-foreground/50">
+                  {playerName(dhPlacement.playerId)} — on field ↑
+                </p>
+              ) : (
+                <span className="text-xs text-foreground/40">Drop DH here</span>
+              )}
+            </DropZone>
+
+            <DropZone
+              label="EH"
+              hint="Extra Hitter — optional"
+              active={dragOver === "eh"}
+              onDragOver={() => setDragOver("eh")}
+              onDragLeave={() => setDragOver((d) => (d === "eh" ? null : d))}
+              onDrop={(playerId) => placePlayer(playerId, EH)}
+            >
+              {ehPlacement ? (
+                <PlacedAvatarChip
+                  battingOrder={ehPlacement.battingOrder}
+                  jersey={players.find((pl) => pl.id === ehPlacement.playerId)?.jersey_number ?? null}
+                  name={playerName(ehPlacement.playerId)}
+                  onTap={() => setOrderPrompt(ehPlacement.playerId)}
+                  onRemove={() => removePlayer(ehPlacement.playerId)}
+                />
+              ) : (
+                <span className="text-xs text-foreground/40">Drop EH here</span>
+              )}
+            </DropZone>
+          </div>
         </div>
       </div>
 
       {orderPrompt && (
         <PromptOverlay title={`${playerName(orderPrompt)} — batting order`} onCancel={() => setOrderPrompt(null)}>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-5 gap-2">
             {SLOTS.map((slot) => {
               const isOwn = placements.find((p) => p.playerId === orderPrompt)?.battingOrder === slot;
               const disabled = battingOrderTaken(slot, orderPrompt);
@@ -381,7 +380,7 @@ export function LineupBuilder({
                   type="button"
                   disabled={disabled}
                   onClick={() => pickBattingOrder(orderPrompt, slot)}
-                  className={`min-h-[48px] rounded-md border text-lg font-bold disabled:cursor-not-allowed disabled:opacity-30 ${
+                  className={`min-h-[44px] rounded-md border text-base font-bold disabled:cursor-not-allowed disabled:opacity-30 ${
                     isOwn || suggested ? "border-accent-gold bg-accent-gold/10 text-white" : "border-border text-white hover:border-accent-primary"
                   }`}
                 >
@@ -442,67 +441,123 @@ export function LineupBuilder({
   );
 }
 
+// Change 2: a generic labeled drop target, used for both DH and EH --
+// identical interaction model (drag a roster player, drop to assign),
+// just a different label/hint/handler per slot.
+function DropZone({
+  label,
+  hint,
+  active,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  children,
+}: {
+  label: string;
+  hint: string;
+  active: boolean;
+  onDragOver: () => void;
+  onDragLeave: () => void;
+  onDrop: (playerId: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      onDragOver={(e) => {
+        e.preventDefault();
+        onDragOver();
+      }}
+      onDragLeave={onDragLeave}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDragLeave();
+        const playerId = e.dataTransfer.getData("text/plain");
+        if (playerId) onDrop(playerId);
+      }}
+      className={`flex min-h-[72px] flex-col items-center justify-center gap-0.5 rounded-md border-2 border-dashed p-2 text-center transition ${
+        active ? "border-accent-gold bg-accent-gold/10" : "border-border bg-background/40"
+      }`}
+    >
+      <span className="text-[10px] font-semibold text-foreground/50">
+        {label} <span className="font-normal text-foreground/30">({hint})</span>
+      </span>
+      {children}
+    </div>
+  );
+}
+
 // The on-field gold-circle avatar -- Feature 2's original design (jersey
 // number, "future: photo" hook point), now with a small batting-order
 // badge (the "?" state is exactly what Fix 1 means by "a simple 1-9
 // number badge... to assign" -- shown unset until tapped) and a remove
-// "x", since removal no longer lives behind a separate edit menu.
-function FieldAvatar({
+// "x", since removal no longer lives behind a separate edit menu. Change
+// 2 renamed this from FieldAvatar to PositionedAvatar and gave it its
+// own x/y props, since it's now used for both real defensive positions
+// and a calibrated DH spot.
+function PositionedAvatar({
+  x,
+  y,
   jersey,
   battingOrder,
   onTap,
   onRemove,
 }: {
+  x: number;
+  y: number;
   playerId: string;
-  position: string;
   jersey: number | null;
   battingOrder: number | null;
   onTap: () => void;
   onRemove: () => void;
 }) {
   return (
-    <div className="relative flex flex-col items-center">
-      <button
-        type="button"
-        onClick={onTap}
-        className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-background text-xs font-bold text-background shadow-lg"
-        style={{ backgroundColor: "#F0C060" }}
-      >
-        {jersey ?? "?"}
-      </button>
-      <span
-        className={`absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-background text-[9px] font-bold ${
-          battingOrder ? "bg-accent-primary text-white" : "bg-accent-red text-white"
-        }`}
-      >
-        {battingOrder ?? "?"}
-      </span>
-      <button
-        type="button"
-        onClick={onRemove}
-        className="mt-1 rounded bg-background/80 px-1 text-[9px] font-semibold text-foreground/50 hover:text-accent-red"
-      >
-        remove
-      </button>
+    <div
+      // Keyed by the caller on playerId+position -- a position change
+      // (including DH gaining/losing its field spot) replays the
+      // "avatar-snap" entrance animation (globals.css).
+      className="avatar-snap absolute -translate-x-1/2 -translate-y-1/2"
+      style={{ left: `${x}%`, top: `${y}%` }}
+    >
+      <div className="relative flex flex-col items-center">
+        <button
+          type="button"
+          onClick={onTap}
+          className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-background text-xs font-bold text-background shadow-lg"
+          style={{ backgroundColor: "#F0C060" }}
+        >
+          {jersey ?? "?"}
+        </button>
+        <span
+          className={`absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-background text-[9px] font-bold ${
+            battingOrder ? "bg-accent-primary text-white" : "bg-accent-red text-white"
+          }`}
+        >
+          {battingOrder ?? "?"}
+        </span>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="mt-1 rounded bg-background/80 px-1 text-[9px] font-semibold text-foreground/50 hover:text-accent-red"
+        >
+          remove
+        </button>
+      </div>
     </div>
   );
 }
 
-// The uncalibrated-field fallback grid's compact version of the same
-// chip -- no absolute positioning, just sits inside its labeled cell.
+// DH/EH's drop-zone chip -- no absolute positioning, just sits inside
+// its labeled box.
 function PlacedAvatarChip({
   name,
   jersey,
   battingOrder,
-  compact,
   onTap,
   onRemove,
 }: {
-  playerId: string;
   name: string;
   jersey: number | null;
   battingOrder: number | null;
-  compact?: boolean;
   onTap: () => void;
   onRemove: () => void;
 }) {
@@ -516,7 +571,7 @@ function PlacedAvatarChip({
       >
         {jersey ?? "?"}
       </button>
-      {!compact && <span className="text-[10px] text-white">{name}</span>}
+      <span className="text-[10px] text-white">{name}</span>
       <span className="text-[9px] text-foreground/50">Order: {battingOrder ?? "?"}</span>
       <button type="button" onClick={onRemove} className="text-[9px] text-foreground/40 hover:text-accent-red">
         remove

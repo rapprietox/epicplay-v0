@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import type { FieldCalibrationPoints, FieldType } from "@/lib/supabase/types";
+import type { FieldCalibrationPoints, FieldType, PlayerPositionCalibration } from "@/lib/supabase/types";
 
 async function requireCoachTeam() {
   const supabase = createClient();
@@ -23,7 +23,10 @@ async function requireCoachTeam() {
   return { supabase, teamId: profile.team_id };
 }
 
-export async function saveFieldCalibration(fieldType: FieldType, points: FieldCalibrationPoints) {
+// Change 1 (calibrate-field-tabs batch): points is now either shape --
+// the jsonb column doesn't care, and which one applies is determined
+// entirely by fieldType, which the caller already knows.
+export async function saveFieldCalibration(fieldType: FieldType, points: FieldCalibrationPoints | PlayerPositionCalibration) {
   const { supabase, teamId } = await requireCoachTeam();
 
   const { error } = await supabase

@@ -1,4 +1,4 @@
-import type { AtBatResult, FieldCalibrationPoints, FieldingPosition, HitType } from "@/lib/supabase/types";
+import type { AtBatResult, FieldCalibrationPoints, FieldingPosition, HitType, PlayerPositionCalibration } from "@/lib/supabase/types";
 
 // Feature 1 (fielding-play logging batch): scorebook position numbers,
 // the standard 1-9 baseball convention -- P/C/1B/2B/3B/SS/LF/CF/RF.
@@ -32,19 +32,6 @@ function sub(a: Vec, b: Vec): Vec {
 }
 function dist(a: Vec, b: Vec): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
-}
-function lerp(a: Vec, b: Vec, t: number): Vec {
-  return { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) };
-}
-function add(a: Vec, b: Vec): Vec {
-  return { x: a.x + b.x, y: a.y + b.y };
-}
-function scale(v: Vec, s: number): Vec {
-  return { x: v.x * s, y: v.y * s };
-}
-function normalize(v: Vec): Vec {
-  const len = Math.hypot(v.x, v.y);
-  return len === 0 ? { x: 0, y: 0 } : { x: v.x / len, y: v.y / len };
 }
 // Signed angle (radians) of `v` relative to `forward`, positive = clockwise
 // (toward the right side of the field as viewed top-down with home plate
@@ -131,51 +118,32 @@ export function zoneForPoint(x: number, y: number, cal: FieldCalibrationPoints):
   return 3; // 1B
 }
 
-// Feature 2 (visual lineup builder batch), corrected in the
-// lineup-builder-fixes batch, then replaced with the user's own exact
-// formulas in this batch (every position below is a direct transcription
-// of what was specified, not a re-derivation) -- a fixed "standard"
-// on-field spot for each of the 9 defensive positions, synthesized
-// entirely from the 7 live field_calibration anchors passed in as `cal`
-// (fetched from the database by the caller -- see LineupBuilder's
-// fieldCalibration2d prop -- never hardcoded here). Nothing here is
-// persisted -- lineup.position stays the single source of truth (a
-// plain "SS"/"CF"/etc. string); this function just answers "where
-// should that player's avatar render" at display time, recomputed fresh
-// from whatever's currently calibrated.
-export function standardPositionLocations(cal: FieldCalibrationPoints): Record<FieldingPosition, Vec> {
-  const HP = cal.home_plate;
-  const F1 = cal.first_base;
-  const F2 = cal.second_base;
-  const F3 = cal.third_base;
-  const LFW = cal.lf_wall;
-  const CFW = cal.cf_wall;
-  const RFW = cal.rf_wall;
+// Change 2 (calibrate-field-tabs batch): replaces the old formula-based
+// standardPositionLocations entirely -- rather than synthesizing a
+// defensive position from the 7 field anchors, the lineup builder now
+// reads hand-placed points from the "Player Positions" calibration tab
+// (field_type 'positions') directly, no math or interpolation. This
+// function's only job is matching an arbitrary drop location to whichever
+// saved point is closest, so dropping "near SS" still works without the
+// operator needing pixel-perfect aim. DH is deliberately excluded -- it
+// has its own dedicated drop zone in the lineup builder (not the field
+// diagram), so a drop on the diagram should never resolve to it even if
+// a DH point happens to be the closest one calibrated.
+const DEFENSIVE_POSITION_KEYS: FieldingPosition[] = ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"];
 
-  // 2B/SS's "shifted toward RF/LF side" is a lateral nudge across the
-  // infield, not along either baseline -- the 3rd-to-1st line is the
-  // natural "left side of the infield to right side" axis to nudge along
-  // (mirrored for LF), scaled to an exact fraction of the relevant
-  // baseline's length via normalize() rather than reusing HP/F1/F3
-  // vectors of arbitrary length.
-  const towardRF = normalize(sub(F1, F3));
-  const towardLF = normalize(sub(F3, F1));
-
-  return {
-    P: lerp(HP, F2, 0.605),
-    // Behind home plate, away from the infield (negative t).
-    C: lerp(HP, F2, -0.12),
-    // Near the 1B/3B bag, shifted toward home along a line 30% of the
-    // way from home to the RF/LF wall (a stand-in for the foul line,
-    // since there's no dedicated foul-line anchor).
-    "1B": lerp(F1, lerp(HP, RFW, 0.3), 0.25),
-    "3B": lerp(F3, lerp(HP, LFW, 0.3), 0.25),
-    "2B": add(lerp(F1, F2, 0.6), scale(towardRF, 0.08 * dist(F1, F2))),
-    SS: add(lerp(F2, F3, 0.45), scale(towardLF, 0.08 * dist(F2, F3))),
-    LF: lerp(lerp(HP, LFW, 0.62), lerp(F3, LFW, 0.55), 0.5),
-    CF: lerp(HP, CFW, 0.63),
-    RF: lerp(lerp(HP, RFW, 0.62), lerp(F1, RFW, 0.55), 0.5),
-  };
+export function nearestSavedPosition(x: number, y: number, cal: PlayerPositionCalibration): FieldingPosition | null {
+  let best: FieldingPosition | null = null;
+  let bestDist = Infinity;
+  for (const key of DEFENSIVE_POSITION_KEYS) {
+    const point = cal[key];
+    if (!point) continue;
+    const d = dist({ x, y }, point);
+    if (d < bestDist) {
+      bestDist = d;
+      best = key;
+    }
+  }
+  return best;
 }
 
 export type OutBase = "first" | "second" | "third" | "home" | "tag";

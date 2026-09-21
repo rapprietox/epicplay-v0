@@ -69,12 +69,16 @@ export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";
 export type ThrowingHand = "L" | "R";
-export type FieldType = "2d" | "3d";
+// "positions" (calibrate-field-tabs batch) shares the same
+// field_calibration table/unique(team_id, field_type) constraint as
+// "2d"/"3d" -- a third row per team, no schema change needed since the
+// column is already jsonb and the shape it holds is tab-specific anyway.
+export type FieldType = "2d" | "3d" | "positions";
 
-// Field calibration tool: 7 anchor points mapping a field image's pixel
-// space (as a 0-100 percentage of the image's own width/height) onto the
-// same 0-100 scale at_bats.field_x/field_y already uses. Key names match
-// the calibration tool's own point order exactly.
+// Field calibration tool, tabs 1-2: 7 anchor points mapping a field
+// image's pixel space (as a 0-100 percentage of the image's own width/
+// height) onto the same 0-100 scale at_bats.field_x/field_y already
+// uses. Key names match the calibration tool's own point order exactly.
 export interface FieldCalibrationPoints {
   home_plate: { x: number; y: number };
   first_base: { x: number; y: number };
@@ -83,6 +87,27 @@ export interface FieldCalibrationPoints {
   lf_wall: { x: number; y: number };
   cf_wall: { x: number; y: number };
   rf_wall: { x: number; y: number };
+}
+
+// Field calibration tool, tab 3 ("Player Positions"): where each
+// defensive position's avatar snaps to in the visual lineup builder,
+// placed by hand rather than computed from the 7 anchors above -- this
+// is what standardPositionLocations' formula-based guesses are meant to
+// be replaced by once a team has calibrated it. DH is optional (a team
+// without a marked DH spot still gets the labeled-drop-zone fallback in
+// the lineup builder), so every key here is optional -- unlike
+// FieldCalibrationPoints, where all 7 are required before Save appears.
+export interface PlayerPositionCalibration {
+  P?: { x: number; y: number };
+  C?: { x: number; y: number };
+  "1B"?: { x: number; y: number };
+  "2B"?: { x: number; y: number };
+  "3B"?: { x: number; y: number };
+  SS?: { x: number; y: number };
+  LF?: { x: number; y: number };
+  CF?: { x: number; y: number };
+  RF?: { x: number; y: number };
+  DH?: { x: number; y: number };
 }
 
 export interface RunnerState {
@@ -480,14 +505,18 @@ export interface Database {
           id: string;
           team_id: string | null;
           field_type: FieldType | null;
-          calibration_points: FieldCalibrationPoints | null;
+          // Shape depends on field_type: FieldCalibrationPoints for
+          // "2d"/"3d", PlayerPositionCalibration for "positions" -- the
+          // same jsonb column holds either, so callers narrow by which
+          // field_type they queried for.
+          calibration_points: FieldCalibrationPoints | PlayerPositionCalibration | null;
           created_at: string;
         };
         Insert: {
           id?: string;
           team_id?: string | null;
           field_type?: FieldType | null;
-          calibration_points?: FieldCalibrationPoints | null;
+          calibration_points?: FieldCalibrationPoints | PlayerPositionCalibration | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["field_calibration"]["Insert"]>;

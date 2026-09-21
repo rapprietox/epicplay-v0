@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { formatGameDate } from "@/lib/dates";
+import type { PlayerPositionCalibration } from "@/lib/supabase/types";
 import { LineupBuilder } from "./lineup-builder";
 import { OpponentPhotoImport } from "./opponent-photo-import";
 
@@ -27,14 +28,16 @@ export default async function GameSetupPage({ params }: { params: { id: string }
     .single();
   if (!game) notFound();
 
-  const [{ data: players }, { data: lineup }, { data: fieldCalibrationRow }] = await Promise.all([
+  const [{ data: players }, { data: lineup }, { data: fieldPositionsRow }] = await Promise.all([
     supabase.from("players").select("*").eq("team_id", profile.team_id).order("jersey_number"),
     supabase.from("lineup").select("*").eq("game_id", game.id),
-    // Feature 2 (visual lineup builder batch): drives where a placed
+    // Change 2 (calibrate-field-tabs batch): drives where a placed
     // player's avatar snaps to on the field diagram -- null (never
     // calibrated yet) is a real, expected state, handled by the builder
-    // falling back to a plain position picker.
-    supabase.from("field_calibration").select("calibration_points").eq("team_id", profile.team_id).eq("field_type", "2d").maybeSingle(),
+    // via a banner rather than a formula-based fallback (that fallback,
+    // and the field_type '2d' calibration it used, no longer apply here
+    // at all -- see nearestSavedPosition in lib/field-zones.ts).
+    supabase.from("field_calibration").select("calibration_points").eq("team_id", profile.team_id).eq("field_type", "positions").maybeSingle(),
   ]);
 
   const { data: opponentPlayers } = game.opponent_id
@@ -71,7 +74,7 @@ export default async function GameSetupPage({ params }: { params: { id: string }
               players={players ?? []}
               initialLineup={lineup ?? []}
               initialUmpireName={game.umpire_name}
-              fieldCalibration2d={fieldCalibrationRow?.calibration_points ?? null}
+              fieldPositionsCalibration={(fieldPositionsRow?.calibration_points as PlayerPositionCalibration | undefined) ?? null}
             />
           </div>
         </section>

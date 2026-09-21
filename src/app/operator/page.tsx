@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
+import type { FieldCalibrationPoints } from "@/lib/supabase/types";
 import { getOrCreateGameState } from "./actions";
 import { OperatorConsole } from "./operator-console";
 import { computeBattingLines } from "@/lib/stats";
@@ -130,7 +131,7 @@ export default async function OperatorPage({
       teamName={team?.name ?? "Us"}
       opponentPitchCountSeed={opponentPitchCountSeed ?? 0}
       initialSubstitutions={substitutions ?? []}
-      fieldCalibration2d={fieldCalibrationRow?.calibration_points ?? null}
+      fieldCalibration2d={(fieldCalibrationRow?.calibration_points as FieldCalibrationPoints | undefined) ?? null}
     />
   );
 }
