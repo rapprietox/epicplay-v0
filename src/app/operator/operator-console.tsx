@@ -13,9 +13,9 @@ import type {
   OutType,
   PitchOutcome,
   PitchType,
+  PlayerPositionCalibration,
   RunnerState,
   Runners,
-  SubReason,
 } from "@/lib/supabase/types";
 import {
   FIELDER_NUMBER_TO_POSITION,
@@ -56,12 +56,13 @@ import { buildInitialStateFromServer } from "./initial-state";
 import {
   adjustScore,
   confirmAtBat,
+  confirmChainSubstitution,
   confirmDoublePlay,
   confirmIntentionalWalk,
   logGameEvent,
   logPitch,
   logStolenBase,
-  saveSubstitution,
+  markLateArrival,
   startDraftAtBat,
   syncGameState,
   undoAtBat,
@@ -71,7 +72,8 @@ import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
 import { Scoreboard } from "./scoreboard";
 import { ConfettiBurst, Fireworks, InningEndBurst } from "./celebration";
-import { SubstitutionPanel } from "./substitution-panel";
+import { LateArrivalPanel } from "./substitution-panel";
+import { ChainSubstitutionModal, type ChainResult } from "./chain-substitution-modal";
 import { PitchCountModal } from "./pitch-count-modal";
 import { PostGameSummary } from "./post-game-summary";
 import { StadiumBackground } from "@/components/stadium-background";
@@ -149,6 +151,7 @@ export function OperatorConsole({
   opponentPitchCountSeed,
   initialSubstitutions,
   fieldCalibration2d,
+  fieldPositionsCalibration,
 }: {
   game: Game;
   players: Player[];
@@ -181,6 +184,10 @@ export function OperatorConsole({
   // calibrated the 2D field yet (a real, expected state) -- the
   // auto-suggest UI degrades to a plain, unsuggested fielder picker.
   fieldCalibration2d: FieldCalibrationPoints | null;
+  // Feature 2 (lineup-status batch): the "positions" calibration row --
+  // same nullable-until-calibrated shape, used to place each defensive
+  // position's avatar on the chain substitution diagram.
+  fieldPositionsCalibration: PlayerPositionCalibration | null;
 }) {
   const router = useRouter();
   // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
@@ -262,6 +269,28 @@ export function OperatorConsole({
   // this console) so the eligibility filters below react immediately
   // rather than waiting on a reload.
   const [substitutionLog, setSubstitutionLog] = useState(initialSubstitutions);
+  // Feature 1 (lineup-status batch): same optimistic-local-first pattern
+  // as substitutionLog above -- lineup itself is a static server-fetched
+  // prop, so a player just marked "Add to Reserve" needs a local override
+  // to disappear from the Late Arrival list immediately rather than
+  // waiting on a reload/revalidation.
+  const [lateArrivalIds, setLateArrivalIds] = useState<Set<string>>(new Set());
+  // Feature 2 (lineup-status batch): a local, optimistically-updated
+  // mirror of the `lineup` prop -- needed because chain substitutions can
+  // now change a player's `position` (and, for the in/out pair, their
+  // `status`/`batting_order`) mid-game, which the old simple substitution
+  // flow never did (same position in, same position out). Every internal
+  // read of "who's playing where" below uses this instead of the raw
+  // prop so a chain's effects show up immediately, the same
+  // optimistic-local-first pattern as substitutionLog/lateArrivalIds.
+  const [liveLineup, setLiveLineup] = useState<Lineup[]>(lineup);
+  // Feature 2 (lineup-status batch): the chain-substitution modal opens
+  // via the existing SET_PANEL "substitution" reducer action (renamed in
+  // spirit, not in code, from the old dropdown-based panel it replaces);
+  // Late Arrival is now a separate, standalone modal (it used to be a
+  // second internal view of the same panel component) since the two
+  // substitution UIs no longer share one component.
+  const [lateArrivalOpen, setLateArrivalOpen] = useState(false);
   // Fix 2 (baseball-logic-fixes batch): the two-step dropped-third-strike
   // prompt -- null means no prompt is active.
   const [dropThirdStep, setDropThirdStep] = useState<"caught_or_dropped" | "safe_or_out" | null>(null);
@@ -484,13 +513,38 @@ export function OperatorConsole({
   // player_out this game is permanently ineligible, and everyone else who
   // started or was ever brought in and never taken back out is active.
   const substitutedOutIds = useMemo(() => new Set(substitutionLog.map((s) => s.player_out_id)), [substitutionLog]);
-  const activePlayerIds = useMemo(() => {
-    const startingIds = lineup.map((l) => l.player_id);
-    const broughtInIds = substitutionLog.map((s) => s.player_in_id);
-    const active = new Set([...startingIds, ...broughtInIds]);
-    substitutedOutIds.forEach((id) => active.delete(id));
-    return active;
-  }, [lineup, substitutionLog, substitutedOutIds]);
+
+  // Feature 1 (lineup-status batch): the Late Arrival panel's own list --
+  // anyone still marked absent in lineup, minus anyone this session has
+  // already checked in (lateArrivalIds, regardless of which option was
+  // picked -- "Out of Game" still removes them from this specific list
+  // for the rest of the session, since re-opening the same prompt for an
+  // already-resolved check-in wouldn't do anything new).
+  const absentPlayerIds = useMemo(
+    () => new Set(liveLineup.filter((l) => l.status === "absent" && !lateArrivalIds.has(l.player_id)).map((l) => l.player_id)),
+    [liveLineup, lateArrivalIds]
+  );
+  const absentPlayers = useMemo(
+    () => players.filter((p) => absentPlayerIds.has(p.id)),
+    [players, absentPlayerIds]
+  );
+
+  // Feature 2 (lineup-status batch): "who's at each defensive position
+  // right now" for the chain substitution diagram, and "who's available
+  // on the bench" (reserve or checked-in late arrival, not absent, not
+  // currently on the field) to drag from. Both derive from liveLineup so
+  // they reflect chain substitutions the instant they resolve.
+  const currentDefense = useMemo(() => {
+    const map: Record<string, string | null> = {};
+    for (const l of liveLineup) {
+      if (l.status === "starting" && l.position) map[l.position] = l.player_id;
+    }
+    return map;
+  }, [liveLineup]);
+  const benchPlayerIds = useMemo(
+    () => new Set(liveLineup.filter((l) => l.status === "reserve" || l.status === "late_arrival").map((l) => l.player_id)),
+    [liveLineup]
+  );
 
   // Feature 1 (fielding-play logging batch): which fielder position the
   // tapped field spot falls in, per the coach's saved calibration -- null
@@ -503,8 +557,8 @@ export function OperatorConsole({
   }, [state.fieldTap, fieldCalibration2d]);
 
   const battingPlayer = useMemo(
-    () => (state.mode === "hitting" ? lineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
-    [lineup, state.mode, state.battingOrderPosition]
+    () => (state.mode === "hitting" ? liveLineup.find((l) => l.batting_order === state.battingOrderPosition) : undefined),
+    [liveLineup, state.mode, state.battingOrderPosition]
   );
   const battingPlayerInfo = useMemo(
     () => (battingPlayer ? players.find((p) => p.id === battingPlayer.player_id) : undefined),
@@ -527,13 +581,19 @@ export function OperatorConsole({
   // automatically whenever state.battingOrderPosition changes (a new
   // batter stepping up), same as battingPlayer above.
   const onDeckPlayerInfo = useMemo(() => {
-    if (state.mode !== "hitting" || lineup.length === 0) return undefined;
-    const positions = lineup.map((l) => l.batting_order).sort((a, b) => a - b);
+    if (state.mode !== "hitting" || liveLineup.length === 0) return undefined;
+    // Feature 1 (lineup-status batch): lineup now also holds reserve/
+    // absent rows with no batting order at all -- only rows actually in
+    // the batting order belong in this rotation.
+    const positions = liveLineup
+      .map((l) => l.batting_order)
+      .filter((n): n is number => n !== null)
+      .sort((a, b) => a - b);
     const currentIdx = positions.indexOf(state.battingOrderPosition);
     const nextPos = currentIdx === -1 ? positions[0] : positions[(currentIdx + 1) % positions.length];
-    const onDeckSlot = lineup.find((l) => l.batting_order === nextPos);
+    const onDeckSlot = liveLineup.find((l) => l.batting_order === nextPos);
     return onDeckSlot ? players.find((p) => p.id === onDeckSlot.player_id) : undefined;
-  }, [lineup, players, state.mode, state.battingOrderPosition]);
+  }, [liveLineup, players, state.mode, state.battingOrderPosition]);
 
   // Fix 1/4: a live, per-at-bat override of the batter's hand -- not
   // written back to players.batting_hand (this fix needs no schema
@@ -578,7 +638,7 @@ export function OperatorConsole({
   }
 
   function resolve(position: FieldingPosition): ResolvedFielder {
-    return resolveFielder(position, state.mode, lineup, players, opponentPlayers);
+    return resolveFielder(position, state.mode, liveLineup, players, opponentPlayers);
   }
 
   async function ensureDraftAtBat(): Promise<string> {
@@ -1261,30 +1321,94 @@ export function OperatorConsole({
   // existing SET_RUNNER action (the same one RunnerPicker already uses)
   // rather than a new one -- swapping a base's occupant is exactly what
   // that action already does.
-  function handleSubstitutionConfirm(playerOutId: string, playerInId: string, reason: SubReason) {
-    void withOfflineRetry(`sub-${game.id}-${Date.now()}`, () =>
-      saveSubstitution(game.id, { playerOutId, playerInId, reason, inning: state.inning, inningHalf: state.inningHalf })
+  // Feature 2 (lineup-status batch): replaces the old dropdown-based
+  // handleSubstitutionConfirm -- ChainSubstitutionModal already resolves
+  // the entire chain (arbitrarily many position-only movers plus one
+  // real in/out pair) before calling back here, so this only needs to
+  // apply that finished result: update the local lineup mirror, feed
+  // substitutedOutIds' no-re-entry bookkeeping, persist, and (same Fix 2
+  // bug this replaces) swap a baserunner's dot if the outgoing player
+  // happened to be on base.
+  function handleChainResolved(result: ChainResult) {
+    setLiveLineup((prev) => {
+      const next = prev.map((l) => ({ ...l }));
+      const row = (playerId: string) => next.find((l) => l.player_id === playerId);
+
+      let inheritedBattingOrder: number | null = null;
+      if (result.outgoingPlayerId) {
+        const outgoingRow = row(result.outgoingPlayerId);
+        inheritedBattingOrder = outgoingRow?.batting_order ?? null;
+        if (outgoingRow) {
+          outgoingRow.position = null;
+          outgoingRow.batting_order = null;
+          outgoingRow.status = "reserve";
+        }
+      }
+      const incomingRow = row(result.incomingPlayerId);
+      if (incomingRow) {
+        incomingRow.position = result.entryPosition;
+        incomingRow.batting_order = inheritedBattingOrder;
+        incomingRow.status = "starting";
+      }
+      for (const move of result.positionMoves) {
+        const r = row(move.playerId);
+        if (r) r.position = move.position;
+      }
+      return next;
+    });
+
+    if (result.outgoingPlayerId) {
+      setSubstitutionLog((log) => [...log, { player_out_id: result.outgoingPlayerId!, player_in_id: result.incomingPlayerId }]);
+    }
+
+    void withOfflineRetry(`chainsub-${game.id}-${Date.now()}`, () =>
+      confirmChainSubstitution(game.id, {
+        incomingPlayerId: result.incomingPlayerId,
+        entryPosition: result.entryPosition,
+        outgoingPlayerId: result.outgoingPlayerId,
+        positionMoves: result.positionMoves,
+        reason: result.reason,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        chainNote: result.chainNote,
+      })
     );
-    // Fix 6: recorded immediately (not awaited) so the eligibility filters
-    // on both selects and the pitcher picker exclude this pair on the very
-    // next render, same as every other optimistic-local-first write here.
-    setSubstitutionLog((log) => [...log, { player_out_id: playerOutId, player_in_id: playerInId }]);
+
     dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
 
+    if (!result.outgoingPlayerId) return;
     const occupiedBase = (["first", "second", "third"] as Base[]).find(
-      (b) => state.runners[b]?.type === "player" && state.runners[b]?.id === playerOutId
+      (b) => state.runners[b]?.type === "player" && state.runners[b]?.id === result.outgoingPlayerId
     );
     if (!occupiedBase) return;
 
-    const incoming = players.find((p) => p.id === playerInId);
+    const incoming = players.find((p) => p.id === result.incomingPlayerId);
     const newRunner: RunnerState = {
       type: "player",
-      id: playerInId,
+      id: result.incomingPlayerId,
       name: incoming?.name ?? "Pinch runner",
       jersey: incoming?.jersey_number ? String(incoming.jersey_number) : null,
     };
     dispatch({ type: "SET_RUNNER", base: occupiedBase, runner: newRunner });
     syncRunners({ ...state.runners, [occupiedBase]: newRunner });
+  }
+
+  // Feature 1 (lineup-status batch): "Add to Reserve" or "Out of Game" --
+  // either way the player drops off the Late Arrival list for the rest of
+  // this session (lateArrivalIds), since re-prompting about an
+  // already-resolved check-in has nothing new to ask. Feature 2 also
+  // updates liveLineup's own status for an "Add to Reserve" check-in --
+  // without it the chain modal's bench (which reads liveLineup, not
+  // lateArrivalIds) would never see them as available to sub in.
+  function handleLateArrival(playerId: string, addToReserve: boolean) {
+    setLateArrivalIds((prev) => new Set(prev).add(playerId));
+    if (addToReserve) {
+      setLiveLineup((prev) => prev.map((l) => (l.player_id === playerId ? { ...l, status: "late_arrival" } : l)));
+    }
+    void withOfflineRetry(`latearrival-${game.id}-${Date.now()}`, () =>
+      markLateArrival(game.id, { playerId, addToReserve, inning: state.inning, inningHalf: state.inningHalf })
+    );
+    setLateArrivalOpen(false);
   }
 
   function applyRunnerAction(base: Base, action: RunnerQuickAction, scoreMethod?: ScoreMethod, forced?: boolean) {
@@ -2767,13 +2891,24 @@ export function OperatorConsole({
       )}
 
       {state.substitutionPanelOpen && (
-        <SubstitutionPanel
+        <ChainSubstitutionModal
           players={players}
-          activePlayerIds={activePlayerIds}
-          substitutedOutIds={substitutedOutIds}
+          currentDefense={currentDefense}
+          benchPlayerIds={benchPlayerIds}
+          fieldPositionsCalibration={fieldPositionsCalibration}
+          inning={state.inning}
+          outs={state.outs}
           onClose={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: false })}
-          onConfirm={handleSubstitutionConfirm}
+          onResolved={handleChainResolved}
+          onOpenLateArrival={() => {
+            dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
+            setLateArrivalOpen(true);
+          }}
         />
+      )}
+
+      {lateArrivalOpen && (
+        <LateArrivalPanel absentPlayers={absentPlayers} onLateArrival={handleLateArrival} onClose={() => setLateArrivalOpen(false)} />
       )}
 
       {state.endGameConfirmOpen && (

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { extractOpponentRoster, type ExtractedOpponentPlayer } from "@/lib/anthropic";
+import type { LineupStatus } from "@/lib/supabase/types";
 
 async function requireCoachGame(gameId: string) {
   const supabase = createClient();
@@ -32,9 +33,12 @@ async function requireCoachGame(gameId: string) {
 }
 
 export interface LineupSlot {
-  batting_order: number;
+  // Feature 1 (lineup-status batch): both nullable now -- a reserve or
+  // absent row (status carries the meaning instead) has neither.
+  batting_order: number | null;
   player_id: string;
-  position: string;
+  position: string | null;
+  status: LineupStatus;
 }
 
 export async function saveLineupAndUmpire(
@@ -53,6 +57,7 @@ export async function saveLineupAndUmpire(
         player_id: slot.player_id,
         batting_order: slot.batting_order,
         position: slot.position || null,
+        status: slot.status,
       }))
     );
     if (insertError) throw new Error(insertError.message);
@@ -70,10 +75,15 @@ export async function saveLineupAndUmpire(
 export async function startGame(gameId: string) {
   const { supabase, game } = await requireCoachGame(gameId);
 
+  // Feature 1 (lineup-status batch): lineup now also holds reserve/absent
+  // rows (no batting order), so counting every row would always clear 9
+  // once the roster's large enough regardless of who's actually placed --
+  // scope to status='starting' (has a real position + batting order).
   const { count } = await supabase
     .from("lineup")
     .select("id", { count: "exact", head: true })
-    .eq("game_id", gameId);
+    .eq("game_id", gameId)
+    .eq("status", "starting");
 
   if (!count || count < 9) throw new Error("Lineup needs at least 9 players");
   if (!game.umpire_name) throw new Error("Umpire name is required");

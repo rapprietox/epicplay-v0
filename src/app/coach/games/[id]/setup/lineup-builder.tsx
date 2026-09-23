@@ -43,7 +43,10 @@ export function LineupBuilder({
 }: {
   gameId: string;
   players: Player[];
-  initialLineup: { batting_order: number; player_id: string; position: string | null }[];
+  // Feature 1 (lineup-status batch): batting_order/position/status all
+  // nullable now -- a reserve or absent row has none of the first two,
+  // status carries the meaning instead.
+  initialLineup: { batting_order: number | null; player_id: string; position: string | null; status: string | null }[];
   initialUmpireName: string | null;
   // Change 2 (calibrate-field-tabs batch): the "Player Positions"
   // calibration tab's saved points -- null when the coach hasn't
@@ -56,7 +59,18 @@ export function LineupBuilder({
   fieldPositionsCalibration: PlayerPositionCalibration | null;
 }) {
   const [placements, setPlacements] = useState<Placement[]>(() =>
-    initialLineup.map((l) => ({ playerId: l.player_id, position: l.position ?? "", battingOrder: l.batting_order }))
+    // Feature 1: only rows that actually have a position (field/DH/EH)
+    // become a Placement -- reserve/absent rows have neither and belong
+    // in absentPlayerIds/the roster instead.
+    initialLineup
+      .filter((l) => l.position)
+      .map((l) => ({ playerId: l.player_id, position: l.position!, battingOrder: l.batting_order }))
+  );
+  // Feature 1 (lineup-status batch): the coach's pre-game absent toggle.
+  // "reserve" is the implicit default (everyone not placed and not in
+  // this set) -- no separate state needed for it.
+  const [absentPlayerIds, setAbsentPlayerIds] = useState<Set<string>>(
+    () => new Set(initialLineup.filter((l) => l.status === "absent").map((l) => l.player_id))
   );
   const [umpireName, setUmpireName] = useState(initialUmpireName ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -75,11 +89,40 @@ export function LineupBuilder({
   // immediately (derived, not a separate "hide" flag, so removing them
   // always brings them back with no extra bookkeeping).
   const placedPlayerIds = new Set(placements.map((p) => p.playerId));
-  const availablePlayers = players.filter((p) => !placedPlayerIds.has(p.id));
+  // Feature 1: absent players get their own section below, not the
+  // draggable roster -- a placed player is never shown as absent even if
+  // somehow both (placement takes priority; the UI only ever offers the
+  // absent toggle for someone not yet placed anyway).
+  const availablePlayers = players.filter((p) => !placedPlayerIds.has(p.id) && !absentPlayerIds.has(p.id));
+  const absentPlayers = players.filter((p) => !placedPlayerIds.has(p.id) && absentPlayerIds.has(p.id));
+
+  function markAbsent(playerId: string) {
+    setError(null);
+    setSaved(false);
+    setAbsentPlayerIds((prev) => new Set(prev).add(playerId));
+  }
+
+  function markAvailable(playerId: string) {
+    setError(null);
+    setSaved(false);
+    setAbsentPlayerIds((prev) => {
+      const next = new Set(prev);
+      next.delete(playerId);
+      return next;
+    });
+  }
 
   const battingOrderTaken = (order: number, exceptPlayerId?: string) =>
     placements.some((p) => p.battingOrder === order && p.playerId !== exceptPlayerId);
-  const filledCount = placements.filter((p) => p.battingOrder !== null).length;
+  // Fix 1 (lineup-builder fixes batch): explicit about both halves of
+  // "ready to start" -- a placement always gets a position the instant
+  // it's created (placePlayer sets both together), so checking
+  // battingOrder alone was equivalent in practice, but spelling out
+  // `position.trim().length > 0` here removes any doubt and guards
+  // against a future placement shape where that stops being guaranteed
+  // (e.g. a seeded legacy row with position null coerced to "").
+  const readyPlacements = placements.filter((p) => p.position.trim().length > 0 && p.battingOrder !== null);
+  const filledCount = readyPlacements.length;
   const nextAvailableOrder = () => SLOTS.find((s) => !battingOrderTaken(s)) ?? null;
 
   function playerName(playerId: string): string {
@@ -87,15 +130,30 @@ export function LineupBuilder({
     return p ? `#${p.jersey_number ?? "—"} ${p.name}` : "Player";
   }
 
+  // Feature 2 (lineup-status batch), pre-game scope: dragging onto an
+  // occupied position used to hard-block with an error, forcing the coach
+  // to remove the existing player first. This is the pre-game counterpart
+  // to the live operator screen's drag-based chain substitution -- but a
+  // full multi-step "sub in here / move first" chain doesn't map onto
+  // pre-game setup at all (there's no inning/outs/score/reason to log,
+  // no game_events row, nobody goes "to the bench" mid-game). The
+  // deliberately lighter equivalent kept here: the occupant is simply
+  // bumped back to the roster (unplaced, available to drag again) and
+  // the dragged player takes their spot -- same "drop onto occupied ->
+  // something sensible happens instead of a block" spirit, scaled down
+  // for a context where nothing needs recording. Only a roster/absent
+  // player is ever draggable here (an already-placed avatar has no
+  // `draggable` attribute -- it's removed via its own "remove" button
+  // instead), so there's never an existing placement to preserve a
+  // batting order from on the dragged side.
   function placePlayer(playerId: string, position: string) {
     const conflict = placements.find((p) => p.position === position && p.playerId !== playerId);
-    if (conflict) {
-      setError(`${position} is already taken by ${playerName(conflict.playerId)} — remove them from ${position} first.`);
-      return;
-    }
     setError(null);
     setSaved(false);
-    setPlacements((prev) => [...prev.filter((p) => p.playerId !== playerId), { playerId, position, battingOrder: null }]);
+    setPlacements((prev) => [
+      ...prev.filter((p) => p.playerId !== playerId && p.playerId !== conflict?.playerId),
+      { playerId, position, battingOrder: null },
+    ]);
   }
 
   function pickBattingOrder(playerId: string, order: number) {
@@ -135,9 +193,30 @@ export function LineupBuilder({
   }
 
   function buildLineupPayload(): LineupSlot[] {
-    return placements
-      .filter((p) => p.battingOrder !== null)
-      .map((p) => ({ batting_order: p.battingOrder!, player_id: p.playerId, position: p.position }));
+    // Same readiness condition as readyPlacements below -- kept as its
+    // own inline filter (not a shared reference) since this function is
+    // declared above that const and calling it depends only on this
+    // render's own placements snapshot either way.
+    const starting: LineupSlot[] = placements
+      .filter((p) => p.position.trim().length > 0 && p.battingOrder !== null)
+      .map((p) => ({ batting_order: p.battingOrder!, player_id: p.playerId, position: p.position, status: "starting" }));
+
+    // Feature 1: every other roster player also gets a row now, purely
+    // to carry status -- reserve (the default) or absent. This is what
+    // makes the pre-game bench visible to the operator's live
+    // substitution pool later; a player who's simply never mentioned
+    // here wouldn't exist in `lineup` at all and couldn't be subbed in.
+    const placedIds = new Set(placements.map((p) => p.playerId));
+    const reserveOrAbsent: LineupSlot[] = players
+      .filter((p) => !placedIds.has(p.id))
+      .map((p) => ({
+        batting_order: null,
+        player_id: p.id,
+        position: null,
+        status: absentPlayerIds.has(p.id) ? "absent" : "reserve",
+      }));
+
+    return [...starting, ...reserveOrAbsent];
   }
 
   function save() {
@@ -170,9 +249,13 @@ export function LineupBuilder({
     });
   }
 
-  // Change 2: unchanged threshold -- 9 is still the minimum to start,
-  // DH/EH are "bonus, not required" in the sense that using them can
-  // push filledCount to 10 but never lowers what's required.
+  // Fix 1: 9 is still the minimum to start (DH/EH are "bonus, not
+  // required" -- using them can push filledCount to 10 but never lowers
+  // what's required), and umpireName must be non-blank. Both conditions
+  // read live off placements/umpireName every render, so the button
+  // reacts the instant either the 9th player gets a batting order or the
+  // umpire field stops being empty -- no separate "did I remember to
+  // save" step in between.
   const canStart = filledCount >= 9 && umpireName.trim().length > 0;
   const dhPlacement = placements.find((p) => p.position === DH) ?? null;
   const ehPlacement = placements.find((p) => p.position === EH) ?? null;
@@ -198,41 +281,13 @@ export function LineupBuilder({
         Drag a player onto the field (or DH/EH) to set their position, then tap their avatar to set batting order.
       </p>
 
-      {/* Batting order strip */}
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {SLOTS.map((slot) => {
-          const p = placements.find((pl) => pl.battingOrder === slot);
-          return (
-            <button
-              key={slot}
-              type="button"
-              onClick={() => p && setOrderPrompt(p.playerId)}
-              disabled={!p}
-              className={`flex min-h-[44px] min-w-[64px] flex-col items-center justify-center rounded-md border px-2 py-1 text-center ${
-                p ? "border-accent-primary bg-surface hover:border-accent-gold" : "border-dashed border-border bg-background/40"
-              }`}
-            >
-              <span className="text-[10px] font-semibold text-accent-primary">{slot}</span>
-              {p ? (
-                <>
-                  <span className="truncate text-[11px] text-white">{playerName(p.playerId)}</span>
-                  <span className="text-[10px] text-foreground/40">{p.position}</span>
-                </>
-              ) : (
-                <span className="text-[10px] text-foreground/30">Empty</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[220px_1fr]">
         {/* Roster */}
         <div>
           <p className="text-xs uppercase tracking-wide text-foreground/40">Roster</p>
-          <ul className="mt-2 flex max-h-[420px] flex-col gap-1.5 overflow-y-auto pr-1">
+          <ul className="mt-2 flex max-h-[300px] flex-col gap-1.5 overflow-y-auto pr-1">
             {availablePlayers.map((p) => (
-              <li key={p.id}>
+              <li key={p.id} className="flex items-center gap-1.5">
                 <div
                   draggable
                   onDragStart={(e) => handleDragStart(e, p.id)}
@@ -242,14 +297,49 @@ export function LineupBuilder({
                   // could otherwise leave a drop zone's gold highlight
                   // stuck on.
                   onDragEnd={() => setDragOver(null)}
-                  className="cursor-grab rounded-md border border-border bg-background/40 px-3 py-1.5 text-sm text-white transition hover:border-accent-primary active:cursor-grabbing"
+                  className="flex-1 cursor-grab rounded-md border border-border bg-background/40 px-3 py-1.5 text-sm text-white transition hover:border-accent-primary active:cursor-grabbing"
                 >
                   #{p.jersey_number ?? "—"} {p.name}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => markAbsent(p.id)}
+                  title="Mark absent"
+                  className="shrink-0 rounded-md border border-border px-1.5 py-1.5 text-[10px] text-foreground/40 hover:border-accent-red hover:text-accent-red"
+                >
+                  Absent
+                </button>
               </li>
             ))}
-            {availablePlayers.length === 0 && <li className="text-xs text-foreground/30">Everyone is placed.</li>}
+            {availablePlayers.length === 0 && <li className="text-xs text-foreground/30">Everyone is placed or absent.</li>}
           </ul>
+
+          {/* Feature 1 (lineup-status batch): a separate, non-draggable
+              section -- absent players can't be dragged anywhere until
+              the coach marks them available again (pre-game) or, once
+              the game is live, checks them in via the operator's Late
+              Arrival flow. */}
+          {absentPlayers.length > 0 && (
+            <>
+              <p className="mt-4 text-xs uppercase tracking-wide text-foreground/40">Absent ({absentPlayers.length})</p>
+              <ul className="mt-2 flex max-h-[160px] flex-col gap-1.5 overflow-y-auto pr-1">
+                {absentPlayers.map((p) => (
+                  <li key={p.id} className="flex items-center gap-1.5">
+                    <div className="flex-1 rounded-md border border-border bg-background/20 px-3 py-1.5 text-sm text-foreground/40">
+                      #{p.jersey_number ?? "—"} {p.name}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => markAvailable(p.id)}
+                      className="shrink-0 rounded-md border border-border px-1.5 py-1.5 text-[10px] text-foreground/40 hover:border-accent-green hover:text-accent-green"
+                    >
+                      Available
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
 
         {/* Field diagram + DH/EH drop zones */}
@@ -434,7 +524,9 @@ export function LineupBuilder({
         </button>
       </div>
       {!canStart && (
-        <p className="mt-1 text-xs text-foreground/40">Needs 9 players with a position and batting order, plus an umpire name.</p>
+        <p className="mt-1 text-xs text-foreground/40">
+          {filledCount}/9 players have both a position and batting order{umpireName.trim() ? "" : ", and an umpire name is needed"}.
+        </p>
       )}
       {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
     </div>

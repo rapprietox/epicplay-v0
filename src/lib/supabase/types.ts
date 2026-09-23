@@ -64,11 +64,26 @@ export type GameEventType =
   | "runner_passed"
   | "out_at_next_base"
   | "squeeze_play"
-  | "dropped_third_strike";
+  | "dropped_third_strike"
+  // Feature 1 (lineup-status batch): the operator's "Late Arrival" flow.
+  | "late_arrival"
+  // Feature 2 (lineup-status batch): a chain substitution's single
+  // summary event -- see lib/substitution-chain.ts's own comment for why
+  // one rich event beats one row per movement.
+  | "substitution";
 export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";
 export type ThrowingHand = "L" | "R";
+// Feature 1 (lineup-status batch): a player's role in THIS game, distinct
+// from their team-wide players row -- "starting" is derived (whoever has
+// a position + batting order), "reserve"/"absent" are the coach's own
+// pre-game roster toggle, "late_arrival" is set only via the operator's
+// Late Arrival flow once an absent player checks in and is added back to
+// the substitution pool (reserve and late_arrival are both eligible for
+// substitution -- late_arrival just keeps that history visible rather
+// than collapsing back into a plain "reserve").
+export type LineupStatus = "starting" | "reserve" | "absent" | "late_arrival";
 // "positions" (calibrate-field-tabs batch) shares the same
 // field_calibration table/unique(team_id, field_type) constraint as
 // "2d"/"3d" -- a third row per team, no schema change needed since the
@@ -234,16 +249,21 @@ export interface Database {
           id: string;
           game_id: string;
           player_id: string;
-          batting_order: number;
+          // Feature 1 (lineup-status batch): nullable now -- a reserve
+          // or absent player has no batting order at all, and this
+          // table is where per-game status lives for them too.
+          batting_order: number | null;
           position: string | null;
+          status: LineupStatus | null;
           created_at: string;
         };
         Insert: {
           id?: string;
           game_id: string;
           player_id: string;
-          batting_order: number;
+          batting_order?: number | null;
           position?: string | null;
+          status?: LineupStatus | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["lineup"]["Insert"]>;

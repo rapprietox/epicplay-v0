@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
-import type { FieldCalibrationPoints } from "@/lib/supabase/types";
+import type { FieldCalibrationPoints, PlayerPositionCalibration } from "@/lib/supabase/types";
 import { getOrCreateGameState } from "./actions";
 import { OperatorConsole } from "./operator-console";
 import { computeBattingLines } from "@/lib/stats";
@@ -51,17 +51,23 @@ export default async function OperatorPage({
     );
   }
 
-  const [{ data: players }, { data: lineup }, { data: substitutions }, { data: fieldCalibrationRow }] = await Promise.all([
-    supabase.from("players").select("*").eq("team_id", teamId).order("jersey_number"),
-    supabase.from("lineup").select("*").eq("game_id", game.id),
-    supabase.from("substitutions").select("player_out_id, player_in_id").eq("game_id", game.id),
-    // Feature 1 (fielding-play logging batch): the 2D field's calibration,
-    // used to auto-suggest which fielder picked up a batted ball from
-    // where it was tapped -- null (never calibrated yet) is a real,
-    // expected state, not an error; the auto-suggest UI falls back to a
-    // plain fielder picker with no suggestion when this is missing.
-    supabase.from("field_calibration").select("calibration_points").eq("team_id", teamId).eq("field_type", "2d").maybeSingle(),
-  ]);
+  const [{ data: players }, { data: lineup }, { data: substitutions }, { data: fieldCalibrationRow }, { data: positionsCalibrationRow }] =
+    await Promise.all([
+      supabase.from("players").select("*").eq("team_id", teamId).order("jersey_number"),
+      supabase.from("lineup").select("*").eq("game_id", game.id),
+      supabase.from("substitutions").select("player_out_id, player_in_id").eq("game_id", game.id),
+      // Feature 1 (fielding-play logging batch): the 2D field's calibration,
+      // used to auto-suggest which fielder picked up a batted ball from
+      // where it was tapped -- null (never calibrated yet) is a real,
+      // expected state, not an error; the auto-suggest UI falls back to a
+      // plain fielder picker with no suggestion when this is missing.
+      supabase.from("field_calibration").select("calibration_points").eq("team_id", teamId).eq("field_type", "2d").maybeSingle(),
+      // Feature 2 (lineup-status batch): the "positions" calibration row --
+      // same optional-until-calibrated shape, used by the new chain
+      // substitution diagram to place each defensive position's avatar at
+      // its real calibrated spot instead of a generic guess.
+      supabase.from("field_calibration").select("calibration_points").eq("team_id", teamId).eq("field_type", "positions").maybeSingle(),
+    ]);
 
   const gameState = await getOrCreateGameState(game.id);
 
@@ -132,6 +138,7 @@ export default async function OperatorPage({
       opponentPitchCountSeed={opponentPitchCountSeed ?? 0}
       initialSubstitutions={substitutions ?? []}
       fieldCalibration2d={(fieldCalibrationRow?.calibration_points as FieldCalibrationPoints | undefined) ?? null}
+      fieldPositionsCalibration={(positionsCalibrationRow?.calibration_points as PlayerPositionCalibration | undefined) ?? null}
     />
   );
 }

@@ -67,6 +67,40 @@ body {
   animation: grid-line-flash 300ms linear;
 }
 
+/* Feature 2 (lineup-status batch): chain-substitution drag states on the
+   field diagram. Amber = "pending relocation" (this player must be
+   dragged to a new position next); green = "incoming sub waiting" (the
+   bench player who'll land at the chain's entry position once it
+   resolves). Unlike the one-shot flashes above, these repeat for as
+   long as the state holds, so `infinite` is correct here (no
+   fill-mode gap to guard against -- the class is simply removed once
+   the chain moves on). */
+@keyframes chain-glow-amber {
+  0%,
+  100% {
+    box-shadow: 0 0 6px 2px rgba(239, 159, 39, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 14px 6px rgba(239, 159, 39, 0.9);
+  }
+}
+.chain-amber-glow {
+  animation: chain-glow-amber 1.1s ease-in-out infinite;
+}
+
+@keyframes chain-glow-green {
+  0%,
+  100% {
+    box-shadow: 0 0 6px 2px rgba(46, 204, 113, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 14px 6px rgba(46, 204, 113, 0.8);
+  }
+}
+.chain-green-glow {
+  animation: chain-glow-green 1.1s ease-in-out infinite;
+}
+
 /* Left-panel redesign: the selected batter image's gold glow -- pulses
    once (brighter, per spec) then settles to a resting glow. filter:
    drop-shadow(), not box-shadow -- the images are transparent-background

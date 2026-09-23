@@ -517,6 +517,40 @@ export async function logGameEvent(
   }
 }
 
+// Feature 1 (lineup-status batch): "Add to Reserve" flips the player's
+// lineup.status from 'absent' to 'late_arrival' (substitution-eligible,
+// same as a plain 'reserve', but keeps their late-arrival history
+// visible -- see LineupStatus's own comment in supabase/types.ts).
+// "Out of Game" leaves status untouched (still 'absent') -- the request's
+// own "stays absent, just checking in" -- but the check-in is still
+// worth a game_events row either way, hence logging it unconditionally.
+export async function markLateArrival(
+  gameId: string,
+  input: { playerId: string; addToReserve: boolean; inning: number; inningHalf: InningHalf }
+) {
+  const { supabase, game } = await requireOperatorGame(gameId);
+
+  if (input.addToReserve) {
+    const { error } = await supabase
+      .from("lineup")
+      .update({ status: "late_arrival" })
+      .eq("game_id", gameId)
+      .eq("player_id", input.playerId);
+    if (error) throw new Error(error.message);
+  }
+
+  const { error: eventError } = await supabase.from("game_events").insert({
+    game_id: gameId,
+    inning: input.inning,
+    inning_half: input.inningHalf,
+    event_type: "late_arrival",
+    note: `Score at check-in: ${game.our_score}-${game.opponent_score}${input.addToReserve ? "" : " (out of game)"}`,
+    player_id: input.playerId,
+    opponent_player_id: null,
+  });
+  if (eventError) throw new Error(eventError.message);
+}
+
 export async function saveSubstitution(
   gameId: string,
   input: { playerOutId: string; playerInId: string; reason: SubReason; inning: number; inningHalf: InningHalf }
@@ -531,6 +565,104 @@ export async function saveSubstitution(
     inning_half: input.inningHalf,
   });
   if (error) throw new Error(error.message);
+}
+
+// Feature 2 (lineup-status batch): a chain substitution can involve any
+// number of players who simply changed defensive position without ever
+// leaving the game (positionMoves) -- only one player actually enters
+// the game (incomingPlayerId) and, in the common case, one actually
+// leaves it (outgoingPlayerId, the one displaced last in the chain). The
+// batting order slot follows that in/out pair exactly like a real
+// substitution always does (the incoming player takes over the outgoing
+// player's spot in the order) -- everyone else's batting order is
+// untouched, since they're still in the game, just playing somewhere
+// else.
+//
+// outgoingPlayerId is nullable: per the modal's own chain rules, a chain
+// can terminate by the last mover landing on a position that was
+// already *empty* (not "occupied, then vacated") -- an open roster spot
+// simply absorbs them, and nobody goes to the bench at all. That case
+// skips the outgoing lineup update and the `substitutions` row entirely
+// (there's no real out/in pair to record there); the chain's full detail
+// still lands in the game_events note either way.
+export interface ChainSubstitutionInput {
+  incomingPlayerId: string;
+  entryPosition: string;
+  outgoingPlayerId: string | null;
+  positionMoves: { playerId: string; position: string }[];
+  reason: SubReason;
+  inning: number;
+  inningHalf: InningHalf;
+  // Feature 2: one human-readable sentence covering every movement in
+  // the chain, e.g. "New Pitcher -> P position. Former Pitcher -> CF.
+  // Former CF -> bench." -- stored as its own game_events row (note)
+  // since the structured `substitutions` row can only ever represent one
+  // in/out pair, not an arbitrary-length chain.
+  chainNote: string;
+}
+
+export async function confirmChainSubstitution(gameId: string, input: ChainSubstitutionInput) {
+  const { supabase } = await requireOperatorGame(gameId);
+
+  let incomingBattingOrder: number | null = null;
+  if (input.outgoingPlayerId) {
+    const { data: outgoingRow, error: outgoingLookupError } = await supabase
+      .from("lineup")
+      .select("batting_order")
+      .eq("game_id", gameId)
+      .eq("player_id", input.outgoingPlayerId)
+      .maybeSingle();
+    if (outgoingLookupError) throw new Error(outgoingLookupError.message);
+    incomingBattingOrder = outgoingRow?.batting_order ?? null;
+  }
+
+  const { error: incomingError } = await supabase
+    .from("lineup")
+    .update({ position: input.entryPosition, batting_order: incomingBattingOrder, status: "starting" })
+    .eq("game_id", gameId)
+    .eq("player_id", input.incomingPlayerId);
+  if (incomingError) throw new Error(incomingError.message);
+
+  if (input.outgoingPlayerId) {
+    const { error: outgoingError } = await supabase
+      .from("lineup")
+      .update({ position: null, batting_order: null, status: "reserve" })
+      .eq("game_id", gameId)
+      .eq("player_id", input.outgoingPlayerId);
+    if (outgoingError) throw new Error(outgoingError.message);
+  }
+
+  for (const move of input.positionMoves) {
+    const { error: moveError } = await supabase
+      .from("lineup")
+      .update({ position: move.position })
+      .eq("game_id", gameId)
+      .eq("player_id", move.playerId);
+    if (moveError) throw new Error(moveError.message);
+  }
+
+  if (input.outgoingPlayerId) {
+    const { error: subError } = await supabase.from("substitutions").insert({
+      game_id: gameId,
+      player_out_id: input.outgoingPlayerId,
+      player_in_id: input.incomingPlayerId,
+      reason: input.reason,
+      inning: input.inning,
+      inning_half: input.inningHalf,
+    });
+    if (subError) throw new Error(subError.message);
+  }
+
+  const { error: eventError } = await supabase.from("game_events").insert({
+    game_id: gameId,
+    inning: input.inning,
+    inning_half: input.inningHalf,
+    event_type: "substitution",
+    note: input.chainNote,
+    player_id: input.incomingPlayerId,
+    opponent_player_id: null,
+  });
+  if (eventError) throw new Error(eventError.message);
 }
 
 export async function endGame(gameId: string, notes: string) {
