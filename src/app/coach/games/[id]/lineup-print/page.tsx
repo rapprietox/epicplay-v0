@@ -24,12 +24,22 @@ export default async function LineupPrintPage({ params }: { params: { id: string
   const { data: game } = await supabase.from("games").select("*").eq("id", params.id).eq("team_id", profile.team_id).single();
   if (!game) notFound();
 
-  const [{ data: team }, { data: season }, { data: lineup }, { data: players }] = await Promise.all([
+  const [{ data: team }, { data: season }, { data: lineup, error: lineupError }, { data: players }] = await Promise.all([
     supabase.from("teams").select("name").eq("id", profile.team_id).single(),
     game.season_id ? supabase.from("seasons").select("name, year").eq("id", game.season_id).single() : Promise.resolve({ data: null }),
     supabase.from("lineup").select("*").eq("game_id", game.id),
     supabase.from("players").select("id, name, jersey_number").eq("team_id", profile.team_id),
   ]);
+
+  // Bug 2 debugging: a query error (RLS, bad filter, etc.) used to look
+  // identical to "no lineup saved yet" -- both just fell through to an
+  // empty array. Logged server-side (this is a Server Component) so it
+  // shows up in the terminal running `next dev`/the deployment logs, and
+  // surfaced on the page itself instead of silently rendering as if
+  // nothing was wrong.
+  if (lineupError) {
+    console.error(`lineup-print: failed to fetch lineup for game ${game.id}:`, lineupError.message);
+  }
 
   const playerById = new Map((players ?? []).map((p) => [p.id, p]));
   const starting = (lineup ?? [])
@@ -50,6 +60,17 @@ export default async function LineupPrintPage({ params }: { params: { id: string
         </Link>
         <PrintButton />
       </div>
+
+      {lineupError && (
+        <p className="mx-auto mb-4 max-w-[800px] rounded-md border border-accent-red/40 bg-accent-red/10 px-3 py-2 text-sm text-accent-red print:hidden">
+          Couldn&apos;t load the lineup ({lineupError.message}). Try reloading, or check the server logs.
+        </p>
+      )}
+      {!lineupError && (lineup ?? []).length === 0 && (
+        <p className="mx-auto mb-4 max-w-[800px] rounded-md border border-accent-amber/40 bg-accent-amber/10 px-3 py-2 text-sm text-accent-amber print:hidden">
+          No lineup set for this game -- go back to lineup setup, place at least 9 players, and Save before printing.
+        </p>
+      )}
 
       {/* Feature 3: the printable card itself -- deliberately light/
           white-background regardless of the app's own dark theme (see
