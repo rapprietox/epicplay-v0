@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import type { Database, PlayerPositionCalibration } from "@/lib/supabase/types";
 import { nearestSavedPosition } from "@/lib/field-zones";
 import { saveLineupAndUmpire, startGame, type LineupSlot } from "./actions";
@@ -75,9 +76,26 @@ export function LineupBuilder({
   const [umpireName, setUmpireName] = useState(initialUmpireName ?? "");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // Fix 1 (print-lineup batch): "Print Lineup should only be active
+  // after save" -- distinct from `saved` (which flips back to false on
+  // every single edit, per the existing pattern, to force a re-save
+  // before Start Game trusts stale data). hasSavedLineup instead tracks
+  // "has this game ever had a lineup persisted," so Print Lineup stays
+  // enabled across further edits made in the same visit (those edits
+  // just aren't reflected in the printed card until saved again) rather
+  // than flickering disabled on every keystroke. Seeded true when the
+  // page loads with existing starting rows (a previous save from an
+  // earlier visit), so reopening setup doesn't force a redundant re-save
+  // just to unlock printing.
+  const [hasSavedLineup, setHasSavedLineup] = useState(() => initialLineup.some((l) => l.status === "starting"));
   const [isSaving, startSave] = useTransition();
   const [isStarting, startStart] = useTransition();
   const [dragOver, setDragOver] = useState<"field" | "dh" | "eh" | null>(null);
+  // Batting-order-card batch: drag-reorder state for the card's own rows
+  // -- separate from `dragOver` (roster -> field/DH/EH placement), since
+  // this drag never touches the roster or the drop zones at all.
+  const [draggedOrderIndex, setDraggedOrderIndex] = useState<number | null>(null);
+  const [dragOverOrderIndex, setDragOverOrderIndex] = useState<number | null>(null);
   const fieldRef = useRef<HTMLDivElement>(null);
 
   const placedPlayerIds = new Set(placements.map((p) => p.playerId));
@@ -144,6 +162,35 @@ export function LineupBuilder({
     setPlacements((prev) => prev.filter((p) => p.playerId !== playerId));
   }
 
+  // Batting-order-card batch: placements, sorted for the card. Whatever
+  // gaps field-removal left behind (deliberately not renumbered, per the
+  // earlier batch) show up here as-is until the first card reorder --
+  // see reorderBattingOrder below for why a reorder is the one operation
+  // that does renumber everything.
+  const orderedPlacements = [...placements].sort((a, b) => a.battingOrder - b.battingOrder);
+
+  // Batting-order-card batch: dragging a row to a new spot in the card
+  // is a real reorder, not a removal -- unlike field-removal (which
+  // deliberately leaves a gap), every player's number is recomputed as a
+  // clean, contiguous 1..N here, since that's what "drag row up/down"
+  // means for a batting order (there's no such thing as batting 1st,
+  // 2nd, then a gap, then 4th). Only the field/DH/EH *position* is
+  // untouched -- this only ever changes battingOrder. nextBattingOrder
+  // is reset to length+1 so a future field drop continues cleanly after
+  // the now-contiguous numbers instead of picking up a stale, possibly
+  // colliding value from before the renumber.
+  function reorderBattingOrder(fromIndex: number, toIndex: number) {
+    if (fromIndex === toIndex) return;
+    const ids = orderedPlacements.map((p) => p.playerId);
+    const [movedId] = ids.splice(fromIndex, 1);
+    ids.splice(toIndex, 0, movedId);
+    const orderByPlayerId = new Map(ids.map((id, i) => [id, i + 1]));
+    setError(null);
+    setSaved(false);
+    setPlacements((prev) => prev.map((p) => ({ ...p, battingOrder: orderByPlayerId.get(p.playerId) ?? p.battingOrder })));
+    setNextBattingOrder(ids.length + 1);
+  }
+
   function handleDragStart(e: React.DragEvent, playerId: string) {
     e.dataTransfer.setData("text/plain", playerId);
     e.dataTransfer.effectAllowed = "move";
@@ -195,6 +242,7 @@ export function LineupBuilder({
       try {
         await saveLineupAndUmpire(gameId, { lineup: buildLineupPayload(), umpireName });
         setSaved(true);
+        setHasSavedLineup(true);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to save");
       }
@@ -206,8 +254,10 @@ export function LineupBuilder({
     startStart(async () => {
       try {
         // Start reads the lineup/umpire name back from the database, so
-        // the in-progress edits here must be persisted first.
+        // the in-progress edits here must be persisted first -- this is
+        // the "auto-save when Start Game is clicked" half of Fix 1.
         await saveLineupAndUmpire(gameId, { lineup: buildLineupPayload(), umpireName });
+        setHasSavedLineup(true);
         await startGame(gameId);
         window.location.href = `/operator?game=${gameId}`;
       } catch (err) {
@@ -242,7 +292,7 @@ export function LineupBuilder({
         you drag players on.
       </p>
 
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[220px_1fr]">
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[220px_1fr_240px]">
         {/* Roster */}
         <div>
           <p className="text-xs uppercase tracking-wide text-foreground/40">Roster</p>
@@ -391,6 +441,64 @@ export function LineupBuilder({
             </DropZone>
           </div>
         </div>
+
+        {/* Batting-order-card batch: a live, reorderable view of the same
+            placements array the field/DH/EH already render from -- one
+            source of truth, two views. Dragging a row here only ever
+            touches battingOrder (see reorderBattingOrder); it never
+            changes anyone's position or removes anyone from the field. */}
+        <div className="glossy rounded-lg border-l-4 border-l-accent-green bg-surface p-3">
+          <p className="font-heading text-sm font-semibold uppercase tracking-wide text-white">Batting Order</p>
+          <div className="mt-2 border-b border-border" />
+          <ul className="mt-2 flex flex-col gap-1">
+            {orderedPlacements.map((p, i) => (
+              <li
+                key={p.playerId}
+                draggable
+                onDragStart={(e) => {
+                  setDraggedOrderIndex(i);
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", p.playerId);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOverOrderIndex(i);
+                }}
+                onDragLeave={() => setDragOverOrderIndex((d) => (d === i ? null : d))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (draggedOrderIndex !== null) reorderBattingOrder(draggedOrderIndex, i);
+                  setDraggedOrderIndex(null);
+                  setDragOverOrderIndex(null);
+                }}
+                onDragEnd={() => {
+                  setDraggedOrderIndex(null);
+                  setDragOverOrderIndex(null);
+                }}
+                className={`flex cursor-grab items-center gap-2 rounded-md border px-2 py-1.5 text-sm transition active:cursor-grabbing ${
+                  dragOverOrderIndex === i ? "border-accent-gold bg-accent-gold/10" : "border-transparent hover:border-border"
+                }`}
+              >
+                <span className="font-heading w-5 shrink-0 text-right font-bold text-accent-gold">{p.battingOrder}</span>
+                <span className="min-w-0 flex-1 truncate font-sans text-white">
+                  {players.find((pl) => pl.id === p.playerId)?.name ?? "Player"}
+                </span>
+                <span className="shrink-0 text-xs font-medium text-accent-green/70">{p.position}</span>
+                <button
+                  type="button"
+                  onClick={() => removePlayer(p.playerId)}
+                  title="Remove from lineup"
+                  className="shrink-0 text-xs text-foreground/30 hover:text-accent-red"
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+            {orderedPlacements.length === 0 && (
+              <li className="px-2 py-3 text-center text-xs text-foreground/30">Drag players onto the field to build the order.</li>
+            )}
+          </ul>
+        </div>
       </div>
 
       <div className="mt-6">
@@ -416,7 +524,7 @@ export function LineupBuilder({
           disabled={isSaving}
           className="flex-1 rounded-md border border-border px-4 py-2 text-sm font-medium text-white transition hover:border-accent-primary disabled:opacity-50"
         >
-          {isSaving ? "Saving…" : saved ? "Saved" : "Save lineup"}
+          {isSaving ? "Saving…" : "Save Lineup"}
         </button>
         <button
           type="button"
@@ -427,12 +535,41 @@ export function LineupBuilder({
           {isStarting ? "Starting…" : "Start Game"}
         </button>
       </div>
+      {/* Fix 1 (print-lineup batch): a distinct success message, separate
+          from the button's own idle/loading label -- `saved` resets to
+          false on the very next edit (existing behavior, so Start Game
+          never trusts stale data), so this message is likewise transient
+          and disappears the moment anything changes. */}
+      {saved && <p className="mt-2 text-sm text-accent-green">Lineup saved ✓</p>}
       {!canStart && (
         <p className="mt-1 text-xs text-foreground/40">
           {filledCount}/9 players placed{umpireName.trim() ? "" : ", and an umpire name is needed"}.
         </p>
       )}
       {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
+
+      {/* Fix 1: Print Lineup only activates once this game has a
+          persisted lineup -- either from an earlier visit (hasSavedLineup
+          seeded true on load) or a save/Start Game click just now. Before
+          that there is nothing for the print route to show, so it stayed
+          silently empty; this makes the dependency visible instead. */}
+      <div className="mt-3 max-w-sm">
+        {hasSavedLineup ? (
+          <Link
+            href={`/coach/games/${gameId}/lineup-print`}
+            className="inline-block rounded-md border border-accent-gold/50 px-4 py-2 text-sm font-semibold text-accent-gold hover:bg-accent-gold/10"
+          >
+            Print Lineup
+          </Link>
+        ) : (
+          <span
+            title="Save the lineup first"
+            className="inline-block cursor-not-allowed rounded-md border border-border px-4 py-2 text-sm font-semibold text-foreground/30"
+          >
+            Print Lineup
+          </span>
+        )}
+      </div>
     </div>
   );
 }

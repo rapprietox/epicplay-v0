@@ -65,22 +65,14 @@ export default async function GameSetupPage({ params }: { params: { id: string }
 
       <div className="mx-auto mt-6 flex max-w-4xl flex-col gap-6">
         <section className="glossy rounded-lg border border-border bg-surface p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
-              Lineup
-            </h2>
-            {/* Feature 3 (lineup-status batch): the print route reads its
-                own fresh data server-side, so this is a plain link, not a
-                submit that needs the in-progress builder state below --
-                the coach should Save first if they want unsaved edits to
-                show up on the printed card. */}
-            <Link
-              href={`/coach/games/${game.id}/lineup-print`}
-              className="rounded-md border border-accent-gold/50 px-3 py-1.5 text-xs font-semibold text-accent-gold hover:bg-accent-gold/10"
-            >
-              Print Lineup
-            </Link>
-          </div>
+          <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
+            Lineup
+          </h2>
+          {/* Fix 1 (print-lineup batch): the Print Lineup control moved
+              into LineupBuilder itself -- it now needs to react to
+              client-side save state (gated inactive until this game's
+              lineup has actually been persisted), which a plain link
+              rendered here, in the server component, can't do. */}
           <div className="mt-4">
             <LineupBuilder
               gameId={game.id}
