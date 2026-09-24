@@ -94,6 +94,14 @@ export type FieldType = "2d" | "3d" | "positions";
 // image's pixel space (as a 0-100 percentage of the image's own width/
 // height) onto the same 0-100 scale at_bats.field_x/field_y already
 // uses. Key names match the calibration tool's own point order exactly.
+//
+// 4-more-anchor-points batch: lf_foul_infield/rf_foul_infield/lc_wall/
+// rc_wall are optional and, for now, Tab 1 (field-2d.png) only -- Tab 2
+// (field-3d.png) still only ever writes the original 7. Optional here
+// (not added to zoneForPoint or any other consumer of the required 7)
+// since nothing in this codebase reads them yet; they exist purely to
+// be captured and stored, ready for a future zone-validation feature
+// the request describes but doesn't ask to build.
 export interface FieldCalibrationPoints {
   home_plate: { x: number; y: number };
   first_base: { x: number; y: number };
@@ -102,6 +110,10 @@ export interface FieldCalibrationPoints {
   lf_wall: { x: number; y: number };
   cf_wall: { x: number; y: number };
   rf_wall: { x: number; y: number };
+  lf_foul_infield?: { x: number; y: number };
+  rf_foul_infield?: { x: number; y: number };
+  lc_wall?: { x: number; y: number };
+  rc_wall?: { x: number; y: number };
 }
 
 // Field calibration tool, tab 3 ("Player Positions"): where each

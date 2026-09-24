@@ -37,6 +37,21 @@ const FIELD_POINT_ORDER: PointDef[] = [
   { key: "rf_wall", label: "Right Field Wall", hint: "end of right foul line", color: "#EF9F27" },
 ];
 
+// 4-more-anchor-points batch: Tab 1 (field-2d.png) only -- appended
+// after the same 7 above, in the same click sequence, all optional (per
+// spec, Save still only needs the original 7). Tab 2 (field-3d.png)
+// keeps using FIELD_POINT_ORDER unchanged; nothing asked for these on
+// the elevated shot, and the two tabs' images/points have always been
+// independent rows (field_type '2d' vs '3d') that happen to share a
+// point set today, not a shared point set that must always match.
+const FIELD_POINT_ORDER_2D: PointDef[] = [
+  ...FIELD_POINT_ORDER,
+  { key: "lf_foul_infield", label: "Left Foul Line (infield)", hint: "where it passes near 3rd base", color: "#4AA8E2", optional: true },
+  { key: "rf_foul_infield", label: "Right Foul Line (infield)", hint: "where it passes near 1st base", color: "#E24BAF", optional: true },
+  { key: "lc_wall", label: "Left-Center Wall", hint: "between LF and CF", color: "#7ED957", optional: true },
+  { key: "rc_wall", label: "Right-Center Wall", hint: "between CF and RF", color: "#FF8C42", optional: true },
+];
+
 // Change 1: tab 3's 10 points, in the exact order given -- 9 required
 // (real defensive positions, replacing lib/field-zones.ts's
 // formula-based guesses with hand-placed truth) plus one optional DH/EH
@@ -282,7 +297,7 @@ export function CalibrationTool({
   initialPositions: PlayerPositionCalibration | null;
 }) {
   const [tab, setTab] = useState<FieldType>("2d");
-  const [points2d, setPoints2d] = useState<PointsState>(() => ({ ...emptyPoints(FIELD_POINT_ORDER), ...(initial2d ?? {}) }));
+  const [points2d, setPoints2d] = useState<PointsState>(() => ({ ...emptyPoints(FIELD_POINT_ORDER_2D), ...(initial2d ?? {}) }));
   const [points3d, setPoints3d] = useState<PointsState>(() => ({ ...emptyPoints(FIELD_POINT_ORDER), ...(initial3d ?? {}) }));
   const [pointsPositions, setPointsPositions] = useState<PointsState>(() => ({
     ...emptyPoints(POSITION_POINT_ORDER),
@@ -328,7 +343,7 @@ export function CalibrationTool({
           key="2d"
           fieldType="2d"
           imageSrc="/field-2d.png"
-          pointOrder={FIELD_POINT_ORDER}
+          pointOrder={FIELD_POINT_ORDER_2D}
           requiredCount={FIELD_POINT_ORDER.length}
           points={points2d}
           setPoints={setPoints2d}
