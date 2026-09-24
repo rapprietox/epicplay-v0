@@ -5,6 +5,7 @@ import { formatGameDate } from "@/lib/dates";
 import type { PlayerPositionCalibration } from "@/lib/supabase/types";
 import { LineupBuilder } from "./lineup-builder";
 import { OpponentPhotoImport } from "./opponent-photo-import";
+import { GameRulesOverride } from "./game-rules-override";
 
 export default async function GameSetupPage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -43,6 +44,13 @@ export default async function GameSetupPage({ params }: { params: { id: string }
   const { data: opponentPlayers } = game.opponent_id
     ? await supabase.from("opponent_players").select("*").eq("opponent_id", game.opponent_id)
     : { data: [] };
+
+  // Feature 2 (game-rules batch): only fetched when there's a season to
+  // name/inherit from -- a manual/friendly game with no season_id has
+  // no season rules to override, so the toggle doesn't render at all.
+  const { data: season } = game.season_id
+    ? await supabase.from("seasons").select("name").eq("id", game.season_id).maybeSingle()
+    : { data: null };
 
   return (
     <main className="min-h-screen bg-background px-6 py-8">
@@ -90,6 +98,17 @@ export default async function GameSetupPage({ params }: { params: { id: string }
           hasOpponent={!!game.opponent_id}
           existingPlayers={opponentPlayers ?? []}
         />
+
+        {season && (
+          <GameRulesOverride
+            gameId={game.id}
+            seasonName={season.name}
+            initialOverride={game.override_season_rules}
+            initialMaxInnings={game.max_innings}
+            initialTimeLimitMinutes={game.time_limit_minutes}
+            initialNewInningThreshold={game.new_inning_threshold_minutes}
+          />
+        )}
       </div>
     </main>
   );

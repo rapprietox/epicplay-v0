@@ -49,6 +49,7 @@ import {
   type ScoreMethod,
 } from "@/lib/operator/types";
 import { atBatAccuracyRatio, runningAccuracy } from "@/lib/pitch-accuracy";
+import { resolveGameRules, formatElapsed, checkInningEndBanner, type InningEndBanner } from "@/lib/game-rules";
 import { formatAvg, type BattingLine } from "@/lib/stats";
 import { loadOperatorStateLocal, saveOperatorStateLocal } from "@/lib/operator/local-storage";
 import { withOfflineRetry, onQueueChange, pendingCount } from "@/lib/operator/sync-queue";
@@ -79,6 +80,7 @@ import { PostGameSummary } from "./post-game-summary";
 import { StadiumBackground } from "@/components/stadium-background";
 
 type Game = Database["public"]["Tables"]["games"]["Row"];
+type Season = Database["public"]["Tables"]["seasons"]["Row"];
 type Player = Database["public"]["Tables"]["players"]["Row"];
 type Lineup = Database["public"]["Tables"]["lineup"]["Row"];
 type GameState = Database["public"]["Tables"]["game_state"]["Row"];
@@ -152,6 +154,7 @@ export function OperatorConsole({
   initialSubstitutions,
   fieldCalibration2d,
   fieldPositionsCalibration,
+  season,
 }: {
   game: Game;
   players: Player[];
@@ -188,6 +191,10 @@ export function OperatorConsole({
   // same nullable-until-calibrated shape, used to place each defensive
   // position's avatar on the chain substitution diagram.
   fieldPositionsCalibration: PlayerPositionCalibration | null;
+  // Feature 2 (game-rules batch): null whenever this game has no
+  // season_id (a manual/friendly game) -- resolveGameRules treats that
+  // the same as "season has no rules set," i.e. no limits at all.
+  season: Season | null;
 }) {
   const router = useRouter();
   // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
@@ -234,6 +241,11 @@ export function OperatorConsole({
     return () => clearInterval(t);
   }, []);
 
+  // Feature 2 (game-rules batch): shown right after End Inning, never
+  // auto-clears (the operator dismisses it) -- a fresh End Inning tap
+  // just replaces whatever was showing, matching autoScoreBanners'
+  // "latest wins" spirit without needing a stacked list here.
+  const [inningEndBanner, setInningEndBanner] = useState<InningEndBanner | null>(null);
   const [pendingSync, setPendingSync] = useState(0);
   useEffect(() => onQueueChange(setPendingSync), []);
   useEffect(() => setPendingSync(pendingCount()), []);
@@ -528,6 +540,18 @@ export function OperatorConsole({
     () => players.filter((p) => absentPlayerIds.has(p.id)),
     [players, absentPlayerIds]
   );
+
+  // Feature 2 (game-rules batch): resolved once per game/season pair --
+  // neither changes mid-game, so this doesn't need to be in the reducer.
+  const gameRules = useMemo(() => resolveGameRules(game, season), [game, season]);
+  // Elapsed/remaining time reuses the existing 250ms `now` ticker (the
+  // same one driving the 30s Undo countdown) rather than a second
+  // interval. game_started_at is null only in the split-second before
+  // getOrCreateGameState's insert lands -- initialGameState is always
+  // already-created by the time this component renders, so this is
+  // effectively never null in practice, but the type is honest about it.
+  const elapsedMs = initialGameState.game_started_at ? now - new Date(initialGameState.game_started_at).getTime() : 0;
+  const remainingMs = gameRules.timeLimitMinutes !== null ? gameRules.timeLimitMinutes * 60_000 - elapsedMs : null;
 
   // Feature 2 (lineup-status batch): "who's at each defensive position
   // right now" for the chain substitution diagram, and "who's available
@@ -1816,6 +1840,14 @@ export function OperatorConsole({
   }
 
   function confirmEndInning() {
+    // Feature 2 (game-rules batch): computed from the PRE-dispatch
+    // inning/half (an inning is "completed" once its bottom half ends --
+    // ending a top half means the previous inning, not this one, was the
+    // last one fully finished). Never blocks the dispatch below; this is
+    // purely informational, per spec ("the operator always decides").
+    const completedInnings = state.inningHalf === "bottom" ? state.inning : state.inning - 1;
+    setInningEndBanner(checkInningEndBanner(gameRules, completedInnings, elapsedMs));
+
     dispatch({ type: "END_INNING_LOCAL" });
     const nextHalf = state.inningHalf === "top" ? "bottom" : "top";
     const nextInning = state.inningHalf === "bottom" ? state.inning + 1 : state.inning;
@@ -2057,14 +2089,32 @@ export function OperatorConsole({
             : `${currentPitcher?.name ?? "—"} · ${state.pitchCountForCurrentPitcher} pitches`}
         </p>
 
-        {/* Right-panel redesign: the floating B/S/O readout that used to
-            live here is gone -- the scoreboard's own B/S/O line (right
-            panel, Section 2) is now the only place those counts are
-            shown, so this bar is just mode toggle + batter/pitcher info +
-            the dashboard exit. */}
-        <button onClick={() => setLeaveConfirmOpen(true)} className="min-h-[36px] px-1 text-[10px] text-foreground/40 hover:text-white">
-          ← Dashboard
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Feature 2 (game-rules batch): elapsed time, always shown once
+              the game has started (which is always, by the time this
+              screen renders); remaining time only when a limit is set,
+              turning red inside the new-inning threshold as an ambient
+              hint mirroring the End Inning banner below -- still never
+              blocks anything. */}
+          <span
+            className={`font-mono text-[11px] ${
+              remainingMs !== null && remainingMs / 60_000 <= gameRules.newInningThresholdMinutes ? "text-accent-red" : "text-foreground/50"
+            }`}
+            title="Game timer"
+          >
+            {formatElapsed(elapsedMs)}
+            {remainingMs !== null && ` · ${formatElapsed(remainingMs)} left`}
+          </span>
+
+          {/* Right-panel redesign: the floating B/S/O readout that used to
+              live here is gone -- the scoreboard's own B/S/O line (right
+              panel, Section 2) is now the only place those counts are
+              shown, so this bar is just mode toggle + batter/pitcher info +
+              the timer + the dashboard exit. */}
+          <button onClick={() => setLeaveConfirmOpen(true)} className="min-h-[36px] px-1 text-[10px] text-foreground/40 hover:text-white">
+            ← Dashboard
+          </button>
+        </div>
       </header>
 
       {/* Transient/occasional banners float over the top of the panels
@@ -2101,6 +2151,20 @@ export function OperatorConsole({
           <div className="pointer-events-auto rounded-md bg-accent-amber/15 px-3 py-1 text-[10px] font-semibold text-accent-amber">Approaching pitch limit</div>
         )}
         {banner && <div className="pointer-events-auto rounded-md bg-accent-red/15 px-3 py-1 text-[10px] text-accent-red">{banner}</div>}
+        {/* Feature 2 (game-rules batch): shown after End Inning, per the
+            three-way check in checkInningEndBanner -- purely
+            informational (the spec is explicit the operator is never
+            blocked), so it's just a dismissible strip, not a modal. */}
+        {inningEndBanner && (
+          <button
+            onClick={() => setInningEndBanner(null)}
+            className={`pointer-events-auto min-h-[36px] max-w-[380px] rounded-md px-3 py-1.5 text-left text-xs font-semibold shadow-lg ${
+              inningEndBanner.kind === "next_inning_ok" ? "bg-accent-green text-background" : "bg-accent-red text-white"
+            }`}
+          >
+            {inningEndBanner.message}
+          </button>
+        )}
       </div>
 
       {/* TWO EQUAL HALVES is the tablet layout (>=768px, grid-cols-2, per

@@ -71,6 +71,14 @@ export default async function OperatorPage({
 
   const gameState = await getOrCreateGameState(game.id);
 
+  // Feature 2 (game-rules batch): resolveGameRules needs the season's
+  // own rule columns whenever this game doesn't override them --
+  // null when the game has no season_id at all (a manual/friendly
+  // game), which resolveGameRules already treats as "no limits."
+  const { data: season } = game.season_id
+    ? await supabase.from("seasons").select("*").eq("id", game.season_id).maybeSingle()
+    : { data: null };
+
   let draftAtBat = null;
   if (gameState.current_at_bat_id) {
     const { data: atBat } = await supabase.from("at_bats").select("*").eq("id", gameState.current_at_bat_id).single();
@@ -139,6 +147,7 @@ export default async function OperatorPage({
       initialSubstitutions={substitutions ?? []}
       fieldCalibration2d={(fieldCalibrationRow?.calibration_points as FieldCalibrationPoints | undefined) ?? null}
       fieldPositionsCalibration={(positionsCalibrationRow?.calibration_points as PlayerPositionCalibration | undefined) ?? null}
+      season={season ?? null}
     />
   );
 }

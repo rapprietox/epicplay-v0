@@ -82,6 +82,14 @@ export async function confirmSeasonImport(input: {
   seasonName: string;
   seasonYear: number;
   games: ConfirmScheduleGame[];
+  // Feature 2 (game-rules batch): all three optional, per spec ("leave
+  // blank for no limit" / "default: 10 minutes") -- newInningThresholdMinutes
+  // is the one exception with a real default, applied here rather than
+  // left to the DB column default so a coach who clears the field back
+  // to blank still gets 10, not null-meaning-unset.
+  maxInnings: number | null;
+  timeLimitMinutes: number | null;
+  newInningThresholdMinutes: number | null;
 }) {
   const { supabase, teamId } = await requireCoachTeam();
   if (input.games.length === 0) throw new Error("No games to import");
@@ -96,6 +104,9 @@ export async function confirmSeasonImport(input: {
       year: input.seasonYear,
       start_date: dates[0],
       end_date: dates[dates.length - 1],
+      max_innings: input.maxInnings,
+      time_limit_minutes: input.timeLimitMinutes,
+      new_inning_threshold_minutes: input.newInningThresholdMinutes ?? 10,
     })
     .select("id")
     .single();

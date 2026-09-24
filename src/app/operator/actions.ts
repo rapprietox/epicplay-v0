@@ -54,9 +54,15 @@ export async function getOrCreateGameState(gameId: string) {
   // the field (pitching); if we're away, we start at bat (hitting).
   const initialMode: AtBatMode = game.home_away === "home" ? "pitching" : "hitting";
 
+  // Feature 2 (game-rules batch): "starts automatically when the
+  // operator taps Start Game" -- in practice, that's the moment this row
+  // is first created, since Start Game (setup/actions.ts) immediately
+  // navigates to the operator screen, whose first load is what calls
+  // getOrCreateGameState. Set once, never updated again -- the timer is
+  // computed client-side from this single timestamp.
   const { data: created, error } = await supabase
     .from("game_state")
-    .insert({ game_id: gameId, mode: initialMode, batting_order_position: 1 })
+    .insert({ game_id: gameId, mode: initialMode, batting_order_position: 1, game_started_at: new Date().toISOString() })
     .select("*")
     .single();
   if (error || !created) throw new Error(error?.message ?? "Failed to create game state");

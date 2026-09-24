@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { computeBattingLines, computePitchingLines, formatAvg } from "@/lib/stats";
 import { zoneIndexFromCoords, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
+import type { FieldCalibrationPoints } from "@/lib/supabase/types";
 import { resultCategory } from "@/lib/heat-map";
 import { finalCountForAtBat, type CountState } from "@/lib/count-stats";
 import { StrikeZoneHeatmap } from "./strike-zone-heatmap";
@@ -33,6 +34,19 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
     .eq("team_id", profile.team_id)
     .single();
   if (!player) notFound();
+
+  // field-2d.png spray chart batch: same 2d field_calibration row the
+  // operator's field diagram and fielder auto-suggest already read --
+  // null (never calibrated) is a real, expected state the spray chart
+  // gates on with its own banner rather than guessing a home-plate
+  // position.
+  const { data: fieldCalibrationRow } = await supabase
+    .from("field_calibration")
+    .select("calibration_points")
+    .eq("team_id", profile.team_id)
+    .eq("field_type", "2d")
+    .maybeSingle();
+  const fieldCalibration = (fieldCalibrationRow?.calibration_points as FieldCalibrationPoints | undefined) ?? null;
 
   const { data: games } = await supabase.from("games").select("*").eq("team_id", profile.team_id);
   const gameIds = (games ?? []).map((g) => g.id);
@@ -205,7 +219,7 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
           hasPitchingData={pitchingZoneAtBats.length > 0}
         />
 
-        <SprayChart dots={sprayDots} />
+        <SprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
 
         {pitchingZoneAtBats.length > 0 && <PitcherHeatmap atBats={pitcherAtBatsByType} pitches={pitcherPitches} />}
 

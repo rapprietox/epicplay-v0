@@ -87,6 +87,31 @@ export const SPRAY_CATEGORY_COLOR: Record<SprayDot["category"], string> = {
   hr: "#FFFFFF",
 };
 
+// field-2d.png spray chart batch: a second, deliberately separate
+// category/color scheme for the player page's "Dots" view specifically
+// -- collapses hit/xbh into one "Hit" bucket, recolors HR gold instead
+// of white, and adds a distinct "error" bucket the older scheme folded
+// into "out". Kept apart from resultCategory/SPRAY_CATEGORY_COLOR rather
+// than changing those in place, since that pair is also used by the
+// coach dashboard's team-wide spray chart (team-analytics.tsx), which
+// this request never asked to restyle -- changing the shared one would
+// have silently changed that chart's appearance too.
+export type DotResultCategory = "hit" | "hr" | "out" | "error";
+
+export function dotResultCategory(result: AtBatResult): DotResultCategory {
+  if (result === "hr") return "hr";
+  if (result === "error") return "error";
+  if (HIT_RESULTS.has(result)) return "hit"; // hr already handled above -- this only reaches single/double/triple/ground_rule_double
+  return "out";
+}
+
+export const DOT_RESULT_COLOR: Record<DotResultCategory, string> = {
+  hit: "#2ECC71",
+  hr: "#F0C060",
+  out: "#E24B4A",
+  error: "#EF9F27",
+};
+
 // Spray-chart "Lines" view: color radiating from home plate by how the ball
 // was hit, not by outcome. A home run always reads as the result (white +
 // glow), regardless of what hit_type got logged for it; hit_type values

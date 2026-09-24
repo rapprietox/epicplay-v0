@@ -32,6 +32,13 @@ function detectStaleYear(games: ConfirmScheduleGame[]): number | null {
 export function SeasonImportSection() {
   const [seasonName, setSeasonName] = useState(`${CURRENT_YEAR} Season`);
   const [seasonYear, setSeasonYear] = useState(CURRENT_YEAR);
+  // Feature 2 (game-rules batch): all three optional, kept as raw string
+  // input state (not number) so an empty field reads unambiguously as
+  // "blank" rather than coercing to 0 -- parsed to number|null only when
+  // building the confirmSeasonImport payload.
+  const [maxInnings, setMaxInnings] = useState("");
+  const [timeLimitMinutes, setTimeLimitMinutes] = useState("");
+  const [newInningThreshold, setNewInningThreshold] = useState("");
   const [games, setGames] = useState<ConfirmScheduleGame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -82,7 +89,14 @@ export function SeasonImportSection() {
     setError(null);
     startConfirm(async () => {
       try {
-        await confirmSeasonImport({ seasonName, seasonYear, games });
+        await confirmSeasonImport({
+          seasonName,
+          seasonYear,
+          games,
+          maxInnings: maxInnings.trim() ? Number(maxInnings) : null,
+          timeLimitMinutes: timeLimitMinutes.trim() ? Number(timeLimitMinutes) : null,
+          newInningThresholdMinutes: newInningThreshold.trim() ? Number(newInningThreshold) : null,
+        });
         setGames(null);
         setDone(true);
       } catch (err) {
@@ -136,6 +150,73 @@ export function SeasonImportSection() {
               onChange={(e) => handleFile(e.target.files?.[0])}
             />
           </label>
+        </div>
+      )}
+
+      {/* Feature 2 (game-rules batch): "Create/Edit Season form" -- this
+          app doesn't actually have a separate season CRUD screen (seasons
+          are only ever created here, through the PDF import flow; there's
+          no standalone edit UI for an existing season at all), so these
+          fields live in the one place a season actually gets created.
+          Set once at creation and applied to every game in the season
+          unless that game's own override is used. */}
+      {!games && (
+        <div className="mt-4 grid grid-cols-1 gap-4 border-t border-border pt-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-white">Game Rules</p>
+            <p className="mt-1 text-[11px] text-foreground/40">Applied to every game in this season, unless a game overrides them.</p>
+          </div>
+          <div className="flex flex-col gap-1 sm:col-start-1">
+            <label className="text-xs text-foreground/50" htmlFor="max-innings">
+              Maximum innings
+            </label>
+            <input
+              id="max-innings"
+              type="number"
+              min={1}
+              value={maxInnings}
+              onChange={(e) => setMaxInnings(e.target.value)}
+              placeholder="e.g. 7 (leave blank for no limit)"
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
+            />
+            <p className="text-[10px] text-foreground/40">
+              The End Inning banner flags the final inning once this many are completed. Never blocks the operator.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-foreground/50" htmlFor="time-limit">
+              Time limit
+            </label>
+            <input
+              id="time-limit"
+              type="number"
+              min={1}
+              value={timeLimitMinutes}
+              onChange={(e) => setTimeLimitMinutes(e.target.value)}
+              placeholder="e.g. 150 for 2h30m (leave blank for no limit)"
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
+            />
+            <p className="text-[10px] text-foreground/40">
+              Minutes from Start Game. The operator screen shows a running countdown once this is set.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-foreground/50" htmlFor="new-inning-threshold">
+              New inning threshold
+            </label>
+            <input
+              id="new-inning-threshold"
+              type="number"
+              min={0}
+              value={newInningThreshold}
+              onChange={(e) => setNewInningThreshold(e.target.value)}
+              placeholder="e.g. 10 (default: 10 minutes)"
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white outline-none focus:border-accent-primary"
+            />
+            <p className="text-[10px] text-foreground/40">
+              If time remaining drops to this many minutes or fewer at End Inning, the banner warns against starting another.
+            </p>
+          </div>
         </div>
       )}
 

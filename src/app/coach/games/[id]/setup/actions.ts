@@ -134,3 +134,30 @@ export async function confirmOpponentRoster(
 
   revalidatePath(`/coach/games/${gameId}/setup`);
 }
+
+// Feature 2 (game-rules batch): "on the game creation form add a toggle"
+// -- this app has no single unified game-creation form (a scheduled game
+// comes from the PDF import table, a manual one from a small inline form
+// in schedule-table.tsx, neither of which has room for a three-field
+// sub-form), so this lives on the game setup page instead: the one
+// screen every game -- however it was created -- passes through before
+// Start Game. Toggling off clears the game's own values back to null so
+// it cleanly falls back to inheriting the season's rules again.
+export async function saveGameRulesOverride(
+  gameId: string,
+  input: { override: boolean; maxInnings: number | null; timeLimitMinutes: number | null; newInningThresholdMinutes: number | null }
+) {
+  const { supabase } = await requireCoachGame(gameId);
+  const { error } = await supabase
+    .from("games")
+    .update({
+      override_season_rules: input.override,
+      max_innings: input.override ? input.maxInnings : null,
+      time_limit_minutes: input.override ? input.timeLimitMinutes : null,
+      new_inning_threshold_minutes: input.override ? input.newInningThresholdMinutes : null,
+    })
+    .eq("id", gameId);
+  if (error) throw new Error(error.message);
+
+  revalidatePath(`/coach/games/${gameId}/setup`);
+}

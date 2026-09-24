@@ -220,6 +220,15 @@ export interface Database {
           winning_pitcher_id: string | null;
           logging_accuracy_score: number | null;
           notes: string | null;
+          // Feature 2 (game-rules batch): per-game override of the
+          // season's own rules -- see the migration's comment for why
+          // override_season_rules exists (distinguishing "inherit from
+          // season" from "overridden, and this field is intentionally
+          // blank"). Resolution lives in src/lib/game-rules.ts.
+          override_season_rules: boolean;
+          max_innings: number | null;
+          time_limit_minutes: number | null;
+          new_inning_threshold_minutes: number | null;
           created_at: string;
         };
         Insert: {
@@ -239,6 +248,10 @@ export interface Database {
           winning_pitcher_id?: string | null;
           logging_accuracy_score?: number | null;
           notes?: string | null;
+          override_season_rules?: boolean;
+          max_innings?: number | null;
+          time_limit_minutes?: number | null;
+          new_inning_threshold_minutes?: number | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["games"]["Insert"]>;
@@ -358,6 +371,12 @@ export interface Database {
           year: number;
           start_date: string;
           end_date: string;
+          // Feature 2 (game-rules batch): applies to every game in this
+          // season unless that game's own override_season_rules is set.
+          // See src/lib/game-rules.ts.
+          max_innings: number | null;
+          time_limit_minutes: number | null;
+          new_inning_threshold_minutes: number | null;
           created_at: string;
         };
         Insert: {
@@ -367,6 +386,9 @@ export interface Database {
           year: number;
           start_date: string;
           end_date: string;
+          max_innings?: number | null;
+          time_limit_minutes?: number | null;
+          new_inning_threshold_minutes?: number | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["seasons"]["Insert"]>;
@@ -445,6 +467,10 @@ export interface Database {
           pitch_count_ack_100: boolean;
           consecutive_low_accuracy_at_bats: number;
           logging_accuracy_score: number | null;
+          // Feature 2 (game-rules batch): set once, when this row is
+          // first created (getOrCreateGameState) -- anchors the
+          // operator's game timer. See the migration's comment.
+          game_started_at: string | null;
           updated_at: string;
         };
         Insert: {
@@ -465,6 +491,7 @@ export interface Database {
           pitch_count_ack_100?: boolean;
           consecutive_low_accuracy_at_bats?: number;
           logging_accuracy_score?: number | null;
+          game_started_at?: string | null;
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["game_state"]["Insert"]>;
