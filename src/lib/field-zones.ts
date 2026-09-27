@@ -118,6 +118,102 @@ export function zoneForPoint(x: number, y: number, cal: FieldCalibrationPoints):
   return 3; // 1B
 }
 
+// Field-zone-validation batch: which of the four real zones a tap falls
+// in, using all 11 calibration points from Tab 1 (field-2d.png) --
+// 'unknown' whenever any of the 4 newer, optional points
+// (lf_foul_infield/rf_foul_infield/lc_wall/rc_wall) hasn't been saved
+// yet, since none of the geometry below is meaningful without them. This
+// is a separate concept from zoneForPoint above (which only ever needed
+// the original 7 to bucket a fielded ball into one of 9 scorebook
+// positions) -- that function is unaffected by any of this.
+export type FieldZone = "foul" | "infield" | "outfield" | "homerun" | "unknown";
+
+// Signed cross product of (b-a) x (p-a) -- standard point-side-of-a-line
+// test. Positive/negative meaning depends on which two points define the
+// segment and which way "outside" is for that segment; documented at
+// each call site rather than here.
+function cross(a: Vec, b: Vec, p: Vec): number {
+  return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+}
+
+function isBetween(v: number, a: number, b: number): boolean {
+  return v >= Math.min(a, b) && v <= Math.max(a, b);
+}
+
+// A foul line is a 2-segment polyline (home -> the infield bend point ->
+// the wall), not a single straight line -- picks whichever segment's
+// y-range brackets the tap (foul lines run from home, near the bottom of
+// the image, out to the wall near the top, so y is a reasonable proxy
+// for "how far out along the line" a tap corresponds to); a tap beyond
+// either end uses that end's segment extended as an infinite line, which
+// cross() already does implicitly.
+function sideOfFoulLine(home: Vec, bend: Vec, wall: Vec, tap: Vec): number {
+  if (isBetween(tap.y, home.y, bend.y)) return cross(home, bend, tap);
+  return cross(bend, wall, tap);
+}
+
+// Standard even-odd ray-casting point-in-polygon test.
+function pointInPolygon(point: Vec, polygon: Vec[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const pi = polygon[i];
+    const pj = polygon[j];
+    const crosses = pi.y > point.y !== pj.y > point.y && point.x < ((pj.x - pi.x) * (point.y - pi.y)) / (pj.y - pi.y) + pi.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+// Piecewise-linear interpolation of the wall's depth (y) at a given x,
+// through the 5 wall points -- sorted by x defensively (they're hand-
+// placed by a coach clicking left-to-right per the tool's own prompts,
+// but sorting costs nothing and makes this robust to a slightly
+// out-of-order click without mislabeling which point is which). A tapX
+// beyond either end clamps to that end point's y, rather than
+// extrapolating past the last measured segment.
+function wallDepthAtX(wallPoints: Vec[], tapX: number): number {
+  const sorted = [...wallPoints].sort((a, b) => a.x - b.x);
+  if (tapX <= sorted[0].x) return sorted[0].y;
+  if (tapX >= sorted[sorted.length - 1].x) return sorted[sorted.length - 1].y;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (tapX >= a.x && tapX <= b.x) {
+      const t = (tapX - a.x) / (b.x - a.x || 1);
+      return a.y + t * (b.y - a.y);
+    }
+  }
+  return sorted[sorted.length - 1].y;
+}
+
+export function getFieldZone(tapX: number, tapY: number, cal: FieldCalibrationPoints): FieldZone {
+  const { home_plate, first_base, second_base, third_base, lf_wall, cf_wall, rf_wall, lf_foul_infield, rf_foul_infield, lc_wall, rc_wall } =
+    cal;
+  if (!lf_foul_infield || !rf_foul_infield || !lc_wall || !rc_wall) return "unknown";
+
+  const tap: Vec = { x: tapX, y: tapY };
+
+  // Foul territory, checked first: a ball hit beyond the wall in foul
+  // territory is a foul ball, not a home run, so this takes priority
+  // over the home-run check below rather than the other way around.
+  // Left line: fair is cross > 0 (right/inside of the line); right
+  // line: fair is cross < 0 (left/inside of the line) -- opposite signs
+  // since the two lines are mirror images of each other.
+  const leftOfLeftLine = sideOfFoulLine(home_plate, lf_foul_infield, lf_wall, tap) < 0;
+  const rightOfRightLine = sideOfFoulLine(home_plate, rf_foul_infield, rf_wall, tap) > 0;
+  if (leftOfLeftLine || rightOfRightLine) return "foul";
+
+  if (pointInPolygon(tap, [home_plate, first_base, second_base, third_base])) return "infield";
+
+  const wallY = wallDepthAtX([lf_wall, lc_wall, cf_wall, rc_wall, rf_wall], tapX);
+  // Smaller y = farther from home (deeper), since these are the same
+  // image-pixel coordinates field_x/field_y and every tap position in
+  // this app already use (0,0 top-left, y increasing downward).
+  if (tapY <= wallY) return "homerun";
+
+  return "outfield";
+}
+
 // Change 2 (calibrate-field-tabs batch): replaces the old formula-based
 // standardPositionLocations entirely -- rather than synthesizing a
 // defensive position from the 7 field anchors, the lineup builder now

@@ -48,6 +48,40 @@ const LINE_CATEGORY_ORDER: LineHitCategory[] = ["flyball", "groundball", "linedr
 // this batch attempts to retroactively correct.)
 export function SprayChart({ dots, fieldCalibration }: { dots: Dot[]; fieldCalibration: FieldCalibrationPoints | null }) {
   const [view, setView] = useState<View>("lines");
+
+  // Field-zone-validation batch: subtle foul/home-run tinting for the
+  // Dots view only, per spec -- Lines view is untouched. Needs all 4 of
+  // the newer optional calibration points (same 11-point requirement
+  // getFieldZone itself enforces); null with fewer than that, which
+  // simply renders no tint at all rather than guessing.
+  //
+  // Foul polygons run all the way to the image's own corners (not just
+  // out to the wall's height) so they also cover "hit deep, but foul" --
+  // real baseball never calls that a home run regardless of distance.
+  // The home-run polygon is bounded horizontally by the two wall
+  // endpoints specifically (not the image edges), so it only ever claims
+  // the fair region above the wall arc -- this is what keeps the two
+  // tints from overlapping in the far corners.
+  const zoneTintPolygons = useMemo(() => {
+    if (!fieldCalibration) return null;
+    const { home_plate, lf_wall, rf_wall, lc_wall, cf_wall, rc_wall, lf_foul_infield, rf_foul_infield } = fieldCalibration;
+    if (!lc_wall || !cf_wall || !rc_wall || !lf_foul_infield || !rf_foul_infield) return null;
+
+    const toPoints = (pts: { x: number; y: number }[]) => pts.map((p) => `${p.x},${p.y}`).join(" ");
+    return {
+      leftFoul: toPoints([home_plate, lf_foul_infield, lf_wall, { x: 0, y: 0 }, { x: 0, y: 100 }]),
+      rightFoul: toPoints([home_plate, rf_foul_infield, rf_wall, { x: 100, y: 0 }, { x: 100, y: 100 }]),
+      homeRun: toPoints([
+        lf_wall,
+        lc_wall,
+        cf_wall,
+        rc_wall,
+        rf_wall,
+        { x: rf_wall.x, y: 0 },
+        { x: lf_wall.x, y: 0 },
+      ]),
+    };
+  }, [fieldCalibration]);
   const [hitTypeFilter, setHitTypeFilter] = useState<HitTypeFilter>("all");
   const [gameTypeFilter, setGameTypeFilter] = useState<GameTypeFilter>("all");
   const [selected, setSelected] = useState<Dot | null>(null);
@@ -156,6 +190,13 @@ export function SprayChart({ dots, fieldCalibration }: { dots: Dot[]; fieldCalib
                 <div className="pointer-events-none absolute inset-0" style={{ background: "rgba(0, 0, 0, 0.15)" }} />
 
                 <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full">
+                  {view === "dots" && zoneTintPolygons && (
+                    <g pointerEvents="none">
+                      <polygon points={zoneTintPolygons.leftFoul} fill="rgba(226,75,74,0.06)" />
+                      <polygon points={zoneTintPolygons.rightFoul} fill="rgba(226,75,74,0.06)" />
+                      <polygon points={zoneTintPolygons.homeRun} fill="rgba(240,192,96,0.06)" />
+                    </g>
+                  )}
                   {view === "lines"
                     ? filtered.map((d, i) => {
                         const cat = lineHitCategory(d);

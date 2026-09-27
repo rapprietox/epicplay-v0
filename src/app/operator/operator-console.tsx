@@ -22,9 +22,11 @@ import {
   FIELDING_POSITION_TO_NUMBER,
   OUT_BASE_LABELS,
   computeGroundBallNotation,
+  getFieldZone,
   notationForSingleFielderPlay,
   standardCoveringFielder,
   zoneForPoint,
+  type FieldZone,
   type OutBase,
 } from "@/lib/field-zones";
 import { operatorReducer, UNDO_WINDOW_MS } from "@/lib/operator/reducer";
@@ -90,6 +92,16 @@ type OpponentPlayer = Database["public"]["Tables"]["opponent_players"]["Row"];
 
 const PITCH_TYPES: PitchType[] = ["fastball", "curveball", "changeup", "slider", "2seam", "other"];
 const SCORE_METHODS: ScoreMethod[] = ["hit", "sac_fly", "forced_walk_hbp", "wild_pitch", "passed_ball", "balk", "error"];
+
+// Field-zone-validation batch: 'unknown' deliberately has no entry --
+// per spec, an incomplete calibration shows no label and no filtering at
+// all, as if this feature weren't there.
+const FIELD_ZONE_LABEL: Partial<Record<FieldZone, string>> = {
+  foul: "📍 Foul territory",
+  infield: "📍 Infield",
+  outfield: "📍 Outfield",
+  homerun: "📍 Beyond the wall — Home Run?",
+};
 
 interface DpWizardState {
   step:
@@ -578,6 +590,16 @@ export function OperatorConsole({
   const suggestedFielderPosition = useMemo(() => {
     if (!state.fieldTap || !fieldCalibration2d) return null;
     return FIELDER_NUMBER_TO_POSITION[zoneForPoint(state.fieldTap.x, state.fieldTap.y, fieldCalibration2d)];
+  }, [state.fieldTap, fieldCalibration2d]);
+
+  // Field-zone-validation batch: 'unknown' both when there's no tap yet
+  // and when the team hasn't calibrated the 4 newer optional points
+  // (getFieldZone itself returns 'unknown' for that second case) -- both
+  // degrade the same way, "no filtering, show all options as normal,"
+  // per spec.
+  const fieldZone: FieldZone = useMemo(() => {
+    if (!state.fieldTap || !fieldCalibration2d) return "unknown";
+    return getFieldZone(state.fieldTap.x, state.fieldTap.y, fieldCalibration2d);
   }, [state.fieldTap, fieldCalibration2d]);
 
   const battingPlayer = useMemo(
@@ -2616,36 +2638,91 @@ export function OperatorConsole({
 
                 {flowStep === "hitType" && (
                   <div className="w-full max-w-[320px]">
+                    {/* Field-zone-validation batch: shown on both this step
+                        and the result step below -- the field diagram
+                        itself is only on screen for the instant of the tap
+                        (flowStep jumps straight to hitType once
+                        state.fieldTap is set), so the label needs to
+                        persist through the rest of this at-bat's in-play
+                        decisions to actually be seen. */}
+                    {FIELD_ZONE_LABEL[fieldZone] && (
+                      <p className="mb-2 text-center text-xs font-semibold text-accent-gold">{FIELD_ZONE_LABEL[fieldZone]}</p>
+                    )}
                     <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">What kind of hit?</p>
                     <div className="flex flex-wrap justify-center gap-2">
-                      {(Object.keys(HIT_TYPE_LABELS) as HitType[]).map((ht) => (
-                        <button
-                          key={ht}
-                          onClick={() => handleHitTypeTap(ht)}
-                          className="min-h-[48px] rounded-full border-2 border-accent-primary px-4 text-sm font-semibold text-white transition hover:bg-accent-primary/20"
-                        >
-                          {HIT_TYPE_LABELS[ht]}
-                        </button>
-                      ))}
+                      {(Object.keys(HIT_TYPE_LABELS) as HitType[])
+                        // Outfield: "remove Bunt from hit type options" -- a
+                        // bunt can't travel that far, so it's not a real
+                        // choice out there.
+                        .filter((ht) => !(fieldZone === "outfield" && ht === "bunt"))
+                        .map((ht) => (
+                          <button
+                            key={ht}
+                            onClick={() => handleHitTypeTap(ht)}
+                            className={`min-h-[48px] rounded-full border-2 px-4 text-sm font-semibold text-white transition hover:bg-accent-primary/20 ${
+                              // Home run zone: "auto-select HR" is a strong
+                              // suggestion, not an auto-confirm -- HR already
+                              // auto-skips straight to confirming once
+                              // tapped (Fix 4), which would leave no real
+                              // window to override; highlighting it here
+                              // costs the operator nothing (still one tap,
+                              // same as any other hit type) while keeping
+                              // "operator can override if needed" genuinely
+                              // true.
+                              fieldZone === "homerun" && ht === "hr"
+                                ? "border-accent-gold bg-accent-gold/10 shadow-[0_0_10px_rgba(240,192,96,0.4)]"
+                                : "border-accent-primary"
+                            }`}
+                          >
+                            {HIT_TYPE_LABELS[ht]}
+                          </button>
+                        ))}
                     </div>
                   </div>
                 )}
 
                 {flowStep === "result" && state.pendingHitType && (
                   <div className="w-full max-w-[320px]">
+                    {FIELD_ZONE_LABEL[fieldZone] && (
+                      <p className="mb-2 text-center text-xs font-semibold text-accent-gold">{FIELD_ZONE_LABEL[fieldZone]}</p>
+                    )}
                     <p className="mb-2 text-center text-xs uppercase tracking-wide text-foreground/40">
                       {HIT_TYPE_LABELS[state.pendingHitType]} — result
                     </p>
                     <div className="grid grid-cols-2 gap-2">
-                      {HIT_TYPE_RESULT_OPTIONS[state.pendingHitType].map((r) => (
-                        <button
-                          key={r}
-                          onClick={() => pickResult(r)}
-                          className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-foreground/70 transition hover:border-accent-gold hover:text-white"
-                        >
-                          {RESULT_LABELS[r]}
-                        </button>
-                      ))}
+                      {/* Foul territory: "Foul Out / Error only," regardless
+                          of hit type -- a foul ball can never become a hit,
+                          so nothing HIT_TYPE_RESULT_OPTIONS would normally
+                          offer applies. "Foul Out" isn't its own AtBatResult
+                          in this schema (a caught foul ball is scored
+                          exactly like a caught fly ball -- same out, same
+                          box score effect), so this relabels the existing
+                          "flyout" result rather than adding a new schema
+                          value the request's own "no database changes"
+                          note would've contradicted. */}
+                      {fieldZone === "foul"
+                        ? (["flyout", "error"] as AtBatResult[]).map((r) => (
+                            <button
+                              key={r}
+                              onClick={() => pickResult(r)}
+                              className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-foreground/70 transition hover:border-accent-gold hover:text-white"
+                            >
+                              {r === "flyout" ? "Foul Out" : RESULT_LABELS[r]}
+                            </button>
+                          ))
+                        : HIT_TYPE_RESULT_OPTIONS[state.pendingHitType]
+                            // Infield: "remove HR from result options" -- an
+                            // infield hit physically can't clear the wall.
+                            .filter((r) => !(fieldZone === "infield" && r === "hr"))
+                            .map((r) => (
+                              <button
+                                key={r}
+                                onClick={() => pickResult(r)}
+                                className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-foreground/70 transition hover:border-accent-gold hover:text-white"
+                              >
+                                {RESULT_LABELS[r]}
+                              </button>
+                            ))}
                     </div>
                     <button
                       onClick={() => dispatch({ type: "SET_HIT_TYPE", hitType: null })}
