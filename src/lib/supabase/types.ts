@@ -453,6 +453,9 @@ export interface Database {
           name: string;
           jersey_number: string;
           position: string | null;
+          // KAIROS batch: null is the common/default case -- no data
+          // source populates this yet (see the migration's comment).
+          throwing_hand: ThrowingHand | null;
           created_at: string;
         };
         Insert: {
@@ -461,6 +464,7 @@ export interface Database {
           name: string;
           jersey_number?: string;
           position?: string | null;
+          throwing_hand?: ThrowingHand | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["opponent_players"]["Insert"]>;

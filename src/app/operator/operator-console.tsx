@@ -73,6 +73,7 @@ import {
 } from "./actions";
 import { StrikeZoneGrid, OUTCOME_COLOR, classifyZone } from "./strike-zone-grid";
 import { QuickModeGrid } from "./quick-mode-grid";
+import { KairosVoiceButton } from "./kairos-voice-button";
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
 import { Scoreboard } from "./scoreboard";
@@ -716,7 +717,14 @@ export function OperatorConsole({
     return id;
   }
 
-  async function handlePitchOutcome(outcome: PitchOutcome, swing: boolean) {
+  // KAIROS batch: `voiceOverride` lets a voice-confirmed pitch supply its
+  // own pitch type/zone directly, instead of the usual SELECT_PITCH_TYPE/
+  // TAP_ZONE dispatches this function otherwise reads from state --
+  // dispatching those and then synchronously reading `state` in the same
+  // tick would still see the pre-dispatch (stale) values, since a
+  // reducer dispatch doesn't update `state` until the next render. Every
+  // existing tap-driven call site omits this and is unaffected.
+  async function handlePitchOutcome(outcome: PitchOutcome, swing: boolean, voiceOverride?: { pitchType: PitchType | null; zone: { x: number; y: number } }) {
     if (state.outs >= 3) return;
     setBanner(null);
     let atBatId: string;
@@ -727,8 +735,8 @@ export function OperatorConsole({
       return;
     }
     const pitchNumber = state.pendingPitches.length + 1;
-    const pitchType = state.selectedPitchType;
-    const zone = state.selectedZone;
+    const pitchType = voiceOverride ? voiceOverride.pitchType : state.selectedPitchType;
+    const zone = voiceOverride ? voiceOverride.zone : state.selectedZone;
 
     // Mirrors the reducer's own ball/strike-count logic so the runner
     // suggestion (which needs roster/opponent-name context the reducer
@@ -778,6 +786,42 @@ export function OperatorConsole({
       return;
     }
     if (autoResult) pickResult(autoResult);
+  }
+
+  // KAIROS batch, Tool 6: voice-logged pitch -- sets pitch type/zone via
+  // the same dispatches a manual tap sequence would, then re-passes them
+  // as handlePitchOutcome's voiceOverride so its own synchronous reads
+  // don't see stale pre-dispatch state (see that function's own comment).
+  function handleVoicePitch(pitch: { pitchType: PitchType | null; outcome: PitchOutcome; swing: boolean | null; zoneX: number; zoneY: number }) {
+    if (state.outs >= 3) return;
+    dispatch({ type: "SELECT_PITCH_TYPE", pitchType: pitch.pitchType });
+    dispatch({ type: "TAP_ZONE", x: pitch.zoneX, y: pitch.zoneY });
+    const swing = pitch.swing ?? (pitch.outcome === "ball" || pitch.outcome === "hbp" ? false : true);
+    void handlePitchOutcome(pitch.outcome, swing, { pitchType: pitch.pitchType, zone: { x: pitch.zoneX, y: pitch.zoneY } });
+  }
+
+  // KAIROS batch, Tool 6: voice-logged finished at-bat result. Ensures a
+  // draft exists first (a voice command can be the very first thing
+  // said for a new batter, with no prior pitch taps), then sets fielding/
+  // hit-type state ahead of pickResult -- from there it's exactly the
+  // same suggested-runner-movement flow (including the hit-runner
+  // confirm queue) a manual tap through the sequential flow would reach,
+  // never bypassed just because the result came in by voice.
+  async function handleVoiceAtBatResult(input: { result: AtBatResult; hitType: HitType | null; fieldedByPosition: FieldingPosition | null }) {
+    if (state.outs >= 3) return;
+    setBanner(null);
+    try {
+      await ensureDraftAtBat();
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Could not start at-bat -- check connection and try again");
+      return;
+    }
+    if (input.fieldedByPosition) {
+      const fielder = resolve(input.fieldedByPosition);
+      dispatch({ type: "SET_FIELDING", position: input.fieldedByPosition, playerId: fielder.playerId, opponentPlayerId: fielder.opponentPlayerId });
+    }
+    if (input.hitType) dispatch({ type: "SET_HIT_TYPE", hitType: input.hitType });
+    pickResult(input.result);
   }
 
   // Fix 2 (baseball-logic-fixes batch): resolves the two-step
@@ -2206,6 +2250,18 @@ export function OperatorConsole({
             {formatElapsed(elapsedMs)}
             {remainingMs !== null && ` · ${formatElapsed(remainingMs)} left`}
           </span>
+
+          {/* KAIROS batch, Tool 6: full mode only -- handleVoicePitch/
+              handleVoiceAtBatResult are built around the pitch-by-pitch
+              draft/confirm flow (ensureDraftAtBat, pickResult), which
+              Quick Mode deliberately doesn't have at all. A voice
+              equivalent for Quick Mode's flat outcome buttons would need
+              its own, simpler parsing scheme this batch didn't build --
+              flagged as out of scope rather than silently wired into a
+              flow it doesn't match. */}
+          {game.logging_mode !== "quick" && (
+            <KairosVoiceButton gameId={game.id} disabled={state.outs >= 3} onConfirmPitch={handleVoicePitch} onConfirmAtBatResult={(input) => void handleVoiceAtBatResult(input)} />
+          )}
 
           {/* Right-panel redesign: the floating B/S/O readout that used to
               live here is gone -- the scoreboard's own B/S/O line (right

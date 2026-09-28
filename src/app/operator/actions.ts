@@ -17,6 +17,7 @@ import type {
 } from "@/lib/supabase/types";
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 import { RESULT_IS_OUT } from "@/lib/operator/types";
+import { parseVoiceCommand, type VoiceCommand } from "@/lib/anthropic";
 
 async function requireOperatorGame(gameId: string) {
   const supabase = createClient();
@@ -43,6 +44,15 @@ async function requireOperatorGame(gameId: string) {
   if (!game) throw new Error("Game not found");
 
   return { supabase, teamId: profile.team_id, game };
+}
+
+// KAIROS batch, Tool 6: gated behind the same operator/coach auth every
+// other action in this file uses, even though the parse itself doesn't
+// touch this game's rows -- otherwise an unauthenticated caller could
+// burn Anthropic API usage through this endpoint for free.
+export async function parseVoicePitchCommand(gameId: string, transcript: string): Promise<VoiceCommand> {
+  await requireOperatorGame(gameId);
+  return parseVoiceCommand(transcript);
 }
 
 export async function getOrCreateGameState(gameId: string) {

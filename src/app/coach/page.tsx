@@ -11,6 +11,7 @@ import { ScheduleTable } from "./schedule-table";
 import { RealtimeRefresh } from "./realtime-refresh";
 import { TeamAnalytics } from "./team-analytics";
 import { OpponentScoutingSection } from "./opponent-scouting-section";
+import { KairosWidget } from "./kairos-widget";
 import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import type { AtBatResult } from "@/lib/supabase/types";
 
@@ -113,6 +114,10 @@ export default async function CoachPage() {
       </header>
 
       <div className="mx-auto mt-6 flex max-w-6xl flex-col gap-6">
+        {/* KAIROS batch: "the FIRST element on the /coach dashboard --
+            above everything else including the Next Game panel." */}
+        <KairosWidget />
+
         <NextGamePanel
           nextGame={nextGame}
           activeGame={activeGame}

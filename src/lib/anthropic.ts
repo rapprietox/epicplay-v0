@@ -134,3 +134,66 @@ export async function generateOpponentInsight(input: OpponentInsightInput): Prom
   const text = response.content.find((block) => block.type === "text");
   return text && text.type === "text" ? text.text.trim() : "";
 }
+
+// KAIROS batch, Tool 6 (voice logging). A spoken command is one of two
+// real shapes this app already has a place for: a single pitch (pitch
+// type + outcome + swing/take + roughly where it crossed the zone -- the
+// exact same fields a manual strike-zone tap already produces), or a
+// finished at-bat result (with an optional single fielder, matching the
+// simpler single-fielder plays this app already supports without a full
+// scorebook chain). "kind: unclear" is a real, expected outcome for a
+// command that doesn't parse as either -- the caller shows it back to
+// the operator to retype/retap rather than guessing.
+//
+// zone_row/zone_col are coarse thirds (top/middle/bottom,
+// left/middle/right), not exact coordinates -- a spoken "top right
+// corner" was never going to be pixel-precise, so this maps onto the
+// same 3x3 thirds the strike zone grid's own zoneIndexFromCoords already
+// buckets taps into, at each third's center point, rather than pretending
+// at false precision.
+const VoicePitchSchema = z.object({
+  kind: z.literal("pitch"),
+  pitch_type: z.enum(["fastball", "curveball", "changeup", "slider", "2seam", "other"]).nullable(),
+  outcome: z.enum(["strike", "ball", "foul", "foul_tip", "hbp", "inplay"]),
+  swing: z.boolean().nullable().describe("true if swinging, false if looking/take. Only meaningful when outcome is 'strike' -- null otherwise (ball/hbp are always a take, foul/inplay are always a swing, so it's not ambiguous for those)."),
+  zone_row: z.enum(["top", "middle", "bottom"]).nullable(),
+  zone_col: z.enum(["left", "middle", "right"]).nullable(),
+  summary: z.string().describe("Short confirmation text, e.g. 'Strike looking — fastball — top right'"),
+});
+
+const VoiceAtBatResultSchema = z.object({
+  kind: z.literal("at_bat_result"),
+  result: z.enum(["single", "double", "triple", "hr", "flyout", "groundout", "lineout", "strikeout", "walk", "hbp", "error", "fc"]),
+  hit_type: z.enum(["groundball", "linedrive", "flyball", "bunt", "popup"]).nullable(),
+  fielded_by_position: z.enum(["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"]).nullable(),
+  summary: z.string().describe("Short confirmation text using standard scorebook shorthand, e.g. '6-3 ground out' or 'Single to left field'"),
+});
+
+const VoiceUnclearSchema = z.object({ kind: z.literal("unclear"), message: z.string().describe("Brief, friendly explanation of what wasn't clear") });
+
+const VoiceCommandSchema = z.discriminatedUnion("kind", [VoicePitchSchema, VoiceAtBatResultSchema, VoiceUnclearSchema]);
+export type VoiceCommand = z.infer<typeof VoiceCommandSchema>;
+
+export async function parseVoiceCommand(transcript: string): Promise<VoiceCommand> {
+  const response = await client.messages.parse({
+    model: "claude-sonnet-5",
+    max_tokens: 500,
+    messages: [
+      {
+        role: "user",
+        content:
+          `You are KAIROS, transcribing a baseball operator's spoken play-by-play into a ` +
+          `structured command. The operator just said: "${transcript}"\n\n` +
+          `Decide whether this describes a single PITCH (has a pitch type and/or an ` +
+          `outcome like strike/ball/foul, e.g. "fastball, strike looking, top right ` +
+          `corner") or a finished AT-BAT RESULT (the play is over -- a hit, an out, a ` +
+          `walk, etc., e.g. "ground ball to shortstop, out at first"). If it's ` +
+          `genuinely neither or too ambiguous to log safely, use kind "unclear" and ` +
+          `explain briefly why.`,
+      },
+    ],
+    output_config: { format: zodOutputFormat(VoiceCommandSchema) },
+  });
+
+  return response.parsed_output ?? { kind: "unclear", message: "I couldn't parse that -- try again?" };
+}
