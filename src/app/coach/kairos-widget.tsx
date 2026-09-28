@@ -12,7 +12,7 @@ import { KairosChat } from "./kairos-chat";
 // across two components for a header-only placement wasn't worth the
 // coupling cost given everything else in this batch -- noted here as a
 // deliberate, minor layout call, not an oversight.
-export function KairosWidget() {
+export function KairosWidget({ teamId }: { teamId: string }) {
   const [minimized, setMinimized] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [panelVisible, setPanelVisible] = useState(true);
@@ -58,7 +58,7 @@ export function KairosWidget() {
               Ask me anything · Paste a roster · Import a schedule · Voice commands during games
             </p>
             <div className="mt-4">
-              <KairosChat />
+              <KairosChat teamId={teamId} />
             </div>
           </>
         )}
@@ -109,7 +109,7 @@ export function KairosWidget() {
               </button>
             </div>
             <div className="mt-3 flex-1 overflow-y-auto">
-              <KairosChat compact />
+              <KairosChat teamId={teamId} compact />
             </div>
           </div>
         </div>

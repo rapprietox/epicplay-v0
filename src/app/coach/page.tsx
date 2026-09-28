@@ -116,7 +116,7 @@ export default async function CoachPage() {
       <div className="mx-auto mt-6 flex max-w-6xl flex-col gap-6">
         {/* KAIROS batch: "the FIRST element on the /coach dashboard --
             above everything else including the Next Game panel." */}
-        <KairosWidget />
+        <KairosWidget teamId={teamId} />
 
         <NextGamePanel
           nextGame={nextGame}

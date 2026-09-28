@@ -37,6 +37,11 @@ export const KAIROS_TOOLS: Anthropic.Tool[] = [
           enum: ["left", "right"],
           description: "Set this only if the question specifically asks about performance against left- or right-handed pitching.",
         },
+        rank_direction: {
+          type: "string",
+          enum: ["best", "worst"],
+          description: "For team-wide leaderboard questions (no player_name/opponent_name given): 'best' (default) for top performers by OPS, 'worst' for bottom performers, e.g. 'who is struggling?' Players with 0 AB are never included in either ranking.",
+        },
       },
     },
   },
@@ -104,6 +109,30 @@ export const KAIROS_TOOLS: Anthropic.Tool[] = [
           description: "The opposing pitcher's throwing hand, if the coach specified it.",
         },
       },
+    },
+  },
+  {
+    // KAIROS fixes batch, Fix 3. Deliberately separate from
+    // propose_schedule_import (which always creates a NEW season
+    // alongside a batch of games, e.g. from a pasted full schedule) --
+    // a single ad-hoc game ("start a friendly," "create a new game")
+    // needs a real game_type and no season at all, which is a different
+    // shape and a different write path than a season import. This tool
+    // writes directly (see the system prompt's own note on why it skips
+    // the propose/confirm pattern the bulk import tools use).
+    name: "create_single_game",
+    description:
+      "Create one game directly once you have all the required details from the conversation: opponent, date, time (or 'TBD'), home/away, and game type. Never call this with a guessed game_type -- ask the user first if it's unclear.",
+    input_schema: {
+      type: "object",
+      properties: {
+        opponent_name: { type: "string" },
+        date: { type: "string", description: "ISO 8601, YYYY-MM-DD." },
+        time: { type: "string", description: "Game time, or 'TBD' if not given." },
+        home_away: { type: "string", enum: ["home", "away"] },
+        game_type: { type: "string", enum: ["friendly", "season", "playoff", "tournament", "championship"] },
+      },
+      required: ["opponent_name", "date", "time", "home_away", "game_type"],
     },
   },
 ];

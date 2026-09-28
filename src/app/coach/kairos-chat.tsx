@@ -11,18 +11,20 @@ import {
 } from "./kairos-actions";
 import { useSpeechRecognition } from "@/lib/kairos/use-speech-recognition";
 
-const STORAGE_KEY = "kairos-conversation";
-// "Last 10 exchanges" (spec) = 20 messages (user+assistant pairs) kept
-// for context/localStorage; the panel itself only ever *shows* the last
-// 5 exchanges (10 messages) per the panel-design spec -- two different
-// numbers for two different reasons, not a mismatch.
-const MAX_STORED_MESSAGES = 20;
+// KAIROS fixes batch, Fix 1: team-scoped (not a single global key) so
+// switching teams -- or two coaches on the same browser profile -- never
+// mixes conversations. "Last 20 exchanges" (spec) = 40 messages (user+
+// assistant pairs) kept for context/localStorage; the panel itself only
+// ever *shows* the last 5 exchanges (10 messages) per the panel-design
+// spec -- two different numbers for two different reasons, not a mismatch.
+const storageKey = (teamId: string) => `kairos_history_${teamId}`;
+const MAX_STORED_MESSAGES = 40;
 const MAX_SHOWN_MESSAGES = 10;
 
-function loadMessages(): KairosMessage[] {
+function loadMessages(teamId: string): KairosMessage[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey(teamId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -31,16 +33,16 @@ function loadMessages(): KairosMessage[] {
   }
 }
 
-function saveMessages(messages: KairosMessage[]) {
+function saveMessages(teamId: string, messages: KairosMessage[]) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+    window.localStorage.setItem(storageKey(teamId), JSON.stringify(messages));
   } catch {
     // Private browsing / storage disabled -- conversation just won't
     // persist across a reload, not worth surfacing as an error.
   }
 }
 
-export function KairosChat({ compact = false }: { compact?: boolean }) {
+export function KairosChat({ teamId, compact = false }: { teamId: string; compact?: boolean }) {
   const [messages, setMessages] = useState<KairosMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -51,8 +53,8 @@ export function KairosChat({ compact = false }: { compact?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setMessages(loadMessages());
-  }, []);
+    setMessages(loadMessages(teamId));
+  }, [teamId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -78,7 +80,7 @@ export function KairosChat({ compact = false }: { compact?: boolean }) {
       const res = await askKairos(historyForRequest, trimmed);
       const updated = [...withUser, { role: "assistant" as const, content: res.text }].slice(-MAX_STORED_MESSAGES);
       setMessages(updated);
-      saveMessages(updated);
+      saveMessages(teamId, updated);
       if (res.pendingRosterImport) setPendingRoster(res.pendingRosterImport);
       if (res.pendingScheduleImport) setPendingSchedule(res.pendingScheduleImport);
     } catch (err) {
@@ -117,10 +119,22 @@ export function KairosChat({ compact = false }: { compact?: boolean }) {
     }
   }
 
+  function clearHistory() {
+    setMessages([]);
+    saveMessages(teamId, []);
+  }
+
   const shown = messages.slice(-MAX_SHOWN_MESSAGES);
 
   return (
     <div className="flex flex-col">
+      {messages.length > 0 && (
+        <div className="mb-1 flex justify-end">
+          <button type="button" onClick={clearHistory} className="text-[10px] uppercase tracking-wide text-[#5A7A64] hover:text-[#9FCBAC]">
+            Clear history
+          </button>
+        </div>
+      )}
       <div
         ref={scrollRef}
         className={`flex flex-col gap-2 overflow-y-auto ${compact ? "max-h-[40vh]" : "max-h-[320px]"}`}

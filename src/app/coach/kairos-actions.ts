@@ -65,19 +65,23 @@ function extractText(message: Anthropic.Message): string {
 
 // System prompt variables built from real data, per the request's own
 // template -- {team_name}/{season_name}/{player_list}/{wins}-{losses}/
-// {leaders_summary}. "Current season" has no explicit flag anywhere in
-// this schema (seasons has no is_current column), so this picks whichever
-// season's date range contains today, falling back to the most recently
-// started one.
+// {leaders_summary}, expanded by the KAIROS fixes batch to cover every
+// player's full line (not just the top 3), every opponent faced, the
+// current active game, and today's date/time. "Current season" has no
+// explicit flag anywhere in this schema (seasons has no is_current
+// column), so this picks whichever season's date range contains today,
+// falling back to the most recently started one.
 async function buildSystemPrompt(supabase: SupabaseClient, teamId: string): Promise<string> {
-  const [{ data: team }, { data: seasons }, { data: players }, { data: games }] = await Promise.all([
+  const [{ data: team }, { data: seasons }, { data: players }, { data: games }, { data: opponents }] = await Promise.all([
     supabase.from("teams").select("name").eq("id", teamId).single(),
     supabase.from("seasons").select("*").eq("team_id", teamId).order("start_date", { ascending: false }),
     supabase.from("players").select("id, name, jersey_number, position").eq("team_id", teamId).order("jersey_number"),
-    supabase.from("games").select("id, status, our_score, opponent_score, season_id").eq("team_id", teamId),
+    supabase.from("games").select("*").eq("team_id", teamId),
+    supabase.from("opponents").select("id, name").eq("team_id", teamId),
   ]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
   const currentSeason = (seasons ?? []).find((s) => s.start_date <= today && s.end_date >= today) ?? (seasons ?? [])[0] ?? null;
 
   const seasonGames = currentSeason ? (games ?? []).filter((g) => g.season_id === currentSeason.id) : (games ?? []);
@@ -85,47 +89,99 @@ async function buildSystemPrompt(supabase: SupabaseClient, teamId: string): Prom
   const wins = completed.filter((g) => g.our_score > g.opponent_score).length;
   const losses = completed.filter((g) => g.our_score < g.opponent_score).length;
 
+  // KAIROS fixes batch, Fix 4: every player's full line, not just a top-3
+  // summary -- "KAIROS should NEVER say 'I don't have data on that
+  // player' if that player is on the roster." A 0-AB player still gets a
+  // line (ab: 0), explicitly, rather than being silently omitted, so
+  // Fix 5's "no at-bats logged yet" case is something the model can see
+  // directly instead of inferring from an absence.
   const gameIds = seasonGames.map((g) => g.id);
   const { data: atBats } = gameIds.length
-    ? await supabase.from("at_bats").select("player_id, pitcher_id, result, rbi, runs_scored, is_out, mode").in("game_id", gameIds).not("confirmed_at", "is", null)
+    ? await supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null)
     : { data: [] };
-  const battingLines = computeBattingLines(atBats ?? [], []);
-  const playerNameById = new Map((players ?? []).map((p) => [p.id, p.name]));
-  const leaders = Array.from(battingLines.values())
-    .filter((l) => l.ab >= 3)
-    .sort((a, b) => b.avg - a.avg)
-    .slice(0, 3)
-    .map((l) => `${playerNameById.get(l.playerId) ?? "Unknown"}: ${formatAvg(l.avg)} AVG, ${l.hr} HR, ${l.rbi} RBI`)
-    .join("; ");
+  const hittingAtBats = (atBats ?? []).filter((ab) => ab.mode === "hitting");
+  const pitchingAtBats = (atBats ?? []).filter((ab) => ab.mode === "pitching");
+  const battingLines = computeBattingLines(hittingAtBats, []);
+  const pitchingLines = computePitchingLines(pitchingAtBats, seasonGames);
 
-  const playerList = (players ?? []).map((p) => `#${p.jersey_number ?? "—"} ${p.name} (${p.position ?? "—"})`).join(", ");
+  const rosterStats = (players ?? [])
+    .map((p) => {
+      const b = battingLines.get(p.id);
+      const pitch = pitchingLines.get(p.id);
+      const battingText = b && b.ab > 0
+        ? `${b.ab} AB, ${formatAvg(b.avg)} AVG, ${b.hr} HR, ${b.rbi} RBI, ${formatAvg(b.obp)} OBP, ${formatAvg(b.slg)} SLG, ${b.ops.toFixed(3)} OPS`
+        : "no at-bats logged yet this season";
+      const pitchingText = pitch && pitch.ip > 0 ? ` | Pitching: ${pitch.ipDisplay} IP, ${pitch.era?.toFixed(2) ?? "—"} ERA, ${pitch.whip?.toFixed(2) ?? "—"} WHIP, ${pitch.k} K` : "";
+      return `#${p.jersey_number ?? "—"} ${p.name} (${p.position ?? "—"}): ${battingText}${pitchingText}`;
+    })
+    .join("\n");
 
+  // Fix 4: every opponent faced this season, with our record against
+  // each -- reuses the same recordAgainstOpponent helper the pre-game
+  // brief panel already relies on.
+  const opponentsFaced = (opponents ?? [])
+    .map((o) => {
+      const record = recordAgainstOpponent(seasonGames, { opponent_id: o.id, opponent_name: o.name });
+      const gamesPlayed = seasonGames.filter((g) => g.opponent_id === o.id).length;
+      return gamesPlayed > 0 ? `${o.name} (${formatRecord(record)})` : null;
+    })
+    .filter((s): s is string => s !== null)
+    .join(", ");
+
+  const activeGame = (games ?? []).find((g) => g.status === "active") ?? null;
+
+  // Fix 2: KAIROS was told "I don't have access to today's actual
+  // calendar date" -- true until now, since nothing ever injected it.
+  // Server-side wall-clock time (not the coach's own local time, which
+  // this server has no way to know) -- fine for the day-level precision
+  // Fix 3's game-creation flow actually needs; flagged so it's not
+  // silently assumed to be the coach's exact local clock.
   return `You are KAIROS -- the AI baseball intelligence assistant for EpicPlay AI.
 You are named after the Greek god of the perfect moment -- because in baseball,
 timing is everything.
 
+Today's date is ${today}. Current server time is ${now.toLocaleTimeString()} (server
+clock, not necessarily the coach's own local time -- close enough for day-level
+scheduling, but don't state it as their exact local time). Never ask the user
+for today's date -- you already know it.
+
 You have access to real data about this team:
 - Team name: ${team?.name ?? "Unknown"}
 - Current season: ${currentSeason?.name ?? "No season set up yet"}
-- Roster: ${playerList || "No players on the roster yet"}
 - Season record: ${wins}-${losses}
-- Current leaders: ${leaders || "No qualifying batters yet this season"}
+- Full roster and season stats (every player, not a top few -- if a player is
+  listed here, you have their real data; never say you don't):
+${rosterStats || "No players on the roster yet"}
+- Opponents faced this season: ${opponentsFaced || "None yet"}
+- Current active game: ${activeGame ? `vs ${activeGame.opponent_name}, ${activeGame.our_score}-${activeGame.opponent_score}` : "No game currently in progress"}
 
 You speak in short, confident sentences. You are a baseball expert who also
 understands data. You never say "I am Claude" or mention Anthropic. You are
 KAIROS.
 
-You have tools to look up real stats, propose importing a pasted roster or
-schedule, and suggest a lineup. Always call query_team_stats before answering
-any question about player or team performance -- never guess or invent numbers.
-If a tool result shows no qualifying data for a specific split (for example, a
-lefty/righty breakdown with no games tagged that way yet), say so honestly
-instead of making something up.
+For general "who's leading/struggling" questions, answer directly from the
+full roster stats above -- ranking or sorting that list yourself is fine and
+doesn't need a tool call. Exclude any player with 0 AB from a best/worst
+ranking (mention them separately, by name, only if specifically asked about
+them). Call query_team_stats only for something not already given above: a
+specific opponent's history, a lefty/righty split, or anything that needs a
+fresh query. Never guess or invent numbers not present in your data or a tool
+result. If a tool result shows no qualifying data for a specific split (for
+example, a lefty/righty breakdown with no games tagged that way yet), say so
+honestly instead of making something up.
 
-When asked to take an action (import roster, add players, create games),
-always confirm with the user before executing. Show them what you found and
-ask "Should I add these?" before writing to the database -- the propose_*
-tools already handle this; you never write directly.
+When asked to import a pasted roster or schedule, always confirm with the
+user before executing -- show them what you found and ask "Should I add
+these?" The propose_* tools handle this; you never write those directly.
+create_single_game is different: once you've naturally gathered opponent,
+date, time, and home/away through conversation, call it directly -- the
+back-and-forth of asking for each detail already is the confirmation, so
+there's no separate "should I add this?" step for a single game the way
+there is for a bulk import. Map the game type from what the user says
+("friendly"/"scrimmage"/"exhibition" -> friendly, "season"/"regular" ->
+season, "playoff" -> playoff, "tournament" -> tournament, "championship" ->
+championship); if it's genuinely unclear, ask which type rather than
+guessing. A single game never needs a season -- create it without one.
 
 Keep responses concise. Use real numbers from the data. Be specific, not
 generic. A coach doesn't want "Carlos is a good hitter" -- they want "Carlos
@@ -136,7 +192,14 @@ interface QueryStatsInput {
   player_name?: string;
   opponent_name?: string;
   pitcher_hand_filter?: "left" | "right";
+  rank_direction?: "best" | "worst";
 }
+
+// KAIROS fixes batch, Fix 5: "at least 5 at-bats" -- applied uniformly to
+// best AND worst leaderboard queries (the request only stated 5 for
+// "worst" specifically, but using a different bar for the two directions
+// would have been an arbitrary inconsistency).
+const LEADER_MIN_AB = 5;
 
 async function executeQueryStats(supabase: SupabaseClient, teamId: string, input: QueryStatsInput) {
   const { data: games } = await supabase.from("games").select("*").eq("team_id", teamId);
@@ -243,13 +306,20 @@ async function executeQueryStats(supabase: SupabaseClient, teamId: string, input
   }
 
   const lines = computeBattingLines(relevantAtBats, []);
+  const direction = input.rank_direction ?? "best";
   const ranked = Array.from(lines.values())
-    .filter((l) => l.ab >= 3)
-    .sort((a, b) => b.ops - a.ops)
+    .filter((l) => l.ab >= LEADER_MIN_AB)
+    .sort((a, b) => (direction === "worst" ? a.ops - b.ops : b.ops - a.ops))
     .slice(0, 5)
     .map((l) => ({ player: playerNameById.get(l.playerId) ?? "Unknown", avg: formatAvg(l.avg), ops: l.ops.toFixed(3), hr: l.hr, rbi: l.rbi, ab: l.ab }));
 
-  return { splitNote, leaders: ranked };
+  // Fix 5: named explicitly rather than silently dropped, so a "who's
+  // struggling" question can call out a 0-AB player by name instead of
+  // just omitting them with no explanation.
+  const rankedIds = new Set((players ?? []).filter((p) => (lines.get(p.id)?.ab ?? 0) >= LEADER_MIN_AB).map((p) => p.id));
+  const zeroAbPlayers = (players ?? []).filter((p) => (lines.get(p.id)?.ab ?? 0) === 0 && !rankedIds.has(p.id)).map((p) => p.name);
+
+  return { splitNote, direction, minAbToQualify: LEADER_MIN_AB, leaders: ranked, playersWithNoAtBats: zeroAbPlayers };
 }
 
 async function executeSuggestLineup(supabase: SupabaseClient, teamId: string, input: { pitcher_hand_filter?: "left" | "right" }) {
@@ -291,6 +361,57 @@ async function executeSuggestLineup(supabase: SupabaseClient, teamId: string, in
     });
 
   return { splitNote, suggestedOrder: ranked, note: ranked.length < 9 ? `Only ${ranked.length} players have at least 3 at-bats logged -- the rest of the lineup needs a judgment call.` : null };
+}
+
+interface CreateSingleGameInput {
+  opponent_name: string;
+  date: string;
+  time: string;
+  home_away: "home" | "away";
+  game_type: "friendly" | "season" | "playoff" | "tournament" | "championship";
+}
+
+// KAIROS fixes batch, Fix 3. Writes directly (no propose/confirm step --
+// see the system prompt's note on why a single ad-hoc game doesn't need
+// one) and always with season_id: null -- this tool's whole purpose is a
+// game outside the normal season-import flow, so it's never conditionally
+// attached to whatever season happens to be active.
+async function executeCreateSingleGame(supabase: SupabaseClient, teamId: string, input: CreateSingleGameInput) {
+  const name = input.opponent_name.trim();
+  const { data: existing } = await supabase.from("opponents").select("id").eq("team_id", teamId).eq("name", name).maybeSingle();
+  let opponentId = existing?.id ?? null;
+  if (!opponentId) {
+    const { data: created, error } = await supabase.from("opponents").insert({ team_id: teamId, name }).select("id").single();
+    if (error || !created) return { error: `Failed to create opponent "${name}": ${error?.message ?? "unknown error"}` };
+    opponentId = created.id;
+  }
+
+  const { data: game, error: gameError } = await supabase
+    .from("games")
+    .insert({
+      team_id: teamId,
+      season_id: null,
+      opponent_id: opponentId,
+      opponent_name: name,
+      game_date: input.date,
+      game_time: input.time,
+      game_type: input.game_type as GameType,
+      home_away: input.home_away,
+      status: "setup" as const,
+    })
+    .select("id")
+    .single();
+  if (gameError || !game) return { error: `Failed to create game: ${gameError?.message ?? "unknown error"}` };
+
+  return {
+    created: true,
+    gameId: game.id,
+    opponentName: name,
+    date: input.date,
+    time: input.time,
+    homeAway: input.home_away,
+    gameType: input.game_type,
+  };
 }
 
 export async function askKairos(history: KairosMessage[], message: string): Promise<KairosResponse> {
@@ -335,6 +456,8 @@ export async function askKairos(history: KairosMessage[], message: string): Prom
     toolResult = await executeQueryStats(supabase, teamId, toolUse.input as QueryStatsInput);
   } else if (toolUse.name === "suggest_lineup") {
     toolResult = await executeSuggestLineup(supabase, teamId, toolUse.input as { pitcher_hand_filter?: "left" | "right" });
+  } else if (toolUse.name === "create_single_game") {
+    toolResult = await executeCreateSingleGame(supabase, teamId, toolUse.input as CreateSingleGameInput);
   } else {
     toolResult = { error: "Unknown tool" };
   }
