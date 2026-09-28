@@ -223,6 +223,14 @@ export interface Database {
           opponent_name: string;
           game_date: string;
           game_time: string | null;
+          // Time-of-day/day-of-week filters batch: a structured "HH:MM:SS"
+          // value, distinct from game_time's free text -- see the
+          // migration's comment. null for every game whose start_time
+          // wasn't backfilled from a parseable game_time, and for every
+          // game created after this batch (no creation/edit form writes
+          // it) -- src/lib/game-time-filters.ts falls back to parsing
+          // game_time itself in that case.
+          start_time: string | null;
           game_type: GameType;
           home_away: HomeAway;
           our_score: number;
@@ -251,6 +259,7 @@ export interface Database {
           opponent_name: string;
           game_date: string;
           game_time?: string | null;
+          start_time?: string | null;
           game_type: GameType;
           home_away: HomeAway;
           our_score?: number;

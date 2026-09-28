@@ -4,6 +4,15 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { Database } from "@/lib/supabase/types";
 import { computeBattingLines, computePitchingLines, formatAvg, type BattingLine, type PitchingLine } from "@/lib/stats";
+import {
+  DAY_TYPE_LABELS,
+  TIME_OF_DAY_LABELS,
+  dayTypeBucket,
+  resolveStartMinutes,
+  timeOfDayBucket,
+  type DayType,
+  type TimeOfDay,
+} from "@/lib/game-time-filters";
 
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
@@ -112,23 +121,40 @@ function buildRows(
 
 export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
+  // Time-of-day/day-of-week filters batch: "all" (no restriction) for
+  // both, same shape as the existing game-type filter above -- three
+  // independent filters that all narrow the same underlying game set
+  // together, not three separate views.
+  const [timeOfDayFilter, setTimeOfDayFilter] = useState<TimeOfDay | "all">("all");
+  const [dayTypeFilter, setDayTypeFilter] = useState<DayType | "all">("all");
 
-  const gameTypeById = useMemo(() => new Map(games.map((g) => [g.id, g.game_type])), [games]);
+  const matchingGameIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const g of games) {
+      if (filter !== "all" && g.game_type !== filter) continue;
+      if (timeOfDayFilter !== "all" && timeOfDayBucket(resolveStartMinutes(g)) !== timeOfDayFilter) continue;
+      if (dayTypeFilter !== "all" && dayTypeBucket(g.game_date) !== dayTypeFilter) continue;
+      ids.add(g.id);
+    }
+    return ids;
+  }, [games, filter, timeOfDayFilter, dayTypeFilter]);
+
+  const noFilterActive = filter === "all" && timeOfDayFilter === "all" && dayTypeFilter === "all";
 
   const filteredAtBats = useMemo(() => {
-    if (filter === "all") return atBats;
-    return atBats.filter((ab) => gameTypeById.get(ab.game_id) === filter);
-  }, [atBats, gameTypeById, filter]);
+    if (noFilterActive) return atBats;
+    return atBats.filter((ab) => matchingGameIds.has(ab.game_id));
+  }, [atBats, matchingGameIds, noFilterActive]);
 
   const filteredStolenBases = useMemo(() => {
-    if (filter === "all") return stolenBases;
-    return stolenBases.filter((sb) => gameTypeById.get(sb.game_id) === filter);
-  }, [stolenBases, gameTypeById, filter]);
+    if (noFilterActive) return stolenBases;
+    return stolenBases.filter((sb) => matchingGameIds.has(sb.game_id));
+  }, [stolenBases, matchingGameIds, noFilterActive]);
 
   const filteredGames = useMemo(() => {
-    if (filter === "all") return games;
-    return games.filter((g) => g.game_type === filter);
-  }, [games, filter]);
+    if (noFilterActive) return games;
+    return games.filter((g) => matchingGameIds.has(g.id));
+  }, [games, matchingGameIds, noFilterActive]);
 
   const rows = useMemo(() => {
     const battingLines = computeBattingLines(filteredAtBats, filteredStolenBases);
@@ -151,18 +177,47 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
         <h2 className="font-heading text-2xl font-bold uppercase tracking-wide text-accent-gold">
           Team Leaders
         </h2>
-        <div className="flex gap-1 rounded-md border border-border p-1 text-xs">
-          {(["all", "season", "playoff"] as Filter[]).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`rounded px-3 py-1 capitalize transition ${
-                filter === f ? "bg-accent-primary text-white" : "text-foreground/50 hover:text-white"
-              }`}
-            >
-              {f === "all" ? "All games" : `${f} only`}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex gap-1 rounded-md border border-border p-1 text-xs">
+            {(["all", "season", "playoff"] as Filter[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`rounded px-3 py-1 capitalize transition ${
+                  filter === f ? "bg-accent-primary text-white" : "text-foreground/50 hover:text-white"
+                }`}
+              >
+                {f === "all" ? "All games" : `${f} only`}
+              </button>
+            ))}
+          </div>
+          {/* Time-of-day/day-of-week filters batch: two more independent
+              narrowing filters, same "all" default as the game-type one
+              above. */}
+          <select
+            value={timeOfDayFilter}
+            onChange={(e) => setTimeOfDayFilter(e.target.value as TimeOfDay | "all")}
+            className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-white outline-none focus:border-accent-primary"
+          >
+            <option value="all">Any time of day</option>
+            {(Object.keys(TIME_OF_DAY_LABELS) as TimeOfDay[]).map((t) => (
+              <option key={t} value={t}>
+                {TIME_OF_DAY_LABELS[t]}
+              </option>
+            ))}
+          </select>
+          <select
+            value={dayTypeFilter}
+            onChange={(e) => setDayTypeFilter(e.target.value as DayType | "all")}
+            className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-white outline-none focus:border-accent-primary"
+          >
+            <option value="all">Any day</option>
+            {(Object.keys(DAY_TYPE_LABELS) as DayType[]).map((d) => (
+              <option key={d} value={d}>
+                {DAY_TYPE_LABELS[d]}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 

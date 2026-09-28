@@ -1,17 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { computeBattingLines, computePitchingLines, formatAvg } from "@/lib/stats";
-import { zoneIndexFromCoords, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import type { FieldCalibrationPoints } from "@/lib/supabase/types";
-import { resultCategory } from "@/lib/heat-map";
-import { finalCountForAtBat, type CountState } from "@/lib/count-stats";
-import { StrikeZoneHeatmap } from "./strike-zone-heatmap";
-import { SprayChart } from "./spray-chart";
-import type { AtBatResult, GameType, PitchType } from "@/lib/supabase/types";
-import { PitcherHeatmap } from "./pitcher-heatmap";
-import { HitterExtendedStats } from "./hitter-extended-stats";
-import { PitcherExtendedStats } from "./pitcher-extended-stats";
+import { PlayerBreakdownClient } from "./player-breakdown-client";
 
 export default async function PlayerBreakdownPage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -50,10 +41,14 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
 
   const { data: games } = await supabase.from("games").select("*").eq("team_id", profile.team_id);
   const gameIds = (games ?? []).map((g) => g.id);
-  const gameTypeById = new Map((games ?? []).map((g) => [g.id, g.game_type]));
-  const opponentNameById = new Map((games ?? []).map((g) => [g.id, g.opponent_name]));
-  const gameDateById = new Map((games ?? []).map((g) => [g.id, g.game_date]));
 
+  // Time-of-day/day-of-week filters batch: this used to compute every
+  // derived stat/heat-map/spray-chart shape right here, server-side, and
+  // hand the finished results down. Moved to PlayerBreakdownClient
+  // instead -- a client-side time-of-day/day-of-week filter needs to
+  // re-run that derivation on demand as the coach changes it, which a
+  // server component can't do without a full page reload. This page now
+  // just fetches the raw rows and hands them over unfiltered.
   const [{ data: battingAtBats }, { data: pitchingAtBats }, { data: stolenBases }] = gameIds.length
     ? await Promise.all([
         supabase
@@ -62,95 +57,19 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
           .eq("player_id", player.id)
           .in("game_id", gameIds)
           .not("confirmed_at", "is", null),
-        // Bug fix: the pitching stat grid previously reused the same
-        // player_id-scoped query, which never has pitcher_id set (that's
-        // exclusive to hitting-mode rows) -- so "Pitching" could never show
-        // real data. Pitching-mode at-bats are keyed by pitcher_id instead.
+        // Bug fix (pre-existing): the pitching stat grid previously reused
+        // the same player_id-scoped query, which never has pitcher_id set
+        // (exclusive to hitting-mode rows) -- pitching-mode at-bats are
+        // keyed by pitcher_id instead.
         supabase.from("at_bats").select("*").eq("pitcher_id", player.id).in("game_id", gameIds).not("confirmed_at", "is", null),
         supabase.from("stolen_bases").select("*").eq("player_id", player.id).in("game_id", gameIds),
       ])
     : [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }];
 
-  const allAtBats = [...(battingAtBats ?? []), ...(pitchingAtBats ?? [])];
-  const { data: pitches } = allAtBats.length
-    ? await supabase
-        .from("pitches")
-        .select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome")
-        .in(
-          "at_bat_id",
-          allAtBats.map((ab) => ab.id)
-        )
+  const allAtBatIds = [...(battingAtBats ?? []), ...(pitchingAtBats ?? [])].map((ab) => ab.id);
+  const { data: pitches } = allAtBatIds.length
+    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome").in("at_bat_id", allAtBatIds)
     : { data: [] };
-
-  const lastPitchZoneByAtBat = new Map<string, number | null>();
-  const lastPitchTypeByAtBat = new Map<string, string | null>();
-  const finalCountByAtBat = new Map<string, CountState | null>();
-  for (const ab of allAtBats) {
-    const forThisAtBat = (pitches ?? []).filter((p) => p.at_bat_id === ab.id);
-    const last = forThisAtBat.sort((a, b) => b.pitch_number - a.pitch_number)[0];
-    lastPitchZoneByAtBat.set(ab.id, last && last.zone_x !== null && last.zone_y !== null ? zoneIndexFromCoords(last.zone_x, last.zone_y) : null);
-    lastPitchTypeByAtBat.set(ab.id, last?.pitch_type ?? null);
-    finalCountByAtBat.set(ab.id, finalCountForAtBat(forThisAtBat));
-  }
-
-  const battingLine = computeBattingLines(battingAtBats ?? [], stolenBases ?? []).get(player.id);
-  const pitchingLine = computePitchingLines(pitchingAtBats ?? [], games ?? []).get(player.id);
-
-  const battingZoneAtBats: (AtBatWithZone & { gameType: GameType })[] = (battingAtBats ?? [])
-    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
-    .map((ab) => ({
-      result: ab.result,
-      zoneIndex: lastPitchZoneByAtBat.get(ab.id) ?? null,
-      gameType: gameTypeById.get(ab.game_id) ?? "friendly",
-    }));
-
-  const pitchingZoneAtBats: (AtBatWithZone & { gameType: GameType })[] = (pitchingAtBats ?? [])
-    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
-    .map((ab) => ({
-      result: ab.result,
-      zoneIndex: lastPitchZoneByAtBat.get(ab.id) ?? null,
-      gameType: gameTypeById.get(ab.game_id) ?? "friendly",
-    }));
-
-  const sprayDots: (SprayDot & { gameType: GameType })[] = (battingAtBats ?? [])
-    .filter((ab): ab is typeof ab & { result: AtBatResult; field_x: number; field_y: number } => ab.result !== null && ab.field_x !== null && ab.field_y !== null)
-    .map((ab) => ({
-      x: ab.field_x,
-      y: ab.field_y,
-      category: resultCategory(ab.result),
-      result: ab.result,
-      inning: ab.inning,
-      gameDate: gameDateById.get(ab.game_id) ?? "",
-      opponentName: opponentNameById.get(ab.game_id) ?? "Unknown",
-      hitType: ab.hit_type,
-      gameType: gameTypeById.get(ab.game_id) ?? "friendly",
-    }));
-
-  const pitcherAtBatsByType: { result: AtBatResult; zoneIndex: number | null; pitchType: PitchType | null }[] = (pitchingAtBats ?? [])
-    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
-    .map((ab) => ({
-      result: ab.result,
-      zoneIndex: lastPitchZoneByAtBat.get(ab.id) ?? null,
-      pitchType: (lastPitchTypeByAtBat.get(ab.id) as PitchType | null) ?? null,
-    }));
-
-  const pitcherAtBatIds = new Set((pitchingAtBats ?? []).map((ab) => ab.id));
-  const pitcherPitches = (pitches ?? []).filter((p) => pitcherAtBatIds.has(p.at_bat_id));
-
-  const batterAtBatIds = new Set((battingAtBats ?? []).map((ab) => ab.id));
-  const batterPitches = (pitches ?? []).filter((p) => batterAtBatIds.has(p.at_bat_id));
-
-  const hitterCountAtBats: { result: AtBatResult; finalCount: CountState | null }[] = (battingAtBats ?? [])
-    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
-    .map((ab) => ({ result: ab.result, finalCount: finalCountByAtBat.get(ab.id) ?? null }));
-
-  const hitterPitchTypeAtBats: { result: AtBatResult; pitchType: PitchType | null }[] = (battingAtBats ?? [])
-    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
-    .map((ab) => ({ result: ab.result, pitchType: (lastPitchTypeByAtBat.get(ab.id) as PitchType | null) ?? null }));
-
-  const pitcherCountAtBats: { result: AtBatResult; finalCount: CountState | null }[] = (pitchingAtBats ?? [])
-    .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
-    .map((ab) => ({ result: ab.result, finalCount: finalCountByAtBat.get(ab.id) ?? null }));
 
   return (
     <main className="min-h-screen bg-background px-6 py-8">
@@ -166,84 +85,16 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
       </header>
 
       <div className="mx-auto mt-6 flex max-w-3xl flex-col gap-6">
-        <section className="glossy rounded-lg border border-border bg-surface p-5">
-          <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
-            Batting
-          </h2>
-          {battingLine && battingLine.ab > 0 ? (
-            <StatGrid
-              stats={[
-                ["AVG", formatAvg(battingLine.avg)],
-                ["OBP", formatAvg(battingLine.obp)],
-                ["SLG", formatAvg(battingLine.slg)],
-                ["OPS", battingLine.ops.toFixed(3)],
-                ["AB", battingLine.ab],
-                ["H", battingLine.h],
-                ["2B", battingLine.doubles],
-                ["3B", battingLine.triples],
-                ["HR", battingLine.hr],
-                ["RBI", battingLine.rbi],
-                ["BB", battingLine.bb],
-                ["SB", battingLine.sb],
-              ]}
-            />
-          ) : (
-            <p className="mt-3 text-sm text-foreground/50">No at-bats logged yet.</p>
-          )}
-        </section>
-
-        <section className="glossy rounded-lg border border-border bg-surface p-5">
-          <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
-            Pitching
-          </h2>
-          {pitchingLine && pitchingLine.ip > 0 ? (
-            <StatGrid
-              stats={[
-                ["ERA", pitchingLine.era?.toFixed(2) ?? "—"],
-                ["WHIP", pitchingLine.whip?.toFixed(2) ?? "—"],
-                ["IP", pitchingLine.ipDisplay],
-                ["W", pitchingLine.wins],
-                ["K", pitchingLine.k],
-                ["BB", pitchingLine.bbAllowed],
-                ["H", pitchingLine.hAllowed],
-              ]}
-            />
-          ) : (
-            <p className="mt-3 text-sm text-foreground/50">No innings pitched yet.</p>
-          )}
-        </section>
-
-        <StrikeZoneHeatmap
-          battingAtBats={battingZoneAtBats}
-          pitchingAtBats={pitchingZoneAtBats}
-          hasPitchingData={pitchingZoneAtBats.length > 0}
+        <PlayerBreakdownClient
+          player={player}
+          games={games ?? []}
+          battingAtBats={battingAtBats ?? []}
+          pitchingAtBats={pitchingAtBats ?? []}
+          stolenBases={stolenBases ?? []}
+          pitches={pitches ?? []}
+          fieldCalibration={fieldCalibration}
         />
-
-        <SprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
-
-        {pitchingZoneAtBats.length > 0 && <PitcherHeatmap atBats={pitcherAtBatsByType} pitches={pitcherPitches} />}
-
-        {battingZoneAtBats.length > 0 && (
-          <HitterExtendedStats countAtBats={hitterCountAtBats} pitchTypeAtBats={hitterPitchTypeAtBats} pitches={batterPitches} />
-        )}
-
-        {pitchingZoneAtBats.length > 0 && (
-          <PitcherExtendedStats countAtBats={pitcherCountAtBats} pitches={pitcherPitches} atBatCount={(pitchingAtBats ?? []).length} />
-        )}
       </div>
     </main>
-  );
-}
-
-function StatGrid({ stats }: { stats: [string, string | number][] }) {
-  return (
-    <div className="mt-4 grid grid-cols-3 gap-4 sm:grid-cols-4">
-      {stats.map(([label, value]) => (
-        <div key={label}>
-          <p className="text-xs uppercase tracking-wide text-foreground/40">{label}</p>
-          <p className="font-heading text-xl font-bold text-white">{value}</p>
-        </div>
-      ))}
-    </div>
   );
 }
