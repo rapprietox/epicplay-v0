@@ -32,6 +32,7 @@ export function initialOperatorState(gameId: string): OperatorState {
     opponentScore: 0,
     battingOrderPosition: 1,
     currentPitcherId: null,
+    currentOpponentPitcherId: null,
     opponentBatterName: "",
     runners: {},
     runnersAtAtBatStart: null,
@@ -106,10 +107,17 @@ export type OperatorAction =
       thirdRemovedBase?: Base | null;
     }
   | { type: "CONFIRM_INTENTIONAL_WALK"; atBatId: string; runners: Runners; runsScored: number; runnersBeforeAtBat: Runners }
+  // Quick Mode batch: one tap, one already-confirmed at-bat, no draft and
+  // no pitches -- same "bypasses pitch logging entirely" shape as
+  // CONFIRM_INTENTIONAL_WALK above (see that case's own comment for why
+  // accuracy tracking is skipped), generalized to any result instead of
+  // just a walk.
+  | { type: "QUICK_CONFIRM_LOCAL"; atBatId: string; result: AtBatResult; runners: Runners; scored: ScoredRunner[]; outsRecorded: number; runnersBeforeAtBat: Runners }
   | { type: "UNDO_LOCAL" }
   | { type: "CLEAR_LAST_CONFIRMED" }
   | { type: "SET_RUNNER"; base: Base; runner: RunnerState | null }
   | { type: "SET_PITCHER"; playerId: string | null }
+  | { type: "SET_OPPONENT_PITCHER"; opponentPlayerId: string | null }
   | { type: "SET_OPPONENT_BATTER_NAME"; name: string }
   | { type: "ACK_PITCH_COUNT"; level: 75 | 85 | 100 }
   | { type: "END_INNING_LOCAL" }
@@ -524,6 +532,62 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       };
     }
 
+    case "QUICK_CONFIRM_LOCAL": {
+      const runsScored = action.scored.length;
+      const nextBattingOrder =
+        state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+      const isHit = HIT_RESULTS.has(action.result);
+      const isError = action.result === "error";
+      const isStrikeout = action.result === "strikeout";
+      const hitsDelta = state.mode === "hitting" && isHit ? 1 : 0;
+      const errorsDelta = state.mode === "pitching" && isError ? 1 : 0;
+      const kDelta = state.mode === "pitching" && isStrikeout ? 1 : 0;
+      const runsDelta = state.mode === "hitting" ? runsScored : 0;
+      const prevBoxScore = {
+        hitsThisInning: state.hitsThisInning,
+        runsThisInning: state.runsThisInning,
+        errorsThisInning: state.errorsThisInning,
+        kThisInning: state.kThisInning,
+        hitsGame: state.hitsGame,
+        runsGame: state.runsGame,
+        errorsGame: state.errorsGame,
+        kGame: state.kGame,
+      };
+      return {
+        ...state,
+        runners: action.runners,
+        outs: Math.min(3, state.outs + action.outsRecorded),
+        ourScore: state.mode === "hitting" ? state.ourScore + runsScored : state.ourScore,
+        opponentScore: state.mode === "pitching" ? state.opponentScore + runsScored : state.opponentScore,
+        battingOrderPosition: nextBattingOrder,
+        hitsThisInning: state.hitsThisInning + hitsDelta,
+        runsThisInning: state.runsThisInning + runsDelta,
+        errorsThisInning: state.errorsThisInning + errorsDelta,
+        kThisInning: state.kThisInning + kDelta,
+        hitsGame: state.hitsGame + hitsDelta,
+        runsGame: state.runsGame + runsDelta,
+        errorsGame: state.errorsGame + errorsDelta,
+        kGame: state.kGame + kDelta,
+        runnersPendingConfirmation: false,
+        currentPlayForceOuts: [],
+        lastConfirmed: {
+          atBatId: action.atBatId,
+          secondAtBatId: null,
+          thirdAtBatId: null,
+          mode: state.mode,
+          runsScored,
+          outsRecorded: action.outsRecorded,
+          pitchesThisAtBat: 0,
+          runnersBeforeAtBat: action.runnersBeforeAtBat,
+          prevAccuracyRatioSum: state.accuracyRatioSum,
+          prevAccuracyAtBatCount: state.accuracyAtBatCount,
+          prevBoxScore,
+          deadline: Date.now() + UNDO_WINDOW_MS,
+        },
+        dirty: true,
+      };
+    }
+
     case "UNDO_LOCAL": {
       if (!state.lastConfirmed) return state;
       const prevBattingOrder =
@@ -572,6 +636,13 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
 
     case "SET_PITCHER":
       return { ...state, currentPitcherId: action.playerId, pitchCountForCurrentPitcher: 0, pitchCountAck75: false, pitchCountAck85: false, pitchCountAck100: false, dirty: true };
+
+    // Opponent pitcher intelligence batch: unlike SET_PITCHER, this never
+    // resets a pitch count -- this app has no way to track the opposing
+    // pitcher's own pitch count at all (same limitation opponentPitchCount's
+    // own comment already documents), so there's nothing to reset.
+    case "SET_OPPONENT_PITCHER":
+      return { ...state, currentOpponentPitcherId: action.opponentPlayerId, dirty: true };
 
     case "SET_OPPONENT_BATTER_NAME":
       return { ...state, opponentBatterName: action.name, dirty: true };

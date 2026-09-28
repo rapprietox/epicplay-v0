@@ -90,6 +90,19 @@ export interface OpponentInsightInput {
   opponentName: string;
   pastGames: { date: string; result: "W" | "L" | "T"; ourScore: number; opponentScore: number }[];
   playerPerformances: { playerName: string; ab: number; h: number; avg: number }[];
+  // Opponent pitcher intelligence batch: present only when the next
+  // game's opponent has a pitcher we've actually faced before (a real
+  // opponent_pitcher_id on a logged at-bat, not just a roster guess --
+  // see next-game-panel.tsx).
+  pitcherReport?: {
+    pitcherName: string;
+    jerseyNumber: string | null;
+    teamAvgAgainst: number;
+    bestBatter: { name: string; avg: number } | null;
+    worstBatter: { name: string; avg: number } | null;
+    toughestPitchType: { pitchType: string; avg: number } | null;
+    topPitch: { pitchType: string; pct: number } | null;
+  } | null;
 }
 
 // Recomputed on every dashboard render rather than cached -- acceptable
@@ -107,6 +120,10 @@ export async function generateOpponentInsight(input: OpponentInsightInput): Prom
           `about to face ${input.opponentName} again. Using only the data below, ` +
           `write 2-3 short, concrete sentences (no headers, no bullet points) ` +
           `covering our record against them and any standout player performances. ` +
+          `If pitcherReport is present, also weave in our history against that ` +
+          `specific starting pitcher -- our team average against him, his toughest ` +
+          `pitch type for us, and our best/worst matchup hitters -- within that same ` +
+          `2-3 sentence budget, not as extra sentences tacked on. ` +
           `If the data is too thin for a real pattern, say so briefly instead of ` +
           `overreaching.\n\n${JSON.stringify(input, null, 2)}`,
       },

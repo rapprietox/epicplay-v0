@@ -16,6 +16,7 @@ import type {
   SubReason,
 } from "@/lib/supabase/types";
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
+import { RESULT_IS_OUT } from "@/lib/operator/types";
 
 async function requireOperatorGame(gameId: string) {
   const supabase = createClient();
@@ -79,6 +80,7 @@ export async function syncGameState(
     batting_order_position: number | null;
     current_at_bat_id: string | null;
     current_pitcher_id: string | null;
+    current_opponent_pitcher_id: string | null;
     opponent_batter_name: string | null;
     runners: Runners;
     pitch_count_for_current_pitcher: number;
@@ -106,6 +108,12 @@ export async function startDraftAtBat(
     inning: number;
     inning_half: InningHalf;
     batting_order_position: number | null;
+    // Opponent pitcher intelligence batch: who's pitching for them,
+    // mode 'hitting' only -- set here (draft creation), not at confirm
+    // time, since it needs to reflect whoever was actually on the mound
+    // for this specific at-bat, the same moment our own pitcher_id
+    // already gets fixed for a pitching-mode at-bat.
+    opponent_pitcher_id: string | null;
   }
 ): Promise<string> {
   const { supabase } = await requireOperatorGame(gameId);
@@ -120,6 +128,7 @@ export async function startDraftAtBat(
       inning: input.inning,
       inning_half: input.inning_half,
       batting_order_position: input.batting_order_position,
+      opponent_pitcher_id: input.opponent_pitcher_id,
     })
     .select("id")
     .single();
@@ -165,6 +174,66 @@ export async function logPitch(input: {
       .update({ pitch_count_for_current_pitcher: (state?.pitch_count_for_current_pitcher ?? 0) + 1 })
       .eq("game_id", input.gameId);
   }
+}
+
+// Quick Mode batch: one insert, already confirmed -- no draft phase, no
+// pitches row ever created (that's the entire point of the mode). Same
+// "skip pitch logging entirely" shape as confirmIntentionalWalk just
+// above (awaited, not fire-and-forget -- the caller needs the real,
+// server-generated id back before it can dispatch QUICK_CONFIRM_LOCAL).
+export interface QuickAtBatInput {
+  gameId: string;
+  mode: AtBatMode;
+  playerId: string | null;
+  pitcherId: string | null;
+  inning: number;
+  inningHalf: InningHalf;
+  battingOrderPosition: number | null;
+  result: AtBatResult;
+  hitType: HitType | null;
+  rbi: number;
+  runsScored: number;
+  // Opponent pitcher intelligence batch: same field, mode 'hitting' only
+  // -- Quick Mode at-bats can still be attributed to a specific opposing
+  // pitcher even though they carry no pitch-level detail.
+  opponentPitcherId: string | null;
+}
+
+export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: string }> {
+  const { supabase, game } = await requireOperatorGame(input.gameId);
+
+  const { data, error: insertError } = await supabase
+    .from("at_bats")
+    .insert({
+      game_id: input.gameId,
+      player_id: input.playerId,
+      pitcher_id: input.pitcherId,
+      mode: input.mode,
+      inning: input.inning,
+      inning_half: input.inningHalf,
+      batting_order_position: input.battingOrderPosition,
+      result: input.result,
+      hit_type: input.hitType,
+      rbi: input.rbi,
+      runs_scored: input.runsScored,
+      is_out: RESULT_IS_OUT[input.result],
+      opponent_pitcher_id: input.opponentPitcherId,
+      confirmed_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+  if (insertError || !data) throw new Error(insertError?.message ?? "Failed to log at-bat");
+
+  if (input.runsScored > 0) {
+    const update =
+      input.mode === "hitting"
+        ? { our_score: game.our_score + input.runsScored }
+        : { opponent_score: game.opponent_score + input.runsScored };
+    await supabase.from("games").update(update).eq("id", input.gameId);
+  }
+
+  revalidatePath("/operator");
+  return { atBatId: data.id };
 }
 
 export interface ConfirmAtBatInput {
@@ -672,7 +741,7 @@ export async function confirmChainSubstitution(gameId: string, input: ChainSubst
 }
 
 export async function endGame(gameId: string, notes: string) {
-  const { supabase } = await requireOperatorGame(gameId);
+  const { supabase, game } = await requireOperatorGame(gameId);
 
   const { data: atBats } = await supabase
     .from("at_bats")
@@ -682,7 +751,14 @@ export async function endGame(gameId: string, notes: string) {
 
   let totalRatio = 0;
   let count = 0;
-  if (atBats && atBats.length > 0) {
+  // Quick Mode batch: every at-bat in a quick-mode game has 0 pitches by
+  // design, not by an operator falling behind -- atBatAccuracyRatio would
+  // score nearly every one of them as a logging failure, dragging this
+  // game's score toward 0% for no real reason. Same "this metric doesn't
+  // apply here" treatment as intentional walks get within a full-mode
+  // game (see CONFIRM_INTENTIONAL_WALK's own comment) -- left null,
+  // rather than computed and misleading.
+  if (game.logging_mode !== "quick" && atBats && atBats.length > 0) {
     const { data: pitches } = await supabase
       .from("pitches")
       .select("at_bat_id")

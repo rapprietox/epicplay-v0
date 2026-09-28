@@ -12,6 +12,8 @@ export type GameType =
   | "championship";
 export type HomeAway = "home" | "away";
 export type GameStatus = "setup" | "active" | "completed" | "cancelled";
+// Quick Mode batch: see games.logging_mode's own comment below.
+export type LoggingMode = "full" | "quick";
 export type InningHalf = "top" | "bottom";
 export type AtBatResult =
   | "single"
@@ -249,6 +251,11 @@ export interface Database {
           max_innings: number | null;
           time_limit_minutes: number | null;
           new_inning_threshold_minutes: number | null;
+          // Quick Mode batch: 'full' (pitch-by-pitch, the original and
+          // still-default flow) or 'quick' (outcome-only). Set once at
+          // Start Game, read by the operator screen to decide which UI to
+          // render and never changed after that -- see the migration.
+          logging_mode: LoggingMode;
           created_at: string;
         };
         Insert: {
@@ -270,6 +277,7 @@ export interface Database {
           logging_accuracy_score?: number | null;
           notes?: string | null;
           override_season_rules?: boolean;
+          logging_mode?: LoggingMode;
           max_innings?: number | null;
           time_limit_minutes?: number | null;
           new_inning_threshold_minutes?: number | null;
@@ -328,6 +336,12 @@ export interface Database {
           // notation ("6-4-3 DP", "5-3", "F8", "L7", "E5"), computed
           // client-side and stored once per play on the batter's row.
           scorebook_notation: string | null;
+          // Opponent pitcher intelligence batch: who was pitching for the
+          // opponent during this at-bat, set only for mode='hitting' rows
+          // -- see the migration's comment for why this didn't already
+          // exist. null for at-bats logged before this batch, or whenever
+          // the operator never picked/corrected the opposing pitcher.
+          opponent_pitcher_id: string | null;
           confirmed_at: string | null;
           created_at: string;
         };
@@ -352,6 +366,7 @@ export interface Database {
           fielded_by_player_id?: string | null;
           fielded_by_opponent_player_id?: string | null;
           scorebook_notation?: string | null;
+          opponent_pitcher_id?: string | null;
           confirmed_at?: string | null;
           created_at?: string;
         };
@@ -480,6 +495,10 @@ export interface Database {
           batting_order_position: number | null;
           current_at_bat_id: string | null;
           current_pitcher_id: string | null;
+          // Opponent pitcher intelligence batch: mirrors current_pitcher_id
+          // for the opposing side -- set/corrected by the operator while
+          // we're hitting, so it doesn't need re-picking on every at-bat.
+          current_opponent_pitcher_id: string | null;
           opponent_batter_name: string | null;
           runners: Runners;
           pitch_count_for_current_pitcher: number;
@@ -504,6 +523,7 @@ export interface Database {
           batting_order_position?: number | null;
           current_at_bat_id?: string | null;
           current_pitcher_id?: string | null;
+          current_opponent_pitcher_id?: string | null;
           opponent_batter_name?: string | null;
           runners?: Runners;
           pitch_count_for_current_pitcher?: number;

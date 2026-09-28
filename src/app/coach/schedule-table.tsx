@@ -347,6 +347,13 @@ function GameRow({ game, allGames, prominent }: { game: Game; allGames: Game[]; 
             Continue
           </Link>
         )}
+        {/* Official scorebook PDF export batch: "Coach dashboard -> click
+            any completed game -> Export Scorebook button." */}
+        {game.status === "completed" && (
+          <Link href={`/coach/games/${game.id}/scorebook`} className="text-xs text-accent-gold hover:underline">
+            Export Scorebook
+          </Link>
+        )}
       </td>
     </>
   );

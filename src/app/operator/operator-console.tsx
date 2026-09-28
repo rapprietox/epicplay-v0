@@ -64,6 +64,7 @@ import {
   confirmIntentionalWalk,
   logGameEvent,
   logPitch,
+  logQuickAtBat,
   logStolenBase,
   markLateArrival,
   startDraftAtBat,
@@ -71,6 +72,7 @@ import {
   undoAtBat,
 } from "./actions";
 import { StrikeZoneGrid, OUTCOME_COLOR, classifyZone } from "./strike-zone-grid";
+import { QuickModeGrid } from "./quick-mode-grid";
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
 import { Scoreboard } from "./scoreboard";
@@ -345,6 +347,7 @@ export function OperatorConsole({
   // rather than recomputing, so it doesn't need to know which path built it.
   const [pendingNotation, setPendingNotation] = useState<string | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
+  const [opponentPitcherPickerOpen, setOpponentPitcherPickerOpen] = useState(false);
   const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
   // from the quick-actions panel -- separate from the existing per-base
@@ -619,6 +622,17 @@ export function OperatorConsole({
   // does via SET_PITCHER.
   const opponentPitcherInfo = useMemo(() => opponentPlayers.find((p) => p.position === "P"), [opponentPlayers]);
 
+  // Opponent pitcher intelligence batch: the operator-set/corrected
+  // opposing pitcher (SET_OPPONENT_PITCHER), distinct from
+  // opponentPitcherInfo's static roster-position guess above -- this is
+  // the one actually persisted onto at_bats.opponent_pitcher_id, so
+  // scouting data can be attributed to a real, specific opposing player
+  // rather than assumed from their photo-import position tag.
+  const currentOpponentPitcher = useMemo(
+    () => opponentPlayers.find((p) => p.id === state.currentOpponentPitcherId),
+    [opponentPlayers, state.currentOpponentPitcherId]
+  );
+
   // Fix 7 (six-fixes batch, appended after): "on deck" is just the next
   // slot in the batting order, wrapping from the last position back to
   // the first -- lineup.batting_order isn't guaranteed to already be
@@ -696,6 +710,7 @@ export function OperatorConsole({
       inning: state.inning,
       inning_half: state.inningHalf,
       batting_order_position: state.mode === "hitting" ? state.battingOrderPosition : null,
+      opponent_pitcher_id: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
     });
     dispatch({ type: "START_DRAFT_LOCAL", atBatId: id });
     return id;
@@ -1814,6 +1829,55 @@ export function OperatorConsole({
     }
   }
 
+  // Quick Mode batch: one tap, one already-confirmed at-bat -- no draft,
+  // no pitches, no ask-queue for ambiguous runner movement (that's the
+  // whole trade this mode makes for speed). isSac forces the ScoreMethod
+  // to "sac_fly" for whichever runner(s) suggestRunnerAdvance scores --
+  // the SAC FLY/SAC BUNT buttons are how the operator states that
+  // explicitly, since there's no per-runner "how did they score?" prompt
+  // here to ask it the normal way (see ScoreMethodMenu in full mode).
+  async function handleQuickPick(pick: { result: AtBatResult; hitType: HitType | null; isSac: boolean }) {
+    if (state.outs >= 3) return;
+    setBanner(null);
+    const batter = currentBatterRunner();
+    const { runners: suggestion, scored } = suggestRunnerAdvance(state.runners, batter, pick.result);
+    const method = pick.isSac ? "sac_fly" : resultToScoreMethod(pick.result);
+    const runsScored = scored.length;
+    const rbi = SCORE_METHOD_AWARDS_RBI[method] ? runsScored : 0;
+    const outsRecorded = RESULT_IS_OUT[pick.result] ? 1 : 0;
+    const runnersBeforeAtBat = state.runners;
+
+    try {
+      const { atBatId } = await logQuickAtBat({
+        gameId: game.id,
+        mode: state.mode,
+        playerId: state.mode === "hitting" ? (battingPlayer?.player_id ?? null) : null,
+        pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        battingOrderPosition: state.mode === "hitting" ? state.battingOrderPosition : null,
+        result: pick.result,
+        hitType: pick.hitType,
+        rbi,
+        runsScored,
+        opponentPitcherId: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
+      });
+      dispatch({
+        type: "QUICK_CONFIRM_LOCAL",
+        atBatId,
+        result: pick.result,
+        runners: suggestion,
+        scored: scored.map((r) => ({ runner: r, method })),
+        outsRecorded,
+        runnersBeforeAtBat,
+      });
+      syncRunners(suggestion);
+      setSummaryFlash(`${RESULT_LABELS[pick.result]}${runsScored > 0 ? ` — ${runsScored} run${runsScored === 1 ? "" : "s"}` : ""}`);
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Failed to log at-bat -- check connection and try again");
+    }
+  }
+
   // Fix 5: a direct HBP shortcut for when the operator knows it was a hit
   // batter without having tapped the exact zone -- forces zone null
   // (rather than trusting state.selectedZone to already be null, in case
@@ -2105,11 +2169,26 @@ export function OperatorConsole({
             the same pitchCountColor thresholds (amber 75+, red 85+) the
             pitching-mode batter-strip pitch count already uses, so both
             readouts of that same number always agree. */}
-        <p className={`truncate text-center font-mono text-[13px] ${state.mode === "hitting" ? "text-foreground/60" : pitchCountColor}`}>
-          {state.mode === "hitting"
-            ? `${opponentPitcherInfo?.name ?? "OPP. PITCHER"} · ${state.opponentPitchCount} pitches`
-            : `${currentPitcher?.name ?? "—"} · ${state.pitchCountForCurrentPitcher} pitches`}
-        </p>
+        {/* Opponent pitcher intelligence batch: tappable in hitting mode
+            only -- opens a picker to set/correct who's actually pitching
+            for them, since that's what now gets persisted onto
+            at_bats.opponent_pitcher_id (see confirmAtBat/handleQuickPick).
+            currentOpponentPitcher (operator-set) wins over
+            opponentPitcherInfo (the static roster-position guess) once
+            it's been picked. */}
+        {state.mode === "hitting" ? (
+          <button
+            type="button"
+            onClick={() => setOpponentPitcherPickerOpen(true)}
+            className="truncate text-center font-mono text-[13px] text-foreground/60 underline decoration-dotted"
+          >
+            {(currentOpponentPitcher ?? opponentPitcherInfo)?.name ?? "OPP. PITCHER"} · {state.opponentPitchCount} pitches
+          </button>
+        ) : (
+          <p className={`truncate text-center font-mono text-[13px] ${pitchCountColor}`}>
+            {currentPitcher?.name ?? "—"} · {state.pitchCountForCurrentPitcher} pitches
+          </p>
+        )}
 
         <div className="flex items-center gap-2">
           {/* Feature 2 (game-rules batch): elapsed time, always shown once
@@ -2200,6 +2279,61 @@ export function OperatorConsole({
           other's visible space when stacked -- overflow-hidden alone,
           without an explicit row size, lets row content grow to whatever
           it needs and only clips the *combined* result. */}
+      {game.logging_mode === "quick" ? (
+        // Quick Mode batch: "completely simplified -- replaces the strike
+        // zone grid and field diagram with a simple button grid." Rather
+        // than threading a quick-mode branch through every step of the
+        // full mode's two-panel layout below (strike zone sizing, flow
+        // steps, hit-type/result filtering, none of which apply here),
+        // this is a single self-contained alternative to that whole grid
+        // -- everything around it (top bar, transient banners, bottom
+        // Undo bar, and every modal rendered below -- runner quick-action
+        // menu, Pickoff, Substitution, Late Arrival) is unchanged and
+        // shared between both modes, since none of that is pitch-logging
+        // detail.
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 overflow-y-auto p-4">
+          <p className="font-heading text-center text-sm font-semibold uppercase tracking-wide text-white">
+            {state.mode === "hitting"
+              ? `#${battingPlayerInfo?.jersey_number ?? "—"} ${battingPlayerInfo?.name ?? "Batter"}`
+              : state.opponentBatterName || "Opposing batter"}
+            {" · "}
+            {state.inningHalf.toUpperCase()} {state.inning}
+            {" · "}
+            {teamName} {state.ourScore} – {game.opponent_name} {state.opponentScore}
+          </p>
+
+          <QuickModeGrid onPick={(def) => void handleQuickPick(def)} disabled={state.outs >= 3} />
+
+          <div className="flex items-center gap-4 text-sm text-foreground/70">
+            <span>
+              Runners: {(["first", "second", "third"] as Base[]).map((b) => (state.runners[b] ? "●" : "○")).join(" ")}{" "}
+              1B 2B 3B
+            </span>
+            <span>Outs: {state.outs}</span>
+          </div>
+
+          <div className="w-full max-w-[220px]">
+            <BaserunnerDiamond
+              runners={state.runners}
+              pending={state.runnersPendingConfirmation}
+              onBaseTap={(b) => (state.runners[b] ? setRunnerActionMenu(b) : setRunnerPicker(b))}
+            />
+          </div>
+
+          <div className="flex w-full max-w-[420px] gap-2">
+            <QuickButton
+              label="Pickoff"
+              onClick={() => setPickoffWizard({ step: "base" })}
+              className="glossy flex-1 justify-start border-l-4 border-l-accent-primary pl-3 text-left"
+            />
+            <QuickButton
+              label="Substitution"
+              onClick={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: true })}
+              className="glossy flex-1 justify-start border-l-4 border-l-accent-gold pl-3 text-left"
+            />
+          </div>
+        </div>
+      ) : (
       <div className="grid flex-1 grid-cols-1 grid-rows-2 overflow-hidden md:grid-cols-2 md:grid-rows-1">
         {/* LEFT PANEL -- pitching/hitting the ball. Nothing else. Fix 5:
             the "Heat Map" toggle (and the session-heat-map render mode it
@@ -2863,6 +2997,7 @@ export function OperatorConsole({
           </div>
         </div>
       </div>
+      )}
 
       {/* BOTTOM BAR -- 48px, always visible */}
       <div className="z-10 flex h-[48px] shrink-0 items-center justify-between gap-2 border-t-2 border-accent-primary/40 bg-surface/90 px-3">
@@ -3025,6 +3160,38 @@ export function OperatorConsole({
               })}
             </div>
             <button onClick={() => setPitcherPickerOpen(false)} className="mt-3 w-full text-xs text-foreground/50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {opponentPitcherPickerOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-xs rounded-lg border border-border bg-surface p-4">
+            <p className="mb-2 text-xs uppercase tracking-wide text-foreground/40">Who&apos;s pitching for them?</p>
+            <div className="flex max-h-72 flex-col gap-1.5 overflow-y-auto">
+              {opponentPlayers.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => {
+                    dispatch({ type: "SET_OPPONENT_PITCHER", opponentPlayerId: p.id });
+                    void withOfflineRetry(`oppitcher-${game.id}-${Date.now()}`, () =>
+                      syncGameState(game.id, { current_opponent_pitcher_id: p.id })
+                    );
+                    setOpponentPitcherPickerOpen(false);
+                  }}
+                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
+                >
+                  #{p.jersey_number ?? "—"} {p.name}
+                  {p.position === "P" && <span className="ml-2 text-[11px] text-accent-green">(roster: P)</span>}
+                </button>
+              ))}
+              {opponentPlayers.length === 0 && (
+                <p className="px-1 text-xs text-foreground/40">No opponent roster imported for this game yet.</p>
+              )}
+            </div>
+            <button onClick={() => setOpponentPitcherPickerOpen(false)} className="mt-3 w-full text-xs text-foreground/50">
               Cancel
             </button>
           </div>

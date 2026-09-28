@@ -2,9 +2,10 @@
 
 import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import type { Database, PlayerPositionCalibration } from "@/lib/supabase/types";
+import type { Database, LoggingMode, PlayerPositionCalibration } from "@/lib/supabase/types";
 import { nearestSavedPosition } from "@/lib/field-zones";
 import { saveLineupAndUmpire, startGame, type LineupSlot } from "./actions";
+import { LoggingModeSelector } from "./logging-mode-selector";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
 
@@ -74,6 +75,10 @@ export function LineupBuilder({
     () => new Set(initialLineup.filter((l) => l.status === "absent").map((l) => l.player_id))
   );
   const [umpireName, setUmpireName] = useState(initialUmpireName ?? "");
+  // Quick Mode batch: defaults to "full" (the recommended path) -- see
+  // logging-mode-selector.tsx for why selecting Quick Mode always routes
+  // through the motivation card before this actually changes.
+  const [loggingMode, setLoggingMode] = useState<LoggingMode>("full");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   // Fix 1 (print-lineup batch): "Print Lineup should only be active
@@ -258,7 +263,7 @@ export function LineupBuilder({
         // the "auto-save when Start Game is clicked" half of Fix 1.
         await saveLineupAndUmpire(gameId, { lineup: buildLineupPayload(), umpireName });
         setHasSavedLineup(true);
-        await startGame(gameId);
+        await startGame(gameId, loggingMode);
         window.location.href = `/operator?game=${gameId}`;
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to start game");
@@ -499,6 +504,14 @@ export function LineupBuilder({
             )}
           </ul>
         </div>
+      </div>
+
+      {/* Quick Mode batch: "on the pre-game setup screen, after lineup is
+          set, show a mode selector" -- placed here, below the lineup/
+          batting order area and above the umpire field + Save/Start
+          buttons, so it reads as the last decision before starting. */}
+      <div className="mt-6">
+        <LoggingModeSelector value={loggingMode} onChange={setLoggingMode} />
       </div>
 
       <div className="mt-6">

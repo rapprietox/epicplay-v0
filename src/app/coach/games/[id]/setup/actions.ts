@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { extractOpponentRoster, type ExtractedOpponentPlayer } from "@/lib/anthropic";
-import type { LineupStatus } from "@/lib/supabase/types";
+import type { LineupStatus, LoggingMode } from "@/lib/supabase/types";
 
 async function requireCoachGame(gameId: string) {
   const supabase = createClient();
@@ -72,7 +72,7 @@ export async function saveLineupAndUmpire(
   revalidatePath(`/coach/games/${gameId}/setup`);
 }
 
-export async function startGame(gameId: string) {
+export async function startGame(gameId: string, loggingMode: LoggingMode) {
   const { supabase, game } = await requireCoachGame(gameId);
 
   // Feature 1 (lineup-status batch): lineup now also holds reserve/absent
@@ -88,7 +88,7 @@ export async function startGame(gameId: string) {
   if (!count || count < 9) throw new Error("Lineup needs at least 9 players");
   if (!game.umpire_name) throw new Error("Umpire name is required");
 
-  const { error } = await supabase.from("games").update({ status: "active" }).eq("id", gameId);
+  const { error } = await supabase.from("games").update({ status: "active", logging_mode: loggingMode }).eq("id", gameId);
   if (error) throw new Error(error.message);
 
   revalidatePath("/coach");

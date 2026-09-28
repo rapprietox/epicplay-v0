@@ -61,6 +61,7 @@ export function buildInitialStateFromServer(
     opponentScore: game.opponent_score,
     battingOrderPosition: gs.batting_order_position ?? 1,
     currentPitcherId: gs.current_pitcher_id,
+    currentOpponentPitcherId: gs.current_opponent_pitcher_id,
     opponentBatterName: gs.opponent_batter_name ?? "",
     runners: gs.runners ?? {},
     currentAtBatId: draft?.id ?? null,

@@ -10,6 +10,7 @@ import { LeadersBoard } from "./leaders-board";
 import { ScheduleTable } from "./schedule-table";
 import { RealtimeRefresh } from "./realtime-refresh";
 import { TeamAnalytics } from "./team-analytics";
+import { OpponentScoutingSection } from "./opponent-scouting-section";
 import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import type { AtBatResult } from "@/lib/supabase/types";
 
@@ -34,7 +35,7 @@ export default async function CoachPage() {
     supabase.from("teams").select("name").eq("id", teamId).single(),
     supabase.from("players").select("*").eq("team_id", teamId).order("jersey_number", { ascending: true }),
     supabase.from("games").select("*").eq("team_id", teamId),
-    supabase.from("opponents").select("name").eq("team_id", teamId).order("name"),
+    supabase.from("opponents").select("*").eq("team_id", teamId).order("name"),
   ]);
 
   const allGames = games ?? [];
@@ -130,6 +131,8 @@ export default async function CoachPage() {
           opponentNames={(opponents ?? []).map((o) => o.name)}
           nextOpponentName={nextGame?.opponent_name ?? null}
         />
+
+        <OpponentScoutingSection opponents={opponents ?? []} games={allGames} />
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <RosterSection players={players ?? []} />

@@ -127,6 +127,11 @@ export interface OperatorState {
   opponentScore: number;
   battingOrderPosition: number;
   currentPitcherId: string | null;
+  // Opponent pitcher intelligence batch: who's pitching for them right
+  // now, while we're hitting -- mirrors currentPitcherId for the
+  // opposing side. Only meaningful in mode 'hitting'; null is a real,
+  // common state (never picked/corrected yet).
+  currentOpponentPitcherId: string | null;
   opponentBatterName: string;
   runners: Runners;
   // Snapshot of `runners` taken when the current draft at-bat started, so
