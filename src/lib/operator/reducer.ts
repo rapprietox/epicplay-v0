@@ -113,6 +113,24 @@ export type OperatorAction =
   // accuracy tracking is skipped), generalized to any result instead of
   // just a walk.
   | { type: "QUICK_CONFIRM_LOCAL"; atBatId: string; result: AtBatResult; runners: Runners; scored: ScoredRunner[]; outsRecorded: number; runnersBeforeAtBat: Runners }
+  // Quick Mode scorekeeper batch: mirrors CONFIRM_DOUBLE_PLAY (batter's
+  // own out + one runner's out, two rows, 2 outs recorded at once) but
+  // skips the accuracy-ratio bookkeeping and pendingHitType/fieldTap
+  // reset that CONFIRM_DOUBLE_PLAY does -- same reasoning as
+  // QUICK_CONFIRM_LOCAL/CONFIRM_INTENTIONAL_WALK: Quick Mode never
+  // populates those fields to begin with, and folding a 0-pitch play into
+  // the running "Logging: N% accurate" average would unfairly ding the
+  // operator for something never meant to be pitch-logged. No triple-play
+  // variant -- deliberately out of scope for Quick Mode's simpler flow.
+  | { type: "QUICK_DOUBLE_PLAY_LOCAL"; atBatId: string; secondAtBatId: string; removedBase: Base; runnersBeforeAtBat: Runners }
+  // Quick Mode scorekeeper batch: the standalone all-runners Wild
+  // Pitch/Passed Ball/Balk buttons (reintroduced for Quick Mode only --
+  // full mode deliberately replaced these with a per-runner reason menu,
+  // see the Runner-actions consolidation note in CLAUDE.md) move every
+  // occupied base at once, computed as one pure snapshot
+  // (advanceAllRunnersOneBase) rather than three sequential calls into a
+  // function that reads state.runners from a stale closure each time.
+  | { type: "ADVANCE_ALL_RUNNERS_LOCAL"; runners: Runners; runsScored: number }
   | { type: "UNDO_LOCAL" }
   | { type: "CLEAR_LAST_CONFIRMED" }
   | { type: "SET_RUNNER"; base: Base; runner: RunnerState | null }
@@ -584,6 +602,57 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           prevBoxScore,
           deadline: Date.now() + UNDO_WINDOW_MS,
         },
+        dirty: true,
+      };
+    }
+
+    case "QUICK_DOUBLE_PLAY_LOCAL": {
+      const nextBattingOrder =
+        state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+      const prevBoxScore = {
+        hitsThisInning: state.hitsThisInning,
+        runsThisInning: state.runsThisInning,
+        errorsThisInning: state.errorsThisInning,
+        kThisInning: state.kThisInning,
+        hitsGame: state.hitsGame,
+        runsGame: state.runsGame,
+        errorsGame: state.errorsGame,
+        kGame: state.kGame,
+      };
+      return {
+        ...state,
+        runners: { ...state.runners, [action.removedBase]: null },
+        outs: Math.min(3, state.outs + 2),
+        battingOrderPosition: nextBattingOrder,
+        runnersPendingConfirmation: false,
+        currentPlayForceOuts: [],
+        lastConfirmed: {
+          atBatId: action.atBatId,
+          secondAtBatId: action.secondAtBatId,
+          thirdAtBatId: null,
+          mode: state.mode,
+          runsScored: 0,
+          outsRecorded: 2,
+          pitchesThisAtBat: 0,
+          runnersBeforeAtBat: action.runnersBeforeAtBat,
+          prevAccuracyRatioSum: state.accuracyRatioSum,
+          prevAccuracyAtBatCount: state.accuracyAtBatCount,
+          prevBoxScore,
+          deadline: Date.now() + UNDO_WINDOW_MS,
+        },
+        dirty: true,
+      };
+    }
+
+    case "ADVANCE_ALL_RUNNERS_LOCAL": {
+      const runsDelta = state.mode === "hitting" ? action.runsScored : 0;
+      return {
+        ...state,
+        runners: action.runners,
+        ourScore: state.mode === "hitting" ? state.ourScore + action.runsScored : state.ourScore,
+        opponentScore: state.mode === "pitching" ? state.opponentScore + action.runsScored : state.opponentScore,
+        runsThisInning: state.runsThisInning + runsDelta,
+        runsGame: state.runsGame + runsDelta,
         dirty: true,
       };
     }

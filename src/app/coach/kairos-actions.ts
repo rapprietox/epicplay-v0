@@ -6,7 +6,7 @@ import { computeBattingLines, computePitchingLines, formatAvg } from "@/lib/stat
 import { computeBatterLinesVsPitcher, teamAvgAgainst } from "@/lib/opponent-scouting";
 import { recordAgainstOpponent, formatRecord } from "@/lib/opponent-history";
 import { KAIROS_TOOLS } from "@/lib/kairos/tools";
-import type { Database, GameType } from "@/lib/supabase/types";
+import type { Database, GameType, LoggingMode } from "@/lib/supabase/types";
 
 // KAIROS batch. Model: the request specified "claude-sonnet-4-6", which
 // isn't a real model id -- claude-sonnet-5 is used instead (a real,
@@ -129,6 +129,13 @@ async function buildSystemPrompt(supabase: SupabaseClient, teamId: string): Prom
     .join(", ");
 
   const activeGame = (games ?? []).find((g) => g.status === "active") ?? null;
+  // Fix 2 (KAIROS second fixes batch): previously only opponent name and
+  // score were injected, which is why KAIROS could see a game was
+  // happening but not answer anything about it (date, time, home/away,
+  // type, status, season, or its logging mode). All of it was already
+  // being fetched above (`games`/`seasons`) -- this was a context-
+  // building gap, not a missing query.
+  const activeGameSeasonName = activeGame?.season_id ? (seasons ?? []).find((s) => s.id === activeGame.season_id)?.name ?? null : null;
 
   // Fix 2: KAIROS was told "I don't have access to today's actual
   // calendar date" -- true until now, since nothing ever injected it.
@@ -153,7 +160,14 @@ You have access to real data about this team:
   listed here, you have their real data; never say you don't):
 ${rosterStats || "No players on the roster yet"}
 - Opponents faced this season: ${opponentsFaced || "None yet"}
-- Current active game: ${activeGame ? `vs ${activeGame.opponent_name}, ${activeGame.our_score}-${activeGame.opponent_score}` : "No game currently in progress"}
+- Current active game: ${
+    activeGame
+      ? `id ${activeGame.id} -- vs ${activeGame.opponent_name} -- date ${activeGame.game_date}, time ${activeGame.game_time ?? "TBD"}, ` +
+        `${activeGame.home_away ?? "unknown"} game, type ${activeGame.game_type}, status ${activeGame.status}, ` +
+        `logging mode ${activeGame.logging_mode}, season ${activeGameSeasonName ?? "none assigned"}, ` +
+        `score: ${team?.name ?? "Us"} ${activeGame.our_score} -- ${activeGame.opponent_name} ${activeGame.opponent_score}`
+      : "No game currently in progress"
+  }
 
 You speak in short, confident sentences. You are a baseball expert who also
 understands data. You never say "I am Claude" or mention Anthropic. You are
@@ -182,6 +196,13 @@ there is for a bulk import. Map the game type from what the user says
 season, "playoff" -> playoff, "tournament" -> tournament, "championship" ->
 championship); if it's genuinely unclear, ask which type rather than
 guessing. A single game never needs a season -- create it without one.
+
+If the user asks to switch a game's logging mode (full <-> quick), call
+switch_game_mode directly -- it's a small, reversible field change, not a
+bulk import, so it doesn't need a propose/confirm step either. Use the
+active game's id from your own context above unless the user names a
+different game. After it succeeds, tell the user the operator screen
+needs a refresh to pick up the change (it doesn't update live).
 
 Keep responses concise. Use real numbers from the data. Be specific, not
 generic. A coach doesn't want "Carlos is a good hitter" -- they want "Carlos
@@ -414,6 +435,28 @@ async function executeCreateSingleGame(supabase: SupabaseClient, teamId: string,
   };
 }
 
+interface SwitchGameModeInput {
+  game_id: string;
+  new_mode: "full" | "quick";
+}
+
+// KAIROS fixes batch, Fix 2 (second batch). Team-scoped (.eq("team_id",
+// teamId) on the update, not just trusting the game_id Claude was given)
+// so a stale/hallucinated id from a different team can't silently write
+// through -- same scoping every other write in this file already applies.
+async function executeSwitchGameMode(supabase: SupabaseClient, teamId: string, input: SwitchGameModeInput) {
+  const { data: game, error } = await supabase
+    .from("games")
+    .update({ logging_mode: input.new_mode as LoggingMode })
+    .eq("id", input.game_id)
+    .eq("team_id", teamId)
+    .select("id, opponent_name")
+    .maybeSingle();
+  if (error) return { error: `Failed to switch logging mode: ${error.message}` };
+  if (!game) return { error: "No game with that id found for this team." };
+  return { switched: true, gameId: game.id, opponentName: game.opponent_name, newMode: input.new_mode };
+}
+
 export async function askKairos(history: KairosMessage[], message: string): Promise<KairosResponse> {
   const { supabase, teamId } = await requireCoachTeam();
   const system = await buildSystemPrompt(supabase, teamId);
@@ -458,6 +501,8 @@ export async function askKairos(history: KairosMessage[], message: string): Prom
     toolResult = await executeSuggestLineup(supabase, teamId, toolUse.input as { pitcher_hand_filter?: "left" | "right" });
   } else if (toolUse.name === "create_single_game") {
     toolResult = await executeCreateSingleGame(supabase, teamId, toolUse.input as CreateSingleGameInput);
+  } else if (toolUse.name === "switch_game_mode") {
+    toolResult = await executeSwitchGameMode(supabase, teamId, toolUse.input as SwitchGameModeInput);
   } else {
     toolResult = { error: "Unknown tool" };
   }

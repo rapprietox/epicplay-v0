@@ -135,4 +135,24 @@ export const KAIROS_TOOLS: Anthropic.Tool[] = [
       required: ["opponent_name", "date", "time", "home_away", "game_type"],
     },
   },
+  {
+    // KAIROS fixes batch, Fix 2 (second fixes batch). Writes directly
+    // (games.logging_mode, same as create_single_game's reasoning for
+    // skipping the propose/confirm pattern) -- switching modes mid-game
+    // is a small, single-field, easily-reversed change, and the operator
+    // console has to be told to refresh anyway (it reads logging_mode
+    // once on load, not live), so there's no real "undo" cost to getting
+    // it wrong that a confirm step would meaningfully protect against.
+    name: "switch_game_mode",
+    description:
+      "Switch a game's logging mode between 'full' (pitch-by-pitch, strike zone, heat maps) and 'quick' (result-only scorekeeper, no pitch detail). Use this when the user says things like 'switch to full logging', 'I want to track pitches now', or 'switch this game to quick mode'. Use the active game from your own context unless the user names a different one.",
+    input_schema: {
+      type: "object",
+      properties: {
+        game_id: { type: "string", description: "The game's id -- use the active game's id from your own context unless told otherwise." },
+        new_mode: { type: "string", enum: ["full", "quick"] },
+      },
+      required: ["game_id", "new_mode"],
+    },
+  },
 ];

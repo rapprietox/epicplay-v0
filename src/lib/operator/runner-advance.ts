@@ -110,6 +110,19 @@ export function isForced(base: "first" | "second" | "third", runnersAtStart: Run
   return Boolean(runnersAtStart.first) && Boolean(runnersAtStart.second);
 }
 
+// Quick Mode scorekeeper batch: every occupied base advances one at once
+// (Wild Pitch / Passed Ball / Balk, reintroduced as standalone all-runners
+// buttons for Quick Mode only -- see ADVANCE_ALL_RUNNERS_LOCAL's own
+// comment in reducer.ts). Computed as one pure snapshot of `runners`
+// rather than three sequential advanceOneRunner calls, which would each
+// need to read the *already-advanced* state to avoid falsely blocking a
+// later base on a spot the play has actually already vacated.
+export function advanceAllRunnersOneBase(runners: Runners): AdvanceResult {
+  const scored: RunnerState[] = [];
+  if (runners.third) scored.push(runners.third);
+  return { runners: { first: null, second: runners.first ?? null, third: runners.second ?? null }, scored };
+}
+
 // Advances a single occupied base by one (Stolen Base / Error Advance /
 // the "Advance" quick action). Scores the runner if advancing from third.
 export function advanceOneRunner(runners: Runners, base: "first" | "second" | "third"): AdvanceResult {

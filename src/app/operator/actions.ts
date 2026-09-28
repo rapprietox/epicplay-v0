@@ -207,6 +207,14 @@ export interface QuickAtBatInput {
   // -- Quick Mode at-bats can still be attributed to a specific opposing
   // pitcher even though they carry no pitch-level detail.
   opponentPitcherId: string | null;
+  // Quick Mode scorekeeper batch: lets a button relabel its own result for
+  // print/box-score purposes without needing a new AtBatResult value --
+  // "Kl" (strikeout looking) and "Foul Out" both reuse an existing result
+  // (strikeout / flyout) this way, the same relabeling precedent full
+  // mode's own foul-territory result step already established (see
+  // notationFor's "if (ab.scorebook_notation) return ab.scorebook_notation"
+  // check in the scorebook page, which this feeds).
+  scorebookNotation?: string | null;
 }
 
 export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: string }> {
@@ -228,6 +236,7 @@ export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: 
       runs_scored: input.runsScored,
       is_out: RESULT_IS_OUT[input.result],
       opponent_pitcher_id: input.opponentPitcherId,
+      scorebook_notation: input.scorebookNotation ?? null,
       confirmed_at: new Date().toISOString(),
     })
     .select("id")
@@ -244,6 +253,94 @@ export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: 
 
   revalidatePath("/operator");
   return { atBatId: data.id };
+}
+
+export interface QuickDoublePlayInput {
+  gameId: string;
+  mode: AtBatMode;
+  playerId: string | null;
+  pitcherId: string | null;
+  inning: number;
+  inningHalf: InningHalf;
+  battingOrderPosition: number | null;
+  secondOutRunner: { type: "player" | "opponent"; id: string | null };
+  opponentPitcherId: string | null;
+}
+
+// Quick Mode scorekeeper batch: the same two-rows-per-double-play shape
+// confirmDoublePlay uses (batter's own out + a second row for the other
+// runner put out -- see 20260908150001_double_play_and_fielding.sql for
+// why two rows), but both inserted already-confirmed in one call instead
+// of updating a pre-existing draft row, since Quick Mode never creates
+// one. No fielding chain/notation and no triple-play extension -- Quick
+// Mode has no field-diagram/position-picker data source to ask for one,
+// consistent with the mode's whole "no pitch-by-pitch location data"
+// premise; a deliberately lighter flow than full mode's DoublePlayWizard.
+export async function logQuickDoublePlay(input: QuickDoublePlayInput): Promise<{ atBatId: string; secondAtBatId: string }> {
+  const { supabase } = await requireOperatorGame(input.gameId);
+
+  const { data: batterRow, error: batterError } = await supabase
+    .from("at_bats")
+    .insert({
+      game_id: input.gameId,
+      player_id: input.playerId,
+      pitcher_id: input.pitcherId,
+      mode: input.mode,
+      inning: input.inning,
+      inning_half: input.inningHalf,
+      batting_order_position: input.battingOrderPosition,
+      result: "double_play",
+      is_out: true,
+      out_type: "force",
+      rbi: 0,
+      runs_scored: 0,
+      opponent_pitcher_id: input.opponentPitcherId,
+      confirmed_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+  if (batterError || !batterRow) throw new Error(batterError?.message ?? "Failed to log double play");
+
+  const { data: secondRow, error: secondError } = await supabase
+    .from("at_bats")
+    .insert({
+      game_id: input.gameId,
+      mode: input.mode,
+      player_id: input.secondOutRunner.type === "player" ? input.secondOutRunner.id : null,
+      pitcher_id: input.pitcherId,
+      inning: input.inning,
+      inning_half: input.inningHalf,
+      result: "double_play",
+      is_out: true,
+      out_type: "force",
+      rbi: 0,
+      runs_scored: 0,
+      confirmed_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+  if (secondError || !secondRow) throw new Error(secondError?.message ?? "Failed to log second out");
+
+  revalidatePath("/operator");
+  return { atBatId: batterRow.id, secondAtBatId: secondRow.id };
+}
+
+// Quick Mode scorekeeper batch: a sac fly / squeeze play scores a runner
+// through the diamond's own ad-hoc "Scored" path (applyRunnerAction),
+// which only ever bumped the team score (adjustScore) -- it never wrote
+// the RBI onto the batter's own at_bats row, in EITHER mode. Called only
+// from the two call sites where the batter who should get credit is
+// unambiguous (the sac-fly queue / squeeze prompt fire immediately after
+// that specific batter's at-bat confirms) -- never from the generic
+// ad-hoc runner-action path, where there's no reliable "current batter"
+// to credit (see that path's own comment).
+export async function incrementAtBatRbi(gameId: string, atBatId: string, delta: number) {
+  const { supabase } = await requireOperatorGame(gameId);
+  const { data: row } = await supabase.from("at_bats").select("rbi").eq("id", atBatId).single();
+  if (!row) return;
+  const { error } = await supabase.from("at_bats").update({ rbi: Math.max(0, row.rbi + delta) }).eq("id", atBatId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/operator");
 }
 
 export interface ConfirmAtBatInput {

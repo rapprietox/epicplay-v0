@@ -30,7 +30,7 @@ import {
   type OutBase,
 } from "@/lib/field-zones";
 import { operatorReducer, UNDO_WINDOW_MS } from "@/lib/operator/reducer";
-import { advanceOneRunner, isForced, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
+import { advanceAllRunnersOneBase, advanceOneRunner, isForced, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
 import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
 import {
   RESULT_IS_OUT,
@@ -46,6 +46,7 @@ import {
   SCORE_METHOD_LABELS,
   resultToScoreMethod,
   type Base,
+  type OperatorState,
   type RunnerQuickAction,
   type ScoredRunner,
   type ScoreMethod,
@@ -62,9 +63,11 @@ import {
   confirmChainSubstitution,
   confirmDoublePlay,
   confirmIntentionalWalk,
+  incrementAtBatRbi,
   logGameEvent,
   logPitch,
   logQuickAtBat,
+  logQuickDoublePlay,
   logStolenBase,
   markLateArrival,
   startDraftAtBat,
@@ -72,7 +75,7 @@ import {
   undoAtBat,
 } from "./actions";
 import { StrikeZoneGrid, OUTCOME_COLOR, classifyZone } from "./strike-zone-grid";
-import { QuickModeGrid } from "./quick-mode-grid";
+import { QuickModeGrid, type QuickModeButtonDef } from "./quick-mode-grid";
 import { KairosVoiceButton } from "./kairos-voice-button";
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
@@ -95,6 +98,22 @@ type OpponentPlayer = Database["public"]["Tables"]["opponent_players"]["Row"];
 
 const PITCH_TYPES: PitchType[] = ["fastball", "curveball", "changeup", "slider", "2seam", "other"];
 const SCORE_METHODS: ScoreMethod[] = ["hit", "sac_fly", "forced_walk_hbp", "wild_pitch", "passed_ball", "balk", "error"];
+
+// Quick Mode scorekeeper batch: "Batting 3rd of 9" on the batter card.
+function ordinal(n: number): string {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
 
 // Field-zone-validation batch: 'unknown' deliberately has no entry --
 // per spec, an incomplete calibration shows no label and no filtering at
@@ -381,6 +400,22 @@ export function OperatorConsole({
   // exactly what naturally excludes it here -- no separate check needed
   // beyond "is anyone still on third."
   const [squeezePrompt, setSqueezePrompt] = useState(false);
+  // Quick Mode scorekeeper batch: "which runner" pickers for the two
+  // Quick-Mode-only actions that need a follow-up base pick before they
+  // can apply (Double Play, and Stolen Base as a direct button rather
+  // than going through the per-runner action menu). Mirrors the
+  // runnerPicker/runnerActionMenu pattern already used elsewhere rather
+  // than inventing a new shape.
+  const [quickRunnerPrompt, setQuickRunnerPrompt] = useState<"stolenBase" | "doublePlay" | null>(null);
+  // Quick Mode scorekeeper batch: which batting-order slots have already
+  // batted this half-inning, for the lineup strip's "completed" marker --
+  // derived locally from battingOrderPosition transitions (there's no
+  // server-side "who's batted this inning" signal to read), reset on
+  // every inning/half change. An Undo that goes back to a previous batter
+  // won't retroactively un-mark them here until the next inning change --
+  // a minor, documented display-only edge case.
+  const [battedThisHalfInning, setBattedThisHalfInning] = useState<Set<number>>(new Set());
+  const [lineupStripCollapsed, setLineupStripCollapsed] = useState(false);
   // Fix 4 (Intentional Walk): a plain confirmation gate before committing --
   // bypasses pitch logging entirely, so there's no popup/zone step to
   // confirm through the way a normal at-bat has.
@@ -489,6 +524,21 @@ export function OperatorConsole({
     const t = setTimeout(() => setSummaryFlash(null), 2500);
     return () => clearTimeout(t);
   }, [summaryFlash]);
+
+  // Quick Mode scorekeeper batch: lineup strip "completed" tracking (see
+  // battedThisHalfInning's own comment above). Marks the *previous*
+  // batting-order slot done the instant the order advances past it.
+  const prevBattingOrderRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (state.mode === "hitting" && prevBattingOrderRef.current !== null && prevBattingOrderRef.current !== state.battingOrderPosition) {
+      const finished = prevBattingOrderRef.current;
+      setBattedThisHalfInning((s) => (s.has(finished) ? s : new Set(s).add(finished)));
+    }
+    prevBattingOrderRef.current = state.battingOrderPosition;
+  }, [state.battingOrderPosition, state.mode]);
+  useEffect(() => {
+    setBattedThisHalfInning(new Set());
+  }, [state.inning, state.inningHalf]);
 
   useEffect(() => {
     if (state.currentAtBatId) {
@@ -1799,6 +1849,19 @@ export function OperatorConsole({
     if (decision === "scored") {
       applyRunnerAction(base, "scored", "sac_fly");
       setSummaryFlash(`${runner.name} scores — sacrifice fly`);
+      // Incidental correctness fix (Quick Mode scorekeeper batch):
+      // applyRunnerAction's ad-hoc "scored" branch only ever bumps the
+      // team score (adjustScore) -- it never wrote the RBI onto the
+      // batter's own at_bats row, in EITHER mode, so a sac fly's RBI has
+      // never actually counted toward the batter's season stats. Safe to
+      // credit it directly here (unlike the generic ad-hoc path, which
+      // has no reliable "current batter" -- see its own comment) because
+      // this handler only ever fires immediately after that specific
+      // batter's at-bat just confirmed.
+      if (state.lastConfirmed) {
+        const atBatId = state.lastConfirmed.atBatId;
+        void withOfflineRetry(`sacfly-rbi-${atBatId}`, () => incrementAtBatRbi(game.id, atBatId, 1));
+      }
       return;
     }
     if (decision === "advance") {
@@ -1833,6 +1896,12 @@ export function OperatorConsole({
     if (!wasSqueeze || !runner) return;
     applyRunnerAction("third", "scored", "squeeze_play");
     setSummaryFlash(`${runner.name} scores — squeeze play`);
+    // See the matching comment in handleSacFlyDecision -- same RBI gap,
+    // same reasoning for why crediting it here specifically is safe.
+    if (state.lastConfirmed) {
+      const atBatId = state.lastConfirmed.atBatId;
+      void withOfflineRetry(`squeeze-rbi-${atBatId}`, () => incrementAtBatRbi(game.id, atBatId, 1));
+    }
   }
 
   // Fix 4: Intentional Walk. Deliberately bypasses ensureDraftAtBat/the
@@ -1874,18 +1943,23 @@ export function OperatorConsole({
   }
 
   // Quick Mode batch: one tap, one already-confirmed at-bat -- no draft,
-  // no pitches, no ask-queue for ambiguous runner movement (that's the
-  // whole trade this mode makes for speed). isSac forces the ScoreMethod
-  // to "sac_fly" for whichever runner(s) suggestRunnerAdvance scores --
-  // the SAC FLY/SAC BUNT buttons are how the operator states that
-  // explicitly, since there's no per-runner "how did they score?" prompt
-  // here to ask it the normal way (see ScoreMethodMenu in full mode).
-  async function handleQuickPick(pick: { result: AtBatResult; hitType: HitType | null; isSac: boolean }) {
+  // no pitches. Scorekeeper redesign: the ask-queue this comment used to
+  // say Quick Mode deliberately skipped is now wired in after all --
+  // sacFlyQueue/squeezePrompt are the exact same shared state/UI full
+  // mode's handleConfirm drives (see the trigger conditions below, copied
+  // verbatim from there), so "runner on 3rd + sac fly = run scores" is
+  // handled by one real, reviewable decision instead of a guessed
+  // ScoreMethod. `isSac` no longer forces anything -- SAC FLY/SAC BUNT
+  // are just clearer button labels for the same flyout/bunt-groundout
+  // results a plain Fly Out/Ground Out already produces; the interactive
+  // queue is what actually decides whether anyone scored, for ANY
+  // flyout/lineout, not just ones tapped through the "sac" buttons.
+  async function handleQuickPick(pick: { label: string; result: AtBatResult; hitType: HitType | null; isSac: boolean; scorebookNotation?: string }) {
     if (state.outs >= 3) return;
     setBanner(null);
     const batter = currentBatterRunner();
     const { runners: suggestion, scored } = suggestRunnerAdvance(state.runners, batter, pick.result);
-    const method = pick.isSac ? "sac_fly" : resultToScoreMethod(pick.result);
+    const method = resultToScoreMethod(pick.result);
     const runsScored = scored.length;
     const rbi = SCORE_METHOD_AWARDS_RBI[method] ? runsScored : 0;
     const outsRecorded = RESULT_IS_OUT[pick.result] ? 1 : 0;
@@ -1905,6 +1979,7 @@ export function OperatorConsole({
         rbi,
         runsScored,
         opponentPitcherId: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
+        scorebookNotation: pick.scorebookNotation ?? null,
       });
       dispatch({
         type: "QUICK_CONFIRM_LOCAL",
@@ -1916,10 +1991,93 @@ export function OperatorConsole({
         runnersBeforeAtBat,
       });
       syncRunners(suggestion);
-      setSummaryFlash(`${RESULT_LABELS[pick.result]}${runsScored > 0 ? ` — ${runsScored} run${runsScored === 1 ? "" : "s"}` : ""}`);
+      setSummaryFlash(`${pick.label}${runsScored > 0 ? ` — ${runsScored} run${runsScored === 1 ? "" : "s"}` : ""}`);
+
+      // Sac-fly/tag-up decision queue -- identical trigger to full mode's
+      // handleConfirm (any flyout/lineout, runners on base, inning still
+      // alive), not gated on the SAC FLY button specifically, so a plain
+      // Fly Out with a runner on 3rd is asked about too.
+      if ((pick.result === "flyout" || pick.result === "lineout") && state.outs + outsRecorded < 3) {
+        const order: Base[] = ["third", "second", "first"];
+        const queue = order.filter((b) => state.runners[b]);
+        if (queue.length > 0) setSacFlyQueue(queue);
+      }
+      // Squeeze-play prompt -- identical trigger to full mode.
+      if (pick.hitType === "bunt" && state.runners.third) setSqueezePrompt(true);
     } catch (err) {
       setBanner(err instanceof Error ? err.message : "Failed to log at-bat -- check connection and try again");
     }
+  }
+
+  // Quick Mode scorekeeper batch: Double Play, entered by picking which
+  // occupied base's runner was also out (no fielding chain -- see
+  // logQuickDoublePlay's own comment on why this is deliberately lighter
+  // than full mode's DoublePlayWizard). Always exactly 2 outs, never a
+  // run (matches full mode's own confirmDoublePlay, which hardcodes
+  // runsScored to 0 too).
+  async function handleQuickDoublePlay(base: Base) {
+    setQuickRunnerPrompt(null);
+    const runner = state.runners[base];
+    if (!runner || state.outs > 1) return;
+    const batter = currentBatterRunner();
+    const runnersBeforeAtBat = state.runners;
+    try {
+      const { atBatId, secondAtBatId } = await logQuickDoublePlay({
+        gameId: game.id,
+        mode: state.mode,
+        playerId: state.mode === "hitting" ? (battingPlayer?.player_id ?? null) : null,
+        pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        battingOrderPosition: state.mode === "hitting" ? state.battingOrderPosition : null,
+        secondOutRunner: { type: runner.type, id: runner.id },
+        opponentPitcherId: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
+      });
+      dispatch({ type: "QUICK_DOUBLE_PLAY_LOCAL", atBatId, secondAtBatId, removedBase: base, runnersBeforeAtBat });
+      syncRunners({ ...state.runners, [base]: null });
+      setSummaryFlash(`Double Play — ${batter.name} & ${runner.name}`);
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Failed to log double play -- check connection and try again");
+    }
+  }
+
+  // Quick Mode scorekeeper batch: Stolen Base as its own direct button --
+  // applyRunnerAction's "stolen_base" branch was already generic/safe to
+  // call outside the draft/confirm lifecycle (it just moves the runner
+  // and logs to the standalone stolen_bases table), so this is only ever
+  // the base picker in front of it, not new scoring logic.
+  function handleQuickStolenBase(base: Base) {
+    setQuickRunnerPrompt(null);
+    applyRunnerAction(base, "stolen_base");
+  }
+
+  // Quick Mode scorekeeper batch: standalone all-runners Wild Pitch/Passed
+  // Ball/Balk -- reintroduced for Quick Mode only (full mode replaced
+  // these with a per-runner AdvanceReasonMenu; see the Runner-actions
+  // consolidation note in CLAUDE.md). Deliberately does NOT log a "ball"
+  // pitches row or bump any pitch count the way full mode's wild-pitch/
+  // passed-ball advance reason does -- Quick Mode has no per-at-bat pitch
+  // count to add one to in the first place (that's the whole premise of
+  // the mode), so this only moves runners and logs the game_events row.
+  function handleQuickAllRunnersEvent(eventType: "wild_pitch" | "passed_ball" | "balk") {
+    if (!state.runners.first && !state.runners.second && !state.runners.third) return;
+    const { runners: advanced, scored } = advanceAllRunnersOneBase(state.runners);
+    dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", runners: advanced, runsScored: scored.length });
+    syncRunners(advanced);
+    const fielder = eventType === "passed_ball" ? resolve("C") : resolve("P");
+    void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+      logGameEvent(game.id, {
+        eventType,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        mode: state.mode,
+        runsScored: scored.length,
+        playerId: fielder?.playerId ?? null,
+        opponentPlayerId: fielder?.opponentPlayerId ?? null,
+      })
+    );
+    const label = eventType === "wild_pitch" ? "Wild Pitch" : eventType === "passed_ball" ? "Passed Ball" : "Balk";
+    setSummaryFlash(`${label} — all runners advance${scored.length > 0 ? ` — ${scored.length} run${scored.length === 1 ? "" : "s"}` : ""}`);
   }
 
   // Fix 5: a direct HBP shortcut for when the operator knows it was a hit
@@ -2087,6 +2245,7 @@ export function OperatorConsole({
     | "wildPitchK"
     | "sacFly"
     | "squeeze"
+    | "quickRunnerPrompt"
     | "runnerPicker"
     | "runnerAction"
     | "outReason"
@@ -2103,7 +2262,9 @@ export function OperatorConsole({
     ? "sacFly"
     : squeezePrompt
       ? "squeeze"
-      : runnerPicker
+      : quickRunnerPrompt
+        ? "quickRunnerPrompt"
+        : runnerPicker
       ? "runnerPicker"
       : runnerActionMenu
         ? "runnerAction"
@@ -2226,11 +2387,16 @@ export function OperatorConsole({
             onClick={() => setOpponentPitcherPickerOpen(true)}
             className="truncate text-center font-mono text-[13px] text-foreground/60 underline decoration-dotted"
           >
-            {(currentOpponentPitcher ?? opponentPitcherInfo)?.name ?? "OPP. PITCHER"} · {state.opponentPitchCount} pitches
+            {(currentOpponentPitcher ?? opponentPitcherInfo)?.name ?? "OPP. PITCHER"}
+            {/* Quick Mode scorekeeper batch: no pitch count in this mode
+                (no pitches are ever logged to count) -- the pitcher's name
+                still matters for opponent_pitcher_id attribution/picking. */}
+            {game.logging_mode !== "quick" && <> · {state.opponentPitchCount} pitches</>}
           </button>
         ) : (
-          <p className={`truncate text-center font-mono text-[13px] ${pitchCountColor}`}>
-            {currentPitcher?.name ?? "—"} · {state.pitchCountForCurrentPitcher} pitches
+          <p className={`truncate text-center font-mono text-[13px] ${game.logging_mode === "quick" ? "text-foreground/60" : pitchCountColor}`}>
+            {currentPitcher?.name ?? "—"}
+            {game.logging_mode !== "quick" && <> · {state.pitchCountForCurrentPitcher} pitches</>}
           </p>
         )}
 
@@ -2335,78 +2501,39 @@ export function OperatorConsole({
           other's visible space when stacked -- overflow-hidden alone,
           without an explicit row size, lets row content grow to whatever
           it needs and only clips the *combined* result. */}
-      {game.logging_mode === "quick" ? (
-        // Quick Mode batch: "completely simplified -- replaces the strike
-        // zone grid and field diagram with a simple button grid." Rather
-        // than threading a quick-mode branch through every step of the
-        // full mode's two-panel layout below (strike zone sizing, flow
-        // steps, hit-type/result filtering, none of which apply here),
-        // this is a single self-contained alternative to that whole grid
-        // -- everything around it (top bar, transient banners, bottom
-        // Undo bar, and every modal rendered below -- runner quick-action
-        // menu, Pickoff, Substitution, Late Arrival) is unchanged and
-        // shared between both modes, since none of that is pitch-logging
-        // detail.
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 overflow-y-auto p-4">
-          <p className="font-heading text-center text-sm font-semibold uppercase tracking-wide text-white">
-            {state.mode === "hitting"
-              ? `#${battingPlayerInfo?.jersey_number ?? "—"} ${battingPlayerInfo?.name ?? "Batter"}`
-              : state.opponentBatterName || "Opposing batter"}
-            {" · "}
-            {state.inningHalf.toUpperCase()} {state.inning}
-            {" · "}
-            {teamName} {state.ourScore} – {game.opponent_name} {state.opponentScore}
-          </p>
-
-          <QuickModeGrid onPick={(def) => void handleQuickPick(def)} disabled={state.outs >= 3} />
-
-          <div className="flex items-center gap-4 text-sm text-foreground/70">
-            <span>
-              Runners: {(["first", "second", "third"] as Base[]).map((b) => (state.runners[b] ? "●" : "○")).join(" ")}{" "}
-              1B 2B 3B
-            </span>
-            <span>Outs: {state.outs}</span>
-          </div>
-
-          <div className="w-full max-w-[220px]">
-            <BaserunnerDiamond
-              runners={state.runners}
-              pending={state.runnersPendingConfirmation}
-              onBaseTap={(b) => (state.runners[b] ? setRunnerActionMenu(b) : setRunnerPicker(b))}
-            />
-          </div>
-
-          <div className="flex w-full max-w-[420px] gap-2">
-            <QuickButton
-              label="Pickoff"
-              onClick={() => setPickoffWizard({ step: "base" })}
-              className="glossy flex-1 justify-start border-l-4 border-l-accent-primary pl-3 text-left"
-            />
-            <QuickButton
-              label="Substitution"
-              onClick={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: true })}
-              className="glossy flex-1 justify-start border-l-4 border-l-accent-gold pl-3 text-left"
-            />
-          </div>
-        </div>
-      ) : (
       <div className="grid flex-1 grid-cols-1 grid-rows-2 overflow-hidden md:grid-cols-2 md:grid-rows-1">
-        {/* LEFT PANEL -- pitching/hitting the ball. Nothing else. Fix 5:
-            the "Heat Map" toggle (and the session-heat-map render mode it
-            drove, in both this panel and StrikeZoneGrid itself) is gone --
-            heat maps are a coach-dashboard feature; this screen only ever
-            logs pitches now. gamePitchLog still accumulates in
-            OperatorState (harmless, and other code doesn't touch it), it
-            just has no on-screen consumer here any more.
-
-            Left-panel redesign: the header label and the footer controls
-            (hand pill, IBB) are now `absolute` overlays instead of their
-            own flex-col rows -- freeing the middle row to be the panel's
-            *only* normal-flow content, so it can be given the panel's
-            full height (per spec, the batter images must be "the same
-            height as the full left panel," which a shrink-0 header/footer
-            sharing that same flex-col would otherwise eat into). `relative`
-            on the panel is what anchors those overlays. */}
+        {/* LEFT PANEL. Quick Mode scorekeeper batch: Quick Mode's own
+            lineup-strip + result-grid replaces the strike zone entirely,
+            but the RIGHT PANEL below (batter card, scoreboard, on-deck,
+            diamond, and every runner-action/sac-fly/squeeze/double-play/
+            pickoff/substitution popup) is now IDENTICAL between the two
+            modes -- previously that whole right panel only rendered
+            inside this file's full-mode branch, which is why Quick Mode
+            used to be "just a basic button grid" with none of that
+            machinery reachable. Sharing it is what gives Quick Mode full
+            baserunning/substitution/pickoff support for free instead of a
+            second, parallel implementation. */}
+        {game.logging_mode === "quick" ? (
+          <QuickModeLeftPanel
+            state={state}
+            game={game}
+            teamName={teamName}
+            battingPlayerInfo={battingPlayerInfo}
+            lineup={liveLineup}
+            players={players}
+            seasonBattingLines={seasonBattingLines}
+            battedThisHalfInning={battedThisHalfInning}
+            collapsed={lineupStripCollapsed}
+            onToggleCollapsed={() => setLineupStripCollapsed((c) => !c)}
+            onPick={(def) => void handleQuickPick(def)}
+            onDoublePlay={() => setQuickRunnerPrompt("doublePlay")}
+            onStolenBase={() => setQuickRunnerPrompt("stolenBase")}
+            onIbb={() => setIbbConfirmOpen(true)}
+            onWildPitch={() => handleQuickAllRunnersEvent("wild_pitch")}
+            onPassedBall={() => handleQuickAllRunnersEvent("passed_ball")}
+            onBalk={() => handleQuickAllRunnersEvent("balk")}
+          />
+        ) : (
         <div className="relative flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
           <p className="absolute left-2 top-2 z-10 text-[15px] uppercase tracking-[0.08em] text-[#7AB893]">
             Strike zone — tap to log a pitch
@@ -2526,9 +2653,13 @@ export function OperatorConsole({
             </div>
           </div>
         </div>
+        )}
 
         {/* RIGHT PANEL -- what happens after contact. p-1.5 (was p-2) --
-            refinement pass, ~25% tighter, applied throughout this panel. */}
+            refinement pass, ~25% tighter, applied throughout this panel.
+            Quick Mode scorekeeper batch: this whole panel, unchanged, now
+            also renders for Quick Mode -- see the left-panel comment
+            above. */}
         <div className="flex flex-col overflow-hidden p-1.5">
           {/* Sections 1-3 (batter strip / scoreboard / on-deck) get a
               max-width so they stay a compact centered column instead of
@@ -2557,7 +2688,7 @@ export function OperatorConsole({
                   <div className="min-w-0">
                     <p className="font-heading truncate text-[20px] font-bold text-white">{battingPlayerInfo?.name ?? "—"}</p>
                     <p className="truncate text-[12px] text-foreground/40">
-                      {battingPlayerInfo?.position ?? "—"} · {battingHandBadge}
+                      {battingPlayerInfo?.position ?? "—"} · {battingHandBadge} · Batting {ordinal(state.battingOrderPosition)} of 9
                     </p>
                     {battingPlayerInfo && seasonBattingLines[battingPlayerInfo.id] && (
                       <p className="truncate font-mono text-[13px] text-accent-green">
@@ -2741,6 +2872,30 @@ export function OperatorConsole({
                     No
                   </button>
                 </div>
+              </div>
+            )}
+
+            {rightPanelMode === "quickRunnerPrompt" && quickRunnerPrompt && (
+              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-primary/50 bg-surface p-3 text-center">
+                <p className="text-sm font-semibold text-white">
+                  {quickRunnerPrompt === "doublePlay" ? "Which runner was also out?" : "Which runner stole a base?"}
+                </p>
+                <div className="mt-3 flex flex-col gap-2">
+                  {(["third", "second", "first"] as Base[])
+                    .filter((b) => state.runners[b])
+                    .map((b) => (
+                      <button
+                        key={b}
+                        onClick={() => (quickRunnerPrompt === "doublePlay" ? void handleQuickDoublePlay(b) : handleQuickStolenBase(b))}
+                        className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm text-white hover:border-accent-primary"
+                      >
+                        {state.runners[b]!.name} ({b})
+                      </button>
+                    ))}
+                </div>
+                <button onClick={() => setQuickRunnerPrompt(null)} className="mt-3 text-xs text-foreground/40 hover:text-white">
+                  Cancel
+                </button>
               </div>
             )}
 
@@ -3053,7 +3208,6 @@ export function OperatorConsole({
           </div>
         </div>
       </div>
-      )}
 
       {/* BOTTOM BAR -- 48px, always visible */}
       <div className="z-10 flex h-[48px] shrink-0 items-center justify-between gap-2 border-t-2 border-accent-primary/40 bg-surface/90 px-3">
@@ -3409,6 +3563,151 @@ const BATTER_IMAGE_VERTICAL_OFFSET_PX = 30;
 const BATTER_IMAGE_INNER_MARGIN_PCT = 11.5;
 const BATTER_IMAGE_OVERLAP_PX = 20;
 
+// Quick Mode scorekeeper batch: the whole left panel when
+// game.logging_mode === "quick" -- lineup strip on top, the expanded
+// result grid, then the Quick-Mode-only special-play buttons (Double
+// Play / Stolen Base / IBB / Wild Pitch / Passed Ball / Balk -- Pickoff
+// and Substitution stay where they already were, in the shared right
+// panel's Section 5). Everything about baserunning/scoring itself
+// (diamond, sac-fly/squeeze prompts, runner-action menus) lives in the
+// shared right panel this component's sibling renders -- see the
+// caller's own comment on why that panel is no longer full-mode-only.
+function QuickModeLeftPanel({
+  state,
+  game,
+  teamName,
+  battingPlayerInfo,
+  lineup,
+  players,
+  seasonBattingLines,
+  battedThisHalfInning,
+  collapsed,
+  onToggleCollapsed,
+  onPick,
+  onDoublePlay,
+  onStolenBase,
+  onIbb,
+  onWildPitch,
+  onPassedBall,
+  onBalk,
+}: {
+  state: OperatorState;
+  game: Game;
+  teamName: string;
+  battingPlayerInfo: Player | undefined;
+  lineup: Lineup[];
+  players: Player[];
+  seasonBattingLines: Record<string, BattingLine>;
+  battedThisHalfInning: Set<number>;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  onPick: (def: QuickModeButtonDef) => void;
+  onDoublePlay: () => void;
+  onStolenBase: () => void;
+  onIbb: () => void;
+  onWildPitch: () => void;
+  onPassedBall: () => void;
+  onBalk: () => void;
+}) {
+  const anyRunnerOnBase = Boolean(state.runners.first || state.runners.second || state.runners.third);
+  // batting_order is nullable (bench/reserve players aren't in it) -- the
+  // lineup strip only ever shows the 9 real batting slots.
+  const slots = lineup.filter((l): l is Lineup & { batting_order: number } => l.batting_order !== null).sort((a, b) => a.batting_order - b.batting_order);
+  const nextBattingOrder = (state.battingOrderPosition % 9) + 1;
+
+  return (
+    <div className="flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
+      <div className="flex items-center justify-between">
+        <p className="text-[15px] uppercase tracking-[0.08em] text-[#7AB893]">Quick Mode — scorekeeper</p>
+        <p className="text-[11px] text-foreground/50">
+          {state.mode === "hitting"
+            ? `#${battingPlayerInfo?.jersey_number ?? "—"} ${battingPlayerInfo?.name ?? "Batter"}`
+            : state.opponentBatterName || "Opposing batter"}
+          {" · "}
+          {state.inningHalf.toUpperCase()} {state.inning} · {state.outs} out{state.outs === 1 ? "" : "s"}
+        </p>
+      </div>
+
+      {/* Batting order / lineup strip -- collapsible, current batter
+          highlighted, next batter marked "on deck," already-batted-this-
+          half-inning slots marked done. Hitting mode only -- opponent
+          batters (mode === "pitching") have no lineup/batting-order
+          concept here, same as the on-deck strip in the shared right
+          panel. */}
+      {state.mode === "hitting" && (
+        <div className="mt-2 shrink-0 rounded-md border border-border bg-surface/60">
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="flex min-h-[36px] w-full items-center justify-between px-2 text-xs font-semibold uppercase tracking-wide text-foreground/60"
+          >
+            Lineup
+            <span>{collapsed ? "▾" : "▴"}</span>
+          </button>
+          {!collapsed && (
+            <div className="max-h-[140px] overflow-y-auto px-2 pb-2">
+              {slots.map((slot) => {
+                const p = players.find((pl) => pl.id === slot.player_id);
+                const isCurrent = slot.batting_order === state.battingOrderPosition;
+                const isOnDeck = !isCurrent && slot.batting_order === nextBattingOrder;
+                const done = battedThisHalfInning.has(slot.batting_order) && !isCurrent;
+                const line = p ? seasonBattingLines[p.id] : undefined;
+                return (
+                  <div
+                    key={slot.id}
+                    className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${
+                      isCurrent ? "bg-accent-green/15 text-white" : isOnDeck ? "bg-accent-primary/10 text-white" : "text-foreground/60"
+                    }`}
+                  >
+                    <span className="w-4 shrink-0 text-right font-mono text-foreground/40">{slot.batting_order}</span>
+                    <span className="w-6 shrink-0 font-mono">#{p?.jersey_number ?? "—"}</span>
+                    <span className="min-w-0 flex-1 truncate">{p?.name ?? "—"}</span>
+                    {line && <span className="shrink-0 font-mono text-[10px] text-foreground/40">{formatAvg(line.avg)}</span>}
+                    {isCurrent && <span className="shrink-0 text-[10px] font-bold text-accent-green">AT BAT</span>}
+                    {isOnDeck && <span className="shrink-0 text-[10px] font-bold text-accent-primary">ON DECK</span>}
+                    {done && <span className="shrink-0 text-accent-green">✓</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mt-2 flex-1 overflow-y-auto pb-2">
+        <QuickModeGrid onPick={onPick} disabled={state.outs >= 3} />
+
+        {/* Double Play needs a follow-up "which runner" pick (see
+            quickRunnerPrompt in the shared right panel), so it isn't a
+            flat QuickModeGrid button like the others -- it can't resolve
+            in one tap. Disabled past 1 out (a double play always records
+            2, which would overflow 3) or with nobody on base. */}
+        <button
+          type="button"
+          disabled={state.outs > 1 || !anyRunnerOnBase}
+          onClick={onDoublePlay}
+          className="glossy mt-2 min-h-[48px] w-full rounded-md border-2 border-accent-amber px-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-accent-amber/20 disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          Double Play
+        </button>
+
+        <p className="mb-1 mt-3 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">Special plays</p>
+        <div className="flex flex-wrap gap-2">
+          <QuickButton label="Stolen Base" onClick={onStolenBase} disabled={!anyRunnerOnBase} className="flex-1" />
+          <QuickButton label="IBB" onClick={onIbb} disabled={state.outs >= 3} className="flex-1" />
+          <QuickButton label="Wild Pitch" onClick={onWildPitch} disabled={!anyRunnerOnBase} className="flex-1" />
+          <QuickButton label="Passed Ball" onClick={onPassedBall} disabled={!anyRunnerOnBase} className="flex-1" />
+          <QuickButton label="Balk" onClick={onBalk} disabled={!anyRunnerOnBase} className="flex-1" />
+        </div>
+      </div>
+
+      <p className="shrink-0 text-center text-[11px] text-foreground/40">
+        {teamName} {state.ourScore} – {game.opponent_name} {state.opponentScore}
+      </p>
+    </div>
+  );
+}
+
 function BatterImage({
   hand,
   image,
@@ -3580,11 +3879,22 @@ function PopupButton({
 // Fix 4 (layout proportions batch): both call sites (Pickoff, Substitution)
 // are the compact bottom row of the right panel, so 40px -- not the 48px
 // tap-target minimum used elsewhere -- is the deliberate height here.
-function QuickButton({ label, onClick, className = "" }: { label: string; onClick: () => void; className?: string }) {
+function QuickButton({
+  label,
+  onClick,
+  disabled = false,
+  className = "",
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+}) {
   return (
     <button
       onClick={onClick}
-      className={`h-10 rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground/80 hover:border-accent-primary hover:text-white ${className}`}
+      disabled={disabled}
+      className={`h-10 rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground/80 hover:border-accent-primary hover:text-white disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
     >
       {label}
     </button>
