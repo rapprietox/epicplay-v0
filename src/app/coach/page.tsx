@@ -55,10 +55,14 @@ export default async function CoachPage() {
       .sort((a, b) => a.game_date.localeCompare(b.game_date))[0] ?? null;
 
   const confirmedAtBats = atBats ?? [];
+  // Whiff-rate/pitch-location maps batch: pitch_type/outcome/swing added
+  // to the select -- needed for the team-wide whiff-rate and
+  // pitch-location-tendency maps, which the pre-existing zone_x/zone_y-only
+  // select couldn't support.
   const { data: teamPitches } = confirmedAtBats.length
     ? await supabase
         .from("pitches")
-        .select("at_bat_id, pitch_number, zone_x, zone_y")
+        .select("at_bat_id, pitch_number, zone_x, zone_y, pitch_type, outcome, swing")
         .in(
           "at_bat_id",
           confirmedAtBats.map((ab) => ab.id)
@@ -76,6 +80,14 @@ export default async function CoachPage() {
   const teamZoneAtBats: AtBatWithZone[] = confirmedAtBats
     .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null && ab.mode === "hitting")
     .map((ab) => ({ result: ab.result, zoneIndex: lastZoneByAtBat.get(ab.id) ?? null }));
+
+  // Whiff-rate/pitch-location maps batch: only pitches attached to a
+  // hitting-mode at-bat count as "thrown to one of our own batters" --
+  // pitching-mode at-bats are our own pitcher throwing to the opponent,
+  // the opposite direction, and would pollute "where do pitchers attack
+  // us" with "where do we attack them."
+  const hittingAtBatIds = new Set(confirmedAtBats.filter((ab) => ab.mode === "hitting").map((ab) => ab.id));
+  const teamHitterPitches = (teamPitches ?? []).filter((p) => hittingAtBatIds.has(p.at_bat_id));
 
   const teamSprayDots: (SprayDot & { opponentName: string })[] = confirmedAtBats
     .filter(
@@ -135,6 +147,7 @@ export default async function CoachPage() {
           sprayDots={teamSprayDots}
           opponentNames={(opponents ?? []).map((o) => o.name)}
           nextOpponentName={nextGame?.opponent_name ?? null}
+          hitterPitches={teamHitterPitches}
         />
 
         <OpponentScoutingSection opponents={opponents ?? []} games={allGames} />

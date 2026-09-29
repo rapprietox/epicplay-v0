@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { computeBattingLines, computePitchingLines, formatAvg } from "@/lib/stats";
-import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
+import { computeZoneBattingLines, zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import { finalCountForAtBat, type CountState } from "@/lib/count-stats";
 import {
   DAY_TYPE_LABELS,
@@ -19,12 +19,17 @@ import { SprayChart } from "./spray-chart";
 import { PitcherHeatmap } from "./pitcher-heatmap";
 import { HitterExtendedStats } from "./hitter-extended-stats";
 import { PitcherExtendedStats } from "./pitcher-extended-stats";
+import { ZoneAnalyticsRow } from "./zone-analytics-row";
+import { KeyInsights } from "./key-insights";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
-type Pitch = Pick<Database["public"]["Tables"]["pitches"]["Row"], "at_bat_id" | "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome">;
+type Pitch = Pick<
+  Database["public"]["Tables"]["pitches"]["Row"],
+  "at_bat_id" | "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome" | "swing"
+>;
 
 // Time-of-day/day-of-week filters batch: everything below (batting/
 // pitching lines, zone at-bats, spray dots, pitch-type/count breakdowns)
@@ -44,6 +49,7 @@ export function PlayerBreakdownClient({
   stolenBases,
   pitches,
   fieldCalibration,
+  insights,
 }: {
   player: Player;
   games: Game[];
@@ -52,6 +58,7 @@ export function PlayerBreakdownClient({
   stolenBases: StolenBase[];
   pitches: Pitch[];
   fieldCalibration: FieldCalibrationPoints | null;
+  insights: string[];
 }) {
   const [timeOfDayFilter, setTimeOfDayFilter] = useState<TimeOfDay | "all">("all");
   const [dayTypeFilter, setDayTypeFilter] = useState<DayType | "all">("all");
@@ -177,6 +184,8 @@ export function PlayerBreakdownClient({
     [filteredPitchingAtBats, lastPitchZoneByAtBat, lastPitchTypeByAtBat]
   );
 
+  const battingAvgZoneLines = useMemo(() => computeZoneBattingLines(battingZoneAtBats), [battingZoneAtBats]);
+
   const pitcherPitches = useMemo(() => {
     const ids = new Set(filteredPitchingAtBats.map((ab) => ab.id));
     return filteredPitches.filter((p) => ids.has(p.at_bat_id));
@@ -289,6 +298,13 @@ export function PlayerBreakdownClient({
       </section>
 
       <StrikeZoneHeatmap battingAtBats={battingZoneAtBats} pitchingAtBats={pitchingZoneAtBats} hasPitchingData={pitchingZoneAtBats.length > 0} />
+
+      {batterPitches.length > 0 && (
+        <>
+          <ZoneAnalyticsRow battingAvgLines={battingAvgZoneLines} whiffPitches={batterPitches} locationPitches={batterPitches} />
+          <KeyInsights insights={insights} />
+        </>
+      )}
 
       <SprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
 

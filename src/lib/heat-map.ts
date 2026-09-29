@@ -1,4 +1,4 @@
-import type { AtBatResult } from "@/lib/supabase/types";
+import type { AtBatResult, PitchOutcome, PitchType } from "@/lib/supabase/types";
 
 // ground_rule_double counts as a double everywhere a regular double does
 // (Fix 9, baseball-logic-fixes batch, minor tier).
@@ -144,3 +144,177 @@ export const LINE_HIT_CATEGORY_LABEL: Record<LineHitCategory, string> = {
   hr: "Home Run",
   other: "Other",
 };
+
+// Whiff-rate / pitch-location maps batch: an extended 25-zone bucket (9
+// strike-zone cells + 16 ball-zone ring cells), ported from the
+// operator's own ring geometry (RING_X=20/RING_Y=16, see
+// strike-zone-grid.tsx's classifyZone -- that file is the operator's
+// client-only tap-handling UI, so this ports the pure math rather than
+// importing it) instead of the request's own looser "9 + 8" framing --
+// the ring pitches are actually captured across 16 real cells (3 per
+// side + 4 corners, not 8), and bucketing them any coarser would
+// misrepresent where a logged pitch actually landed. zoneIndexFromCoords
+// above (9-zone only, null outside the strike zone) is unchanged and
+// still what the batting-average heat map uses -- this is additive, not
+// a replacement.
+const THIRDS = [100 / 3, (2 * 100) / 3];
+const RING_X = 20;
+const RING_Y = 16;
+const EXT_MIN_X = -RING_X;
+const EXT_MAX_X = 100 + RING_X;
+const EXT_MIN_Y = -RING_Y;
+const EXT_MAX_Y = 100 + RING_Y;
+const GRID_BOUNDS_X = [EXT_MIN_X, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX_X];
+const GRID_BOUNDS_Y = [EXT_MIN_Y, 0, THIRDS[0], THIRDS[1], 100, EXT_MAX_Y];
+
+function cellIndex(v: number, bounds: number[]): number {
+  for (let i = 0; i < bounds.length - 2; i++) {
+    if (v < bounds[i + 1]) return i;
+  }
+  return bounds.length - 2;
+}
+
+export interface ExtendedZone {
+  col: number;
+  row: number;
+  isBallZone: boolean;
+  index: number; // 0-24, row * 5 + col
+}
+
+export const EXTENDED_ZONE_COUNT = 25;
+
+export function extendedZoneFromCoords(x: number, y: number): ExtendedZone {
+  const col = cellIndex(x, GRID_BOUNDS_X);
+  const row = cellIndex(y, GRID_BOUNDS_Y);
+  return { col, row, isBallZone: col === 0 || col === 4 || row === 0 || row === 4, index: row * 5 + col };
+}
+
+// Plain grid-relative terms (not corrected for batter handedness -- this
+// app doesn't mirror any other zone display by batting hand either, see
+// hbpEligible's own handedness handling in operator-console.tsx, which
+// stays scoped to HBP eligibility specifically). Used both as the small
+// on-cell label and as the human-readable zone name fed to the AI
+// insights prompt.
+const ROW_LABELS = ["High (out of zone)", "High", "Middle", "Low", "Low (out of zone)"];
+const COL_LABELS = ["Far Inside", "Inside", "Middle", "Outside", "Far Outside"];
+
+export function extendedZoneLabel(index: number): string {
+  const row = Math.floor(index / 5);
+  const col = index % 5;
+  if (row === 2 && col === 2) return "Down the Middle";
+  return `${ROW_LABELS[row]}-${COL_LABELS[col]}`;
+}
+
+// Same labeling, for the plain 9-zone strike-zone-only grid
+// (zoneIndexFromCoords's own 0-8 index space, used by the existing
+// batting-average heat map) -- reuses the extended grid's row 1-3/col
+// 1-3 labels ("High"/"Middle"/"Low" x "Inside"/"Middle"/"Outside")
+// rather than a second hand-written label set.
+export function zoneLabel9(index: number): string {
+  const row = Math.floor(index / 3) + 1;
+  const col = (index % 3) + 1;
+  if (row === 2 && col === 2) return "Down the Middle";
+  return `${ROW_LABELS[row]}-${COL_LABELS[col]}`;
+}
+
+// Whiff Rate by Zone (Map 2): swing-and-miss share of swings taken in
+// each zone. Only pitches.swing === true count as a swing at all;
+// "miss" is strike/foul_tip specifically -- a plain "foul" means the bat
+// made contact, so it's excluded even though it's also a strike (per
+// spec: "NOT 'foul' since foul means contact was made"). Below
+// MIN_SWINGS_FOR_RATE, rate is null (not 0) so the UI can render "--"
+// instead of a misleadingly precise percentage from 1-2 swings.
+export const MIN_SWINGS_FOR_RATE = 3;
+
+export interface ZoneWhiffLine {
+  swings: number;
+  misses: number;
+  rate: number | null;
+}
+
+function emptyWhiffLines(): ZoneWhiffLine[] {
+  return Array.from({ length: EXTENDED_ZONE_COUNT }, () => ({ swings: 0, misses: 0, rate: null }));
+}
+
+export interface WhiffPitch {
+  swing: boolean | null;
+  outcome: PitchOutcome;
+  zone_x: number | null;
+  zone_y: number | null;
+}
+
+export function computeZoneWhiffLines(pitches: WhiffPitch[]): ZoneWhiffLine[] {
+  const lines = emptyWhiffLines();
+  for (const p of pitches) {
+    if (p.swing !== true || p.zone_x === null || p.zone_y === null) continue;
+    const { index } = extendedZoneFromCoords(p.zone_x, p.zone_y);
+    lines[index].swings += 1;
+    if (p.outcome === "strike" || p.outcome === "foul_tip") lines[index].misses += 1;
+  }
+  for (const line of lines) {
+    line.rate = line.swings >= MIN_SWINGS_FOR_RATE ? line.misses / line.swings : null;
+  }
+  return lines;
+}
+
+// Inverted from zoneColor (batting average) on purpose -- here red means
+// bad *for the batter*, i.e. good for the pitcher attacking that zone.
+export function whiffRateColor(line: ZoneWhiffLine): string {
+  if (line.rate === null) return "#1A3D28";
+  if (line.rate <= 0.15) return "#173A22";
+  if (line.rate <= 0.3) return "#EF9F27";
+  if (line.rate <= 0.5) return "#E8720C";
+  return "#E24B4A";
+}
+
+// Pitch Location Tendency (Map 3): what share of pitches thrown to this
+// batter (or, at team scale, to the whole lineup) landed in each zone --
+// frequency, not outcome. A pitch with no location (zone_x/zone_y null --
+// e.g. a direct-HBP button or a wild-pitch/passed-ball-logged "ball",
+// both of which force a null zone) has nothing to bucket and is excluded
+// from both the per-zone counts and the total.
+export interface ZoneLocationLine {
+  count: number;
+  pct: number; // 0-100, share of the total located pitches
+}
+
+export interface LocationPitch {
+  zone_x: number | null;
+  zone_y: number | null;
+}
+
+export function computeZoneLocationLines(pitches: LocationPitch[]): ZoneLocationLine[] {
+  const counts = Array.from({ length: EXTENDED_ZONE_COUNT }, () => 0);
+  let total = 0;
+  for (const p of pitches) {
+    if (p.zone_x === null || p.zone_y === null) continue;
+    const { index } = extendedZoneFromCoords(p.zone_x, p.zone_y);
+    counts[index] += 1;
+    total += 1;
+  }
+  return counts.map((count) => ({ count, pct: total > 0 ? (count / total) * 100 : 0 }));
+}
+
+export function pitchLocationColor(line: ZoneLocationLine): string {
+  if (line.count === 0) return "#1A3D28";
+  if (line.pct <= 5) return "#12240F";
+  if (line.pct <= 15) return "#1D5A34";
+  if (line.pct <= 25) return "#24A058";
+  if (line.pct <= 35) return "#2ECC71";
+  return "#F0C060";
+}
+
+// Shared "All / Fastball / Curveball / Changeup / Slider" toggle for Map
+// 2 and Map 3 -- each map keeps its own independent selection (per
+// spec), but both draw from this same option list so "All" is spelled
+// and ordered identically everywhere it appears. Deliberately the same 4
+// pitch types PITCH_TYPES (count-stats.ts) already covers -- 2seam/other
+// exist in the schema but weren't named in this request, so they fold
+// into "All" rather than getting their own tab.
+export const ZONE_MAP_PITCH_FILTERS: { value: PitchType | "all"; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "fastball", label: "Fastball" },
+  { value: "curveball", label: "Curveball" },
+  { value: "changeup", label: "Changeup" },
+  { value: "slider", label: "Slider" },
+];

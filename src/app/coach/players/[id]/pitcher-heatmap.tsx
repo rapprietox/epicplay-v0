@@ -118,9 +118,13 @@ export function PitcherHeatmap({ atBats, pitches }: { atBats: ZonePitchTypeAtBat
       </div>
 
       <p className="mt-4 text-[11px] text-foreground/40">
-        Labeled &quot;Strike Rate,&quot; not &quot;Whiff Rate&quot; -- the pitches table records a generic
-        &quot;strike&quot; outcome without distinguishing swinging from called strikes, so a true swing-and-miss
-        rate isn&apos;t something this data can measure yet.
+        Labeled &quot;Strike Rate,&quot; not &quot;Whiff Rate&quot; -- this panel is about this player&apos;s own
+        effectiveness as a pitcher, keyed off the generic strike/foul/in-play outcome, not a swing/take
+        signal. A real swing-and-miss rate is measurable now (see pitches.swing, added since this panel
+        was built) -- the Swing &amp; Miss Rate map further down this page uses it, from the batter&apos;s
+        side, for pitches thrown <em>to</em> this player. Rebuilding this specific panel to show whiff rate
+        <em>against</em> this pitcher would need the same data from the other direction and wasn&apos;t part
+        of that request.
       </p>
     </section>
   );

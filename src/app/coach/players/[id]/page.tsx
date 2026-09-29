@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import type { FieldCalibrationPoints } from "@/lib/supabase/types";
 import { PlayerBreakdownClient } from "./player-breakdown-client";
+import { buildZoneInsightInput, getPlayerZoneInsights } from "./insights";
 
 export default async function PlayerBreakdownPage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -67,9 +68,25 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
     : [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }];
 
   const allAtBatIds = [...(battingAtBats ?? []), ...(pitchingAtBats ?? [])].map((ab) => ab.id);
+  // Whiff-rate/pitch-location maps batch: "swing" added to the select --
+  // needed to tell a swinging strike/foul_tip (a real whiff) apart from
+  // a called strike, which the pre-existing columns alone can't do.
   const { data: pitches } = allAtBatIds.length
-    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome").in("at_bat_id", allAtBatIds)
+    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", allAtBatIds)
     : { data: [] };
+
+  // Whiff-rate/pitch-location maps batch: the "Key Insights" block is
+  // generated server-side, from the FULL (unfiltered) dataset -- it does
+  // not react to the client-side time-of-day/day-of-week filters
+  // PlayerBreakdownClient applies to the three live maps, since making it
+  // reactive would mean either a server round-trip on every filter change
+  // (defeating the point of caching it) or duplicating the Anthropic call
+  // client-side (impossible -- the API key is server-only). Cached via
+  // getPlayerZoneInsights (see insights.ts) so it only regenerates when
+  // the underlying pitch data actually changes, not on every render.
+  const battingAtBatIds = new Set((battingAtBats ?? []).map((ab) => ab.id));
+  const batterPitches = (pitches ?? []).filter((p) => battingAtBatIds.has(p.at_bat_id));
+  const insights = await getPlayerZoneInsights(buildZoneInsightInput(player.name, battingAtBats ?? [], batterPitches));
 
   return (
     <main className="min-h-screen bg-background px-6 py-8">
@@ -93,6 +110,7 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
           stolenBases={stolenBases ?? []}
           pitches={pitches ?? []}
           fieldCalibration={fieldCalibration}
+          insights={insights}
         />
       </div>
     </main>

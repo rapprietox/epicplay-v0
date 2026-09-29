@@ -4,17 +4,32 @@ import { useEffect, useMemo, useState } from "react";
 import { computeZoneBattingLines, zoneColor, SPRAY_CATEGORY_COLOR, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import { formatAvg } from "@/lib/stats";
 import { formatGameDate } from "@/lib/dates";
+import type { PitchOutcome, PitchType } from "@/lib/supabase/types";
+import { ZoneAnalyticsRow } from "./players/[id]/zone-analytics-row";
+
+interface TeamHitterPitch {
+  swing: boolean | null;
+  outcome: PitchOutcome;
+  zone_x: number | null;
+  zone_y: number | null;
+  pitch_type: PitchType | null;
+}
 
 export function TeamAnalytics({
   zoneAtBats,
   sprayDots,
   opponentNames,
   nextOpponentName,
+  hitterPitches,
 }: {
   zoneAtBats: AtBatWithZone[];
   sprayDots: SprayDot[];
   opponentNames: string[];
   nextOpponentName: string | null;
+  // Whiff-rate/pitch-location maps batch: every pitch thrown to one of
+  // our own batters, team-wide -- "our whole team's" swing-and-miss rate
+  // and what opposing pitchers target against us, not any one player's.
+  hitterPitches: TeamHitterPitch[];
 }) {
   const [revealed, setRevealed] = useState(false);
   const [opponentFilter, setOpponentFilter] = useState<string>("all");
@@ -134,6 +149,24 @@ export function TeamAnalytics({
           )}
         </div>
       </div>
+
+      {/* Whiff-rate/pitch-location maps batch: team-wide versions of Maps
+          2/3 from the player page (ZoneAnalyticsRow, reused as-is --
+          "aggregated across all players" just means the caller passes
+          every batter's pitches instead of one player's). The panel
+          above keeps its own richer "Weakness Finder" callout; this is
+          the same uniform 3-map layout the player page uses, added
+          alongside it rather than replacing it. */}
+      {hitterPitches.length > 0 && (
+        <div className="mt-6 border-t border-border pt-6">
+          <ZoneAnalyticsRow
+            battingAvgLines={computeZoneBattingLines(zoneAtBats)}
+            whiffPitches={hitterPitches}
+            locationPitches={hitterPitches}
+            namePrefix="Team "
+          />
+        </div>
+      )}
     </section>
   );
 }

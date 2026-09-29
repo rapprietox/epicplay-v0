@@ -135,6 +135,59 @@ export async function generateOpponentInsight(input: OpponentInsightInput): Prom
   return text && text.type === "text" ? text.text.trim() : "";
 }
 
+// Whiff-rate/pitch-location maps batch: "Key Insights" block below the
+// three zone maps. Only the qualifying, most-extreme zones are sent
+// (not all 25 cells x however many pitch-type breakdowns) -- keeps the
+// prompt focused on what's actually actionable and matches the example
+// output's own specificity ("Slider low-outside: 67% whiff rate on 9
+// swings"). Caching (so this only regenerates when new games are added,
+// per spec) is the caller's job -- see getPlayerZoneInsights in
+// src/app/coach/players/[id]/insights.ts, which wraps this in
+// unstable_cache keyed on this exact input, so identical input (nothing
+// new logged since last render) always hits the cache and a changed
+// input (a new game confirmed) always produces a fresh call.
+const ZoneInsightSchema = z.object({
+  insights: z
+    .array(z.string())
+    .length(3)
+    .describe(
+      "Exactly 3 short, specific, actionable one-line bullets for a coach, each starting with an emoji: (warning sign) for a weakness to exploit/work on, (check mark) for a strength to lean on, (pin) for a pitcher-tendency observation. Use the real numbers given -- never invent a number not present in the input."
+    ),
+});
+
+export interface PlayerZoneInsightInput {
+  playerName: string;
+  battingZones: { zoneLabel: string; avg: number; ab: number }[];
+  whiffZones: { zoneLabel: string; rate: number; swings: number; pitchType: string }[];
+  locationZones: { zoneLabel: string; pct: number; count: number; pitchType: string }[];
+}
+
+export async function generatePlayerZoneInsights(input: PlayerZoneInsightInput): Promise<string[]> {
+  if (input.battingZones.length === 0 && input.whiffZones.length === 0 && input.locationZones.length === 0) return [];
+  const response = await client.messages.parse({
+    model: "claude-opus-5",
+    max_tokens: 500,
+    messages: [
+      {
+        role: "user",
+        content:
+          `You are a baseball analyst writing a short "Key Insights" summary for a coach ` +
+          `about ${input.playerName}'s zone tendencies as a hitter, from three heat maps: ` +
+          `battingZones (batting average by strike-zone location, min 3 AB to qualify), ` +
+          `whiffZones (swing-and-miss rate by zone, min 3 swings to qualify, "pitchType" is ` +
+          `"all" or a specific pitch), and locationZones (share of pitches thrown to each ` +
+          `zone against this batter, "pitchType" is "all" or a specific pitch). Pick the 3 ` +
+          `most actionable patterns across all three and write one line each, per the schema's ` +
+          `own instructions. If a category has no qualifying data, skip it and lean on the ` +
+          `others -- never fabricate a number.\n\n${JSON.stringify(input, null, 2)}`,
+      },
+    ],
+    output_config: { format: zodOutputFormat(ZoneInsightSchema) },
+  });
+
+  return response.parsed_output?.insights ?? [];
+}
+
 // KAIROS batch, Tool 6 (voice logging). A spoken command is one of two
 // real shapes this app already has a place for: a single pitch (pitch
 // type + outcome + swing/take + roughly where it crossed the zone -- the
