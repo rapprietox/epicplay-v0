@@ -3,7 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import type { FieldCalibrationPoints } from "@/lib/supabase/types";
 import { PlayerBreakdownClient } from "./player-breakdown-client";
-import { buildZoneInsightInput, getPlayerZoneInsights } from "./insights";
+import { buildZoneInsightInput, getPlayerZoneInsights, buildPitcherZoneInsightInput, getPitcherZoneInsights } from "./insights";
 
 export default async function PlayerBreakdownPage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -88,6 +88,14 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
   const batterPitches = (pitches ?? []).filter((p) => battingAtBatIds.has(p.at_bat_id));
   const insights = await getPlayerZoneInsights(buildZoneInsightInput(player.name, battingAtBats ?? [], batterPitches));
 
+  // Pitcher-maps batch: same treatment, mirrored for this player's own
+  // pitches thrown while pitching.
+  const pitchingAtBatIds = new Set((pitchingAtBats ?? []).map((ab) => ab.id));
+  const pitcherPitchesForInsights = (pitches ?? []).filter((p) => pitchingAtBatIds.has(p.at_bat_id));
+  const pitcherInsights = await getPitcherZoneInsights(
+    buildPitcherZoneInsightInput(player.name, pitchingAtBats ?? [], pitcherPitchesForInsights)
+  );
+
   return (
     <main className="min-h-screen bg-background px-6 py-8">
       <Link href="/coach" className="text-sm text-accent-primary hover:underline">
@@ -111,6 +119,7 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
           pitches={pitches ?? []}
           fieldCalibration={fieldCalibration}
           insights={insights}
+          pitcherInsights={pitcherInsights}
         />
       </div>
     </main>

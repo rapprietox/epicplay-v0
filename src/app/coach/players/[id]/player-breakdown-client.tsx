@@ -50,6 +50,7 @@ export function PlayerBreakdownClient({
   pitches,
   fieldCalibration,
   insights,
+  pitcherInsights,
 }: {
   player: Player;
   games: Game[];
@@ -59,6 +60,7 @@ export function PlayerBreakdownClient({
   pitches: Pitch[];
   fieldCalibration: FieldCalibrationPoints | null;
   insights: string[];
+  pitcherInsights: string[];
 }) {
   const [timeOfDayFilter, setTimeOfDayFilter] = useState<TimeOfDay | "all">("all");
   const [dayTypeFilter, setDayTypeFilter] = useState<DayType | "all">("all");
@@ -185,6 +187,7 @@ export function PlayerBreakdownClient({
   );
 
   const battingAvgZoneLines = useMemo(() => computeZoneBattingLines(battingZoneAtBats), [battingZoneAtBats]);
+  const pitchingAvgZoneLines = useMemo(() => computeZoneBattingLines(pitchingZoneAtBats), [pitchingZoneAtBats]);
 
   const pitcherPitches = useMemo(() => {
     const ids = new Set(filteredPitchingAtBats.map((ab) => ab.id));
@@ -309,6 +312,18 @@ export function PlayerBreakdownClient({
       <SprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
 
       {pitchingZoneAtBats.length > 0 && <PitcherHeatmap atBats={pitcherAtBatsByType} pitches={pitcherPitches} />}
+
+      {pitcherPitches.length > 0 && (
+        <>
+          <ZoneAnalyticsRow
+            battingAvgLines={pitchingAvgZoneLines}
+            whiffPitches={pitcherPitches}
+            locationPitches={pitcherPitches}
+            perspective="pitcher"
+          />
+          <KeyInsights insights={pitcherInsights} title="Pitching Key Insights" />
+        </>
+      )}
 
       {battingZoneAtBats.length > 0 && (
         <HitterExtendedStats countAtBats={hitterCountAtBats} pitchTypeAtBats={hitterPitchTypeAtBats} pitches={batterPitches} />

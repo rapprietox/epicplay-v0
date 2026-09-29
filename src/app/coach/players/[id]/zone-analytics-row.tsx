@@ -28,16 +28,29 @@ interface LocationPitchInput {
 // filter stays exactly where it already was, right above this row, for
 // the pitching-side use case this row doesn't cover). Maps 2 and 3 each
 // keep their own independent pitch-type toggle, per spec.
+//
+// Pitcher-maps batch: reused as-is for the pitcher's own zone row
+// (per that request's own "reuse if possible") via `perspective` --
+// Map 1's data is "opponent BA against this pitcher" instead of "this
+// batter's own average" (computeZoneBattingLines works either way, it's
+// just fed pitching-mode zone at-bats instead of hitting-mode ones by
+// the caller), and Maps 2/3 switch to the green/amber pitcher-favorable
+// color scales instead of the batter ones. zoneColor itself needs no
+// perspective switch -- a low average is a good outcome for whoever's
+// pitching either way, so its existing dark-green/gold scale already
+// reads correctly in both directions.
 export function ZoneAnalyticsRow({
   battingAvgLines,
   whiffPitches,
   locationPitches,
   namePrefix = "",
+  perspective = "batter",
 }: {
   battingAvgLines: ZoneBattingLine[];
   whiffPitches: WhiffPitchInput[];
   locationPitches: LocationPitchInput[];
   namePrefix?: string;
+  perspective?: "batter" | "pitcher";
 }) {
   const [revealed, setRevealed] = useState(false);
   useEffect(() => {
@@ -46,15 +59,27 @@ export function ZoneAnalyticsRow({
     return () => clearTimeout(t);
   }, [battingAvgLines]);
 
+  const map1Title = perspective === "pitcher" ? "Opponent BA vs Pitcher" : "Batting Average by Zone";
+  const map1Subtitle =
+    perspective === "pitcher" ? "Where opposing batters do the most damage against this pitcher" : "Where this batter does the most damage";
+  const map2Title = perspective === "pitcher" ? "Whiff Rate by Zone" : "Swing & Miss Rate by Zone";
+
   return (
     <section className="glossy rounded-lg border border-border bg-surface p-5">
-      <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">{namePrefix}Zone Analytics</h2>
-      <p className="mt-1 text-xs text-foreground/50">Batting average, swing-and-miss rate, and pitch-location tendency, side by side</p>
+      <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">
+        {namePrefix}
+        {perspective === "pitcher" ? "Pitcher " : ""}Zone Analytics
+      </h2>
+      <p className="mt-1 text-xs text-foreground/50">
+        {perspective === "pitcher"
+          ? "Opponent average against, whiff rate, and this pitcher's own location tendency, side by side"
+          : "Batting average, swing-and-miss rate, and pitch-location tendency, side by side"}
+      </p>
 
       <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div>
-          <p className="text-center text-xs font-semibold uppercase tracking-wide text-white">Batting Average by Zone</p>
-          <p className="text-center text-[10px] text-foreground/40">Where this batter does the most damage</p>
+          <p className="text-center text-xs font-semibold uppercase tracking-wide text-white">{map1Title}</p>
+          <p className="text-center text-[10px] text-foreground/40">{map1Subtitle}</p>
           <div className="mx-auto mt-3 grid w-full max-w-[220px] grid-cols-3 grid-rows-3 gap-1 rounded-md border-2 border-border bg-background p-1">
             {battingAvgLines.map((line, i) => (
               <div
@@ -76,8 +101,8 @@ export function ZoneAnalyticsRow({
           <p className="mt-2 text-center text-[9px] text-foreground/30">Zoned by the last pitch of each at-bat -- ring not applicable</p>
         </div>
 
-        <WhiffRateHeatmap pitches={whiffPitches} title={`${namePrefix}Swing & Miss Rate by Zone`} />
-        <PitchLocationHeatmap pitches={locationPitches} title={`${namePrefix}Pitch Location Tendency`} />
+        <WhiffRateHeatmap pitches={whiffPitches} title={`${namePrefix}${map2Title}`} perspective={perspective} />
+        <PitchLocationHeatmap pitches={locationPitches} title={`${namePrefix}Pitch Location Tendency`} perspective={perspective} />
       </div>
     </section>
   );

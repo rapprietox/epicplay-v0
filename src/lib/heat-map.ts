@@ -267,6 +267,22 @@ export function whiffRateColor(line: ZoneWhiffLine): string {
   return "#E24B4A";
 }
 
+// Pitcher's-own-whiff-rate maps batch: the exact same computeZoneWhiffLines
+// output (swing/miss are swing/miss regardless of whose pitches they
+// are), colored in the opposite direction -- here green means good *for
+// the pitcher* (batters can't touch this zone), red means the pitcher's
+// weak spot. Deliberately a separate function from whiffRateColor rather
+// than a boolean flag on it, since the two color scales don't share a
+// single inverted mapping (the bands' own cut points also read
+// differently: "money zone" gets its own glow-worthy top band).
+export function pitcherWhiffRateColor(line: ZoneWhiffLine): string {
+  if (line.rate === null) return "#1A3D28";
+  if (line.rate <= 0.15) return "#7A2020";
+  if (line.rate <= 0.3) return "#EF9F27";
+  if (line.rate <= 0.5) return "#6FCB6F";
+  return "#2ECC71";
+}
+
 // Pitch Location Tendency (Map 3): what share of pitches thrown to this
 // batter (or, at team scale, to the whole lineup) landed in each zone --
 // frequency, not outcome. A pitch with no location (zone_x/zone_y null --
@@ -301,6 +317,21 @@ export function pitchLocationColor(line: ZoneLocationLine): string {
   if (line.pct <= 15) return "#1D5A34";
   if (line.pct <= 25) return "#24A058";
   if (line.pct <= 35) return "#2ECC71";
+  return "#F0C060";
+}
+
+// Pitcher Location Tendency ("does he telegraph?") batch: same
+// computeZoneLocationLines output as the batter-facing map, but amber
+// toned instead of green toned -- per spec, a distinct palette from
+// "where pitchers attack this batter" so the two location maps (batter
+// page's Map 3 vs. pitcher page's Map 3) read as visually distinct at a
+// glance even though the underlying math is identical.
+export function pitcherLocationColor(line: ZoneLocationLine): string {
+  if (line.count === 0) return "#1A3D28";
+  if (line.pct <= 5) return "#241A0A";
+  if (line.pct <= 15) return "#5A3D1D";
+  if (line.pct <= 25) return "#A0701F";
+  if (line.pct <= 35) return "#EF9F27";
   return "#F0C060";
 }
 

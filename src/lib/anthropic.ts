@@ -188,6 +188,55 @@ export async function generatePlayerZoneInsights(input: PlayerZoneInsightInput):
   return response.parsed_output?.insights ?? [];
 }
 
+// Pitcher-maps batch: same 3-bullet schema (ZoneInsightSchema), a
+// separate function rather than a "perspective" flag on
+// generatePlayerZoneInsights because the input shape's own field
+// meanings flip (oppAvgZones is the OPPONENT's average against this
+// player, not this player's own) and the example outputs call for a
+// direct, second-person coaching voice ("this is your out pitch," "Mix
+// your locations") rather than the batter version's third-person
+// description -- different enough prompting that sharing one function
+// would mean branching most of its body anyway.
+export interface PitcherZoneInsightInput {
+  playerName: string;
+  oppAvgZones: { zoneLabel: string; avg: number; ab: number }[];
+  whiffZones: { zoneLabel: string; rate: number; swings: number; pitchType: string }[];
+  locationZones: { zoneLabel: string; pct: number; count: number; pitchType: string }[];
+}
+
+export async function generatePitcherZoneInsights(input: PitcherZoneInsightInput): Promise<string[]> {
+  if (input.oppAvgZones.length === 0 && input.whiffZones.length === 0 && input.locationZones.length === 0) return [];
+  const response = await client.messages.parse({
+    model: "claude-opus-5",
+    max_tokens: 500,
+    messages: [
+      {
+        role: "user",
+        content:
+          `You are a pitching coach writing a short "Key Insights" summary directly to ${input.playerName}, ` +
+          `a pitcher, about their own zone tendencies, from three heat maps: oppAvgZones (opposing ` +
+          `batters' average against this pitcher by zone, min 3 AB to qualify -- a high average is bad ` +
+          `for the pitcher), whiffZones (this pitcher's own swing-and-miss rate induced by zone, min 3 ` +
+          `swings to qualify, "pitchType" is "all" or a specific pitch -- a high rate is good for the ` +
+          `pitcher, their out-pitch location), and locationZones (share of this pitcher's own pitches ` +
+          `landing in each zone, "pitchType" is "all" or a specific pitch -- a high share can mean the ` +
+          `pitcher is predictable/telegraphing). Pick the 3 most actionable patterns across all three ` +
+          `and write one line each, per the schema's own instructions, speaking directly to the pitcher ` +
+          `in second person ("your," "you") with concrete coaching advice (throw it more, avoid this ` +
+          `zone, mix your locations), not just a description of the number. If a category has no ` +
+          `qualifying data, skip it and lean on the others -- never fabricate a number.\n\n${JSON.stringify(
+            input,
+            null,
+            2
+          )}`,
+      },
+    ],
+    output_config: { format: zodOutputFormat(ZoneInsightSchema) },
+  });
+
+  return response.parsed_output?.insights ?? [];
+}
+
 // KAIROS batch, Tool 6 (voice logging). A spoken command is one of two
 // real shapes this app already has a place for: a single pitch (pitch
 // type + outcome + swing/take + roughly where it crossed the zone -- the
