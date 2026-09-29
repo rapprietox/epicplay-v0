@@ -762,6 +762,8 @@ export function OperatorConsole({
       inning_half: state.inningHalf,
       batting_order_position: state.mode === "hitting" ? state.battingOrderPosition : null,
       opponent_pitcher_id: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
+      outs_before: state.outs,
+      risp_before: Boolean(state.runners.second || state.runners.third),
     });
     dispatch({ type: "START_DRAFT_LOCAL", atBatId: id });
     return id;
@@ -1933,6 +1935,8 @@ export function OperatorConsole({
         battingOrderPosition: state.mode === "hitting" ? state.battingOrderPosition : null,
         runsScored,
         rbi: runsScored,
+        outsBefore: state.outs,
+        rispBefore: Boolean(state.runners.second || state.runners.third),
       });
       dispatch({ type: "CONFIRM_INTENTIONAL_WALK", atBatId, runners: suggestion, runsScored, runnersBeforeAtBat });
       syncRunners(suggestion);
@@ -1980,6 +1984,8 @@ export function OperatorConsole({
         runsScored,
         opponentPitcherId: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
         scorebookNotation: pick.scorebookNotation ?? null,
+        outsBefore: state.outs,
+        rispBefore: Boolean(state.runners.second || state.runners.third),
       });
       dispatch({
         type: "QUICK_CONFIRM_LOCAL",

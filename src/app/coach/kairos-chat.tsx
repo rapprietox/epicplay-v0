@@ -42,7 +42,13 @@ function saveMessages(teamId: string, messages: KairosMessage[]) {
   }
 }
 
-export function KairosChat({ teamId, compact = false }: { teamId: string; compact?: boolean }) {
+// Panel-height batch: "dashboard" is the new default inline-panel sizing
+// (~120px total including the widget's own header, per spec) --
+// "modal" is the existing floating-baseball slide-up, unchanged, still
+// the fuller view. Replaces the old boolean `compact` prop (which only
+// ever meant "this is the modal") with a named variant now that there
+// are two genuinely different compact treatments, not one.
+export function KairosChat({ teamId, variant = "dashboard" }: { teamId: string; variant?: "dashboard" | "modal" }) {
   const [messages, setMessages] = useState<KairosMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -126,28 +132,37 @@ export function KairosChat({ teamId, compact = false }: { teamId: string; compac
 
   const shown = messages.slice(-MAX_SHOWN_MESSAGES);
 
+  const isDashboard = variant === "dashboard";
+
   return (
     <div className="flex flex-col">
       {messages.length > 0 && (
-        <div className="mb-1 flex justify-end">
-          <button type="button" onClick={clearHistory} className="text-[10px] uppercase tracking-wide text-[#5A7A64] hover:text-[#9FCBAC]">
+        <div className="mb-0.5 flex justify-end">
+          <button type="button" onClick={clearHistory} className="text-[9px] uppercase tracking-wide text-[#5A7A64] hover:text-[#9FCBAC]">
             Clear history
           </button>
         </div>
       )}
+      {/* Panel-height batch: "dashboard" caps the viewport at a genuinely
+          small, fixed height (not vh-relative like the modal, which
+          should track the viewport) so the panel itself never grows past
+          spec regardless of how much history is loaded -- shown.length is
+          unchanged (still the last MAX_SHOWN_MESSAGES), only the visible
+          window shrinks; the rest is one scroll away, never pushing
+          layout. */}
       <div
         ref={scrollRef}
-        className={`flex flex-col gap-2 overflow-y-auto ${compact ? "max-h-[40vh]" : "max-h-[320px]"}`}
+        className={`flex flex-col gap-1.5 overflow-y-auto ${isDashboard ? "max-h-[64px]" : "max-h-[40vh]"}`}
       >
         {shown.length === 0 && !loading && (
-          <p className="px-1 py-2 text-xs text-[#9FCBAC]">
-            Ask about your roster, paste a schedule to import, or say &ldquo;suggest tonight&apos;s lineup.&rdquo;
+          <p className="px-1 py-1 text-xs text-[#9FCBAC]">
+            {isDashboard ? "Ask KAIROS anything…" : "Ask about your roster, paste a schedule to import, or say “suggest tonight’s lineup.”"}
           </p>
         )}
         {shown.map((m, i) => (
           <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
-              className={`max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+              className={`max-w-[80%] whitespace-pre-wrap rounded-lg text-sm ${isDashboard ? "px-2 py-1" : "px-3 py-2"} ${
                 m.role === "user" ? "bg-[#0F2A17] text-[#C8F0D5]" : "border-l-2 border-l-accent-green bg-[#0D2412] text-[#DCF5E4]"
               }`}
             >
@@ -225,7 +240,7 @@ export function KairosChat({ teamId, compact = false }: { teamId: string; compac
       {importDone && <p className="mt-2 text-xs text-accent-green">{importDone}</p>}
       {error && <p className="mt-2 text-xs text-accent-red">{error}</p>}
 
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+      <div className={`${isDashboard ? "mt-1.5" : "mt-3"} flex flex-col gap-2 sm:flex-row`}>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -236,8 +251,10 @@ export function KairosChat({ teamId, compact = false }: { teamId: string; compac
             }
           }}
           placeholder="Ask Kairos anything about your team..."
-          rows={compact ? 2 : 1}
-          className="w-full resize-none rounded-md border border-[#1A3D28] bg-[#06150A] px-3 py-2 text-sm text-white outline-none placeholder:text-[#5A7A64] focus:border-accent-green"
+          rows={variant === "modal" ? 2 : 1}
+          className={`w-full resize-none rounded-md border border-[#1A3D28] bg-[#06150A] text-sm text-white outline-none placeholder:text-[#5A7A64] focus:border-accent-green ${
+            isDashboard ? "px-2 py-1.5" : "px-3 py-2"
+          }`}
         />
         <div className="flex gap-2">
           {voiceSupported && (

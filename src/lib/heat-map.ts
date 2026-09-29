@@ -429,6 +429,47 @@ export function damageRateColor(line: ZoneDamageLine): string {
   return "#E24B4A";
 }
 
+// Clubhouse Pro enhancement, Part 3: KAIROS's initial assessment needs
+// "the zone that's bad on both axes" -- lowest batting average AND
+// highest whiff rate. battingZones (zoneLabel9-labeled, 9 cells) and
+// whiffZones (extendedZoneLabel-labeled, 25 cells) come from two
+// different index schemes, but zoneLabel9 and extendedZoneLabel both
+// derive from the same ROW_LABELS/COL_LABELS pair over the same 1-3
+// row/col range for the 9 strike-zone-interior cells -- so their label
+// STRINGS already line up exactly ("High-Inside" means the same cell in
+// both), and matching by label avoids re-deriving a second index
+// mapping. Callers pass the already-computed buildZoneInsightInput
+// output (src/app/coach/players/[id]/insights.ts) rather than raw
+// pitches/at-bats -- this only combines two already-built lists.
+export interface ZoneWeaknessCandidate {
+  zoneLabel: string;
+  avg: number;
+  whiffRate: number | null;
+}
+
+export function findWeaknessAndStrengthZones(
+  battingZones: { zoneLabel: string; avg: number; ab: number }[],
+  whiffZones: { zoneLabel: string; rate: number; pitchType: string }[]
+): { weakness: ZoneWeaknessCandidate | null; strength: ZoneWeaknessCandidate | null } {
+  const whiffByLabel = new Map(whiffZones.filter((z) => z.pitchType === "all").map((z) => [z.zoneLabel, z.rate]));
+
+  const candidates: ZoneWeaknessCandidate[] = battingZones.map((z) => ({
+    zoneLabel: z.zoneLabel,
+    avg: z.avg,
+    whiffRate: whiffByLabel.get(z.zoneLabel) ?? null,
+  }));
+  if (candidates.length === 0) return { weakness: null, strength: null };
+
+  // Higher badness = worse for the batter: a low average weighted more
+  // heavily than whiff rate (always available), whiff rate added on top
+  // when a matching zone exists (not every zone has >= MIN_SWINGS_FOR_RATE
+  // swings recorded).
+  const badness = (c: ZoneWeaknessCandidate) => (1 - c.avg) * 0.6 + (c.whiffRate ?? 0) * 0.4;
+  const sorted = [...candidates].sort((a, b) => badness(b) - badness(a));
+
+  return { weakness: sorted[0] ?? null, strength: sorted[sorted.length - 1] ?? null };
+}
+
 // Shared "All / Fastball / Curveball / Changeup / Slider" toggle for Map
 // 2 and Map 3 -- each map keeps its own independent selection (per
 // spec), but both draw from this same option list so "All" is spelled

@@ -19,11 +19,25 @@ export interface ZoneCell {
   glow?: boolean;
 }
 
+// Team zone maps batch: grew from a ~260x260px square (content was
+// clipping, especially the ring cells' two-line percentage+count text)
+// to a 280x320px minimum frame -- this component is the one place both
+// the player page's and the team dashboard's Map 2/Map 3 actually render
+// from, so fixing it here is what keeps the two in sync rather than
+// needing a separate size override per caller. Cells no longer force
+// aspect-square (that made the grid's overall height a byproduct of its
+// width via the column fr-ratios, with no independent way to reach a
+// taller-than-wide 280x320 frame) -- the row fr-ratios now size cells
+// against the container's own explicit min-height instead.
 export function ZoneGrid({ cells, revealed }: { cells: ZoneCell[]; revealed: boolean }) {
   return (
     <div
-      className="mx-auto grid w-full max-w-[260px] gap-[3px] rounded-md border-2 border-border bg-background p-1"
-      style={{ gridTemplateColumns: "0.6fr 1fr 1fr 1fr 0.6fr", gridTemplateRows: "0.55fr 1fr 1fr 1fr 0.55fr" }}
+      className="mx-auto grid w-full max-w-[280px] gap-[3px] rounded-md border-2 border-border bg-background p-1"
+      style={{
+        gridTemplateColumns: "0.6fr 1fr 1fr 1fr 0.6fr",
+        gridTemplateRows: "0.55fr 1fr 1fr 1fr 0.55fr",
+        minHeight: 320,
+      }}
     >
       {cells.map((cell, i) => {
         const col = i % 5;
@@ -32,7 +46,7 @@ export function ZoneGrid({ cells, revealed }: { cells: ZoneCell[]; revealed: boo
         return (
           <div
             key={i}
-            className={`flex aspect-square flex-col items-center justify-center rounded transition-colors duration-700 ${
+            className={`flex h-full w-full flex-col items-center justify-center rounded transition-colors duration-700 ${
               isRing ? "opacity-90" : ""
             }`}
             style={{
@@ -40,8 +54,8 @@ export function ZoneGrid({ cells, revealed }: { cells: ZoneCell[]; revealed: boo
               boxShadow: revealed && cell.glow ? `0 0 8px ${cell.color}, 0 0 16px ${cell.color}` : undefined,
             }}
           >
-            <span className={`font-heading font-bold text-background ${isRing ? "text-[8px]" : "text-[11px]"}`}>{cell.primary}</span>
-            {cell.secondary && <span className={`text-background/70 ${isRing ? "text-[6px]" : "text-[8px]"}`}>{cell.secondary}</span>}
+            <span className={`font-heading font-bold text-background ${isRing ? "text-[9px]" : "text-[13px]"}`}>{cell.primary}</span>
+            {cell.secondary && <span className={`text-background/70 ${isRing ? "text-[7px]" : "text-[9px]"}`}>{cell.secondary}</span>}
           </div>
         );
       })}

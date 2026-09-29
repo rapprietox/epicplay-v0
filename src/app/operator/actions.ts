@@ -124,6 +124,12 @@ export async function startDraftAtBat(
     // for this specific at-bat, the same moment our own pitcher_id
     // already gets fixed for a pitching-mode at-bat.
     opponent_pitcher_id: string | null;
+    // Clubhouse Pro enhancement, Part 4: outs/RISP snapshotted at the
+    // exact moment this at-bat starts -- the only point they're ever
+    // knowable, since game_state.outs/runners are live-only and keep
+    // moving after this. See the migration's own comment.
+    outs_before: number;
+    risp_before: boolean;
   }
 ): Promise<string> {
   const { supabase } = await requireOperatorGame(gameId);
@@ -139,6 +145,8 @@ export async function startDraftAtBat(
       inning_half: input.inning_half,
       batting_order_position: input.batting_order_position,
       opponent_pitcher_id: input.opponent_pitcher_id,
+      outs_before: input.outs_before,
+      risp_before: input.risp_before,
     })
     .select("id")
     .single();
@@ -215,6 +223,11 @@ export interface QuickAtBatInput {
   // notationFor's "if (ab.scorebook_notation) return ab.scorebook_notation"
   // check in the scorebook page, which this feeds).
   scorebookNotation?: string | null;
+  // Clubhouse Pro enhancement, Part 4: same snapshot startDraftAtBat
+  // takes for full mode -- Quick Mode has no separate draft step, so
+  // this is captured at the same moment the at-bat is logged.
+  outsBefore: number;
+  rispBefore: boolean;
 }
 
 export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: string }> {
@@ -237,6 +250,8 @@ export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: 
       is_out: RESULT_IS_OUT[input.result],
       opponent_pitcher_id: input.opponentPitcherId,
       scorebook_notation: input.scorebookNotation ?? null,
+      outs_before: input.outsBefore,
+      risp_before: input.rispBefore,
       confirmed_at: new Date().toISOString(),
     })
     .select("id")
@@ -548,6 +563,8 @@ export interface ConfirmIntentionalWalkInput {
   battingOrderPosition: number | null;
   runsScored: number;
   rbi: number;
+  outsBefore: number;
+  rispBefore: boolean;
 }
 
 // Bypasses the draft-at-bat lifecycle entirely (per spec: "do not require
@@ -572,6 +589,8 @@ export async function confirmIntentionalWalk(input: ConfirmIntentionalWalkInput)
       rbi: input.rbi,
       runs_scored: input.runsScored,
       is_out: false,
+      outs_before: input.outsBefore,
+      risp_before: input.rispBefore,
       confirmed_at: new Date().toISOString(),
     })
     .select("id")

@@ -1,6 +1,11 @@
 import type { GameType, FieldCalibrationPoints, AtBatResult, PitchType, PitchOutcome } from "@/lib/supabase/types";
 import type { ZoneBattingLine, AtBatWithZone, SprayDot } from "@/lib/heat-map";
 import type { PressureSplits, CountState } from "@/lib/count-stats";
+import type { BattingLine } from "@/lib/stats";
+import type { SituationalRow } from "@/lib/situational-stats";
+import type { StreakStatus } from "@/lib/streaks";
+import type { HeadToHeadEntry } from "@/lib/head-to-head";
+import type { Milestone } from "@/lib/milestones";
 import { StrikeZoneHeatmap } from "@/app/coach/players/[id]/strike-zone-heatmap";
 import { ZoneAnalyticsRow } from "@/app/coach/players/[id]/zone-analytics-row";
 import { KeyInsights } from "@/app/coach/players/[id]/key-insights";
@@ -10,6 +15,13 @@ import { PressurePerformance } from "./pro/pressure-performance";
 import { WalkupSongSelector } from "./pro/walkup-song-selector";
 import { CheckoutButton } from "./pro/checkout-button";
 import { PromoCodeForm } from "./pro/promo-code-form";
+import { KairosWidget } from "./pro/kairos-widget";
+import { InitialAssessment } from "./pro/initial-assessment";
+import { SituationalStats } from "./pro/situational-stats";
+import { HotColdStreak } from "./pro/hot-cold-streak";
+import { HeadToHead } from "./pro/head-to-head";
+import { SeasonTrendChart, type TrendPoint } from "./pro/season-trend-chart";
+import { Milestones } from "./pro/milestones";
 
 interface ZonePitch {
   swing: boolean | null;
@@ -29,6 +41,7 @@ interface ZonePitch {
 // data.
 export function ProSection({
   unlocked,
+  playerId,
   battingAvgZoneLines,
   battingZoneAtBats,
   pitches,
@@ -38,8 +51,18 @@ export function ProSection({
   hitterCountAtBats,
   hitterPitchTypeAtBats,
   pressureSplits,
+  kairosAssessment,
+  situationalRows,
+  last5Line,
+  last10Line,
+  currentStreak,
+  streakBadge,
+  headToHeadEntries,
+  trendPoints,
+  milestones,
 }: {
   unlocked: boolean;
+  playerId: string;
   battingAvgZoneLines: ZoneBattingLine[];
   battingZoneAtBats: (AtBatWithZone & { gameType: GameType })[];
   pitches: ZonePitch[];
@@ -49,6 +72,15 @@ export function ProSection({
   hitterCountAtBats: { result: AtBatResult; finalCount: CountState | null }[];
   hitterPitchTypeAtBats: { result: AtBatResult; pitchType: PitchType | null }[];
   pressureSplits: PressureSplits;
+  kairosAssessment: string;
+  situationalRows: SituationalRow[];
+  last5Line: BattingLine | null;
+  last10Line: BattingLine | null;
+  currentStreak: number;
+  streakBadge: StreakStatus;
+  headToHeadEntries: HeadToHeadEntry[];
+  trendPoints: TrendPoint[];
+  milestones: Milestone[];
 }) {
   if (!unlocked) {
     const teaser = insights[0] ?? "";
@@ -99,6 +131,25 @@ export function ProSection({
       </section>
 
       <HitterExtendedStats countAtBats={hitterCountAtBats} pitchTypeAtBats={hitterPitchTypeAtBats} pitches={pitches} />
+
+      <SituationalStats rows={situationalRows} />
+
+      <HotColdStreak
+        status={streakBadge}
+        last5={last5Line ? { avg: last5Line.avg, h: last5Line.h, ab: last5Line.ab } : null}
+        last10={last10Line ? { avg: last10Line.avg } : null}
+        currentStreak={currentStreak}
+      />
+
+      <HeadToHead entries={headToHeadEntries} />
+
+      <SeasonTrendChart points={trendPoints} />
+
+      <Milestones milestones={milestones} />
+
+      <InitialAssessment text={kairosAssessment} />
+
+      <KairosWidget playerId={playerId} />
     </>
   );
 }

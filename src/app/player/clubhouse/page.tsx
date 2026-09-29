@@ -7,6 +7,11 @@ import { daysUntil } from "@/lib/dates";
 import type { AtBatResult, FieldCalibrationPoints, GameType, PitchType } from "@/lib/supabase/types";
 import { getPlayerZoneInsights, buildZoneInsightInput } from "@/app/coach/players/[id]/insights";
 import { getPregameMessage } from "./insights";
+import { getOrCreateInitialAssessment } from "./kairos-actions";
+import { computeSituationalStats } from "@/lib/situational-stats";
+import { recentGamesAvg, currentHitStreak, streakStatus } from "@/lib/streaks";
+import { computeHeadToHead } from "@/lib/head-to-head";
+import { computeMilestones } from "@/lib/milestones";
 import { ClubhouseHeader } from "./header";
 import { PregameCard } from "./pregame-card";
 import { GameHistory } from "./game-history";
@@ -32,6 +37,8 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
   const { data: games } = await supabase.from("games").select("*").eq("team_id", profile.team_id);
   const allGames = games ?? [];
+  // Part 5: best-season-AVG milestone needs games grouped by season.
+  const { data: seasons } = await supabase.from("seasons").select("id, name").eq("team_id", profile.team_id);
   const gameById = new Map(allGames.map((g) => [g.id, g]));
   const gameIds = allGames.map((g) => g.id);
 
@@ -109,6 +116,12 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
   const insights = await getPlayerZoneInsights(buildZoneInsightInput(player.name, confirmedAtBats, batterPitches));
 
+  // Clubhouse Pro enhancement, Part 3: only generated once Pro is
+  // actually unlocked -- an unlocked player is the only one who'll ever
+  // see it, so there's no reason to spend an Anthropic call (or wait on
+  // one) for a locked player.
+  const kairosAssessment = player.clubhouse_unlocked ? await getOrCreateInitialAssessment() : "";
+
   // Games this player actually appeared in, most recent first -- "game
   // history" is personal ("their line"), so a game they didn't bat in
   // isn't part of it.
@@ -130,6 +143,33 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
     line: personalLineFor(g.id),
     result: g.our_score > g.opponent_score ? "W" : g.our_score < g.opponent_score ? "L" : "T",
   }));
+
+  // Part 4: situational stats, hot/cold streak, head-to-head, trend chart.
+  const situationalRows = computeSituationalStats(player.id, confirmedAtBats, gameById);
+
+  const chronologicalGames = [...playerGames].reverse();
+  const last5Line = recentGamesAvg(player.id, confirmedAtBats, chronologicalGames, 5);
+  const last10Line = recentGamesAvg(player.id, confirmedAtBats, chronologicalGames, 10);
+  const streak = currentHitStreak(player.id, confirmedAtBats, chronologicalGames);
+  const streakBadge = streakStatus(last5Line?.avg ?? 0);
+
+  const headToHeadEntries = computeHeadToHead(player.id, allGames, confirmedAtBats);
+
+  const milestones = computeMilestones(player.id, confirmedAtBats, allGames, seasons ?? []);
+
+  let cumulativeAtBats: typeof confirmedAtBats = [];
+  const trendPoints = chronologicalGames.map((g, i) => {
+    cumulativeAtBats = [...cumulativeAtBats, ...confirmedAtBats.filter((ab) => ab.game_id === g.id)];
+    const rollingLine = computeBattingLines(cumulativeAtBats, []).get(player.id);
+    const gameLine = personalLineFor(g.id);
+    return {
+      gameId: g.id,
+      gameIndex: i + 1,
+      opponentName: g.opponent_name,
+      rollingAvg: rollingLine?.avg ?? 0,
+      gameLine: gameLine ? `${gameLine.h}-${gameLine.ab}${gameLine.hr > 0 ? `, ${gameLine.hr} HR` : ""}` : "0-0",
+    };
+  });
 
   const today = new Date().toISOString().slice(0, 10);
   const todaysGame = allGames.find((g) => g.game_date === today && daysUntil(g.game_date) === 0 && g.status !== "cancelled") ?? null;
@@ -173,6 +213,7 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
         <ProSection
           unlocked={player.clubhouse_unlocked}
+          playerId={player.id}
           battingAvgZoneLines={battingAvgZoneLines}
           battingZoneAtBats={battingZoneAtBats}
           pitches={batterPitches}
@@ -182,6 +223,15 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
           hitterCountAtBats={hitterCountAtBats}
           hitterPitchTypeAtBats={hitterPitchTypeAtBats}
           pressureSplits={pressureSplits}
+          kairosAssessment={kairosAssessment}
+          situationalRows={situationalRows}
+          last5Line={last5Line}
+          last10Line={last10Line}
+          currentStreak={streak}
+          streakBadge={streakBadge}
+          headToHeadEntries={headToHeadEntries}
+          trendPoints={trendPoints}
+          milestones={milestones}
         />
       </div>
     </main>

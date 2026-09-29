@@ -3,16 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { KairosChat } from "./kairos-chat";
 
-// KAIROS batch: the panel's own spec lists a microphone button both in
-// the header row and again as its own bullet ("opens voice input") --
-// read as the second bullet just elaborating on the first, not a second,
-// separate mic control. It's kept next to the message input inside
-// KairosChat (where the transcript actually needs to land) rather than
-// lifted into this header, since splitting the voice-recognition state
-// across two components for a header-only placement wasn't worth the
-// coupling cost given everything else in this batch -- noted here as a
-// deliberate, minor layout call, not an oversight.
-export function KairosWidget({ teamId }: { teamId: string }) {
+// Clubhouse Pro enhancement, Part 3: a straight copy of the coach's
+// src/app/coach/kairos-widget.tsx IntersectionObserver + floating-
+// baseball + slide-up-modal mechanism (fully generic, no team/coach
+// coupling in the original), swapping teamId for playerId and rendering
+// the player-scoped KairosChat above. Satisfies "floating baseball also
+// appears on player Clubhouse when scrolled."
+export function KairosWidget({ playerId }: { playerId: string }) {
   const [minimized, setMinimized] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [panelVisible, setPanelVisible] = useState(true);
@@ -28,19 +25,7 @@ export function KairosWidget({ teamId }: { teamId: string }) {
 
   return (
     <>
-      {/* Panel-height batch: the dashboard's inline panel used to be a
-          full p-5 card with a subtitle line and a 320px chat viewport --
-          nowhere near the ~120px-total budget this now targets. Tighter
-          padding (p-3), a smaller header, and the subtitle dropped from
-          this default state (kept on the floating modal below, which is
-          meant to be the fuller view) are what actually claw back the
-          space -- KairosChat's own "dashboard" variant (see its own
-          comment) does the rest by capping the message viewport itself. */}
-      <section
-        ref={panelRef}
-        className="glossy rounded-lg border-l-4 p-3"
-        style={{ background: "#0A1F0D", borderLeft: "4px solid #2ECC71" }}
-      >
+      <section ref={panelRef} className="glossy rounded-lg border-l-4 p-3" style={{ background: "#0A1F0D", borderLeft: "4px solid #2ECC71" }}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-base" style={{ filter: "drop-shadow(0 0 6px #2ECC71) drop-shadow(0 0 3px #2ECC71)" }}>
@@ -62,25 +47,14 @@ export function KairosWidget({ teamId }: { teamId: string }) {
 
         {!minimized && (
           <div className="mt-1.5">
-            <KairosChat teamId={teamId} variant="dashboard" />
+            <KairosChat playerId={playerId} variant="dashboard" />
           </div>
         )}
       </section>
 
-      {/* Floating baseball: only once the inline panel has scrolled out
-          of view (IntersectionObserver above), and only once the coach
-          hasn't opened the slide-up modal (no point showing a trigger
-          for something already open). */}
       {!panelVisible && !modalOpen && (
-        <button
-          type="button"
-          onClick={() => setModalOpen(true)}
-          className="fixed bottom-6 right-6 z-40 flex flex-col items-center gap-1"
-        >
-          <span
-            className="kairos-float-pulse flex h-14 w-14 items-center justify-center rounded-full bg-[#0A1F0D] text-3xl"
-            style={{ border: "2px solid #2ECC71" }}
-          >
+        <button type="button" onClick={() => setModalOpen(true)} className="fixed bottom-6 right-6 z-40 flex flex-col items-center gap-1">
+          <span className="kairos-float-pulse flex h-14 w-14 items-center justify-center rounded-full bg-[#0A1F0D] text-3xl" style={{ border: "2px solid #2ECC71" }}>
             ⚾
           </span>
           <span className="text-[11px] text-[#9FCBAC]">Ask Kairos</span>
@@ -112,7 +86,7 @@ export function KairosWidget({ teamId }: { teamId: string }) {
               </button>
             </div>
             <div className="mt-3 flex-1 overflow-y-auto">
-              <KairosChat teamId={teamId} variant="modal" />
+              <KairosChat playerId={playerId} variant="modal" />
             </div>
           </div>
         </div>

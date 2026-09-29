@@ -294,6 +294,63 @@ export async function generatePitcherZoneInsights(input: PitcherZoneInsightInput
   return response.parsed_output?.insights ?? [];
 }
 
+// Clubhouse Pro enhancement, Part 3: the one-time welcome assessment
+// generated on first Clubhouse Pro unlock, cached to
+// players.kairos_initial_assessment (a real persisted column, not
+// unstable_cache -- see src/lib/kairos-assessment.ts for the
+// generate-once/persist/regenerate-on-request flow). claude-opus-5,
+// matching every other one-shot structured-generation call in this file
+// -- the conversational KAIROS chat loop (src/app/player/clubhouse/
+// kairos-actions.ts) is the one that uses claude-sonnet-5 instead, per
+// this app's own established model split.
+export interface KairosInitialAssessmentInput {
+  playerName: string;
+  position: string | null;
+  teamName: string;
+  battingLine: { ab: number; avg: number; hr: number; rbi: number; obp: number; slg: number; ops: number } | null;
+  weaknessZone: { zoneLabel: string; avg: number; whiffRate: number | null } | null;
+  strengthZone: { zoneLabel: string; avg: number; whiffRate: number | null } | null;
+}
+
+export async function generateKairosInitialAssessment(input: KairosInitialAssessmentInput): Promise<string> {
+  const response = await client.messages.create({
+    model: "claude-opus-5",
+    max_tokens: 900,
+    messages: [
+      {
+        role: "user",
+        content:
+          `You are KAIROS, a personal AI baseball coach, writing a one-time welcome ` +
+          `assessment for ${input.playerName}, a ${input.position ?? "player"} on the ${input.teamName}, ` +
+          `who just unlocked Clubhouse Pro. Using only the data below, write the assessment in exactly ` +
+          `this structure, with these five section headers verbatim, each followed by its content ` +
+          `(no extra headers, no markdown tables):\n\n` +
+          `What I Found\n` +
+          `2-3 sentences describing their specific data (batting line, and their zone tendencies if ` +
+          `weaknessZone/strengthZone are present).\n\n` +
+          `Your Biggest Weakness Right Now\n` +
+          `Name the specific zone and specific percentages (batting average, and whiff rate if known). ` +
+          `If weaknessZone is null (not enough data yet), say so honestly instead of guessing.\n\n` +
+          `Your Biggest Strength\n` +
+          `Name the specific zone, what to do with it (e.g. look for pitches there, drive the ball). ` +
+          `If strengthZone is null, say so honestly instead of guessing.\n\n` +
+          `4-Week Plan\n` +
+          `Week 1/Week 2/Week 3/Week 4, each with specific daily drills targeting the weakness zone ` +
+          `(or general fundamentals if no weakness zone is available yet).\n\n` +
+          `Expected Results\n` +
+          `Specific, realistic improvement targets and a timeline, grounded in the batting line given -- ` +
+          `never invent a number not derivable from the data below.\n\n` +
+          `Never say "I am Claude" or mention Anthropic -- you are KAIROS. Keep the whole assessment ` +
+          `concise and concrete, not generic filler.\n\n${JSON.stringify(input, null, 2)}`,
+      },
+    ],
+  });
+
+  if (response.stop_reason === "refusal") return "";
+  const text = response.content.find((block) => block.type === "text");
+  return text && text.type === "text" ? text.text.trim() : "";
+}
+
 // KAIROS batch, Tool 6 (voice logging). A spoken command is one of two
 // real shapes this app already has a place for: a single pitch (pitch
 // type + outcome + swing/take + roughly where it crossed the zone -- the
