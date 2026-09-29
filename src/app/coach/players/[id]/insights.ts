@@ -10,11 +10,13 @@ import {
   computeZoneBattingLines,
   computeZoneWhiffLines,
   computeZoneLocationLines,
+  computeZoneDamageLines,
+  attachDamageFlag,
   extendedZoneLabel,
   zoneIndexFromCoords,
   zoneLabel9,
 } from "@/lib/heat-map";
-import type { AtBatResult, PitchOutcome, PitchType } from "@/lib/supabase/types";
+import type { AtBatResult, HitType, PitchOutcome, PitchType } from "@/lib/supabase/types";
 
 const PITCH_TYPE_BUCKETS: (PitchType | "all")[] = ["all", "fastball", "curveball", "changeup", "slider"];
 const MIN_LOCATION_SAMPLE = 3;
@@ -22,6 +24,7 @@ const MIN_LOCATION_SAMPLE = 3;
 interface RawAtBat {
   id: string;
   result: AtBatResult | null;
+  hit_type: HitType | null;
 }
 interface RawPitch {
   at_bat_id: string;
@@ -59,6 +62,32 @@ function computeWhiffAndLocationZones(pitches: RawPitch[]): {
   whiffZones.sort((a, b) => b.rate - a.rate);
   locationZones.sort((a, b) => b.pct - a.pct);
   return { whiffZones: whiffZones.slice(0, 8), locationZones: locationZones.slice(0, 8) };
+}
+
+// Damage Rate batch: mirrors computeWhiffAndLocationZones's per-pitch-
+// type-bucket shape, but damage needs the at-bat join first (see
+// attachDamageFlag) -- done ONCE on the full, unfiltered pitch set so
+// "which pitch ended this at-bat" is determined from the at-bat's real
+// pitch history, then the already-flagged pitches are filtered per
+// bucket. Flagging after filtering by pitch type would be wrong: an
+// at-bat's last pitch might not be the same pitch type as an earlier
+// one in the same at-bat, and filtering first could make an
+// unrelated earlier pitch look like "the last one" within that narrowed
+// set.
+function computeDamageZones(atBats: RawAtBat[], pitches: RawPitch[]): PitcherZoneInsightInput["damageZones"] {
+  const flagged = attachDamageFlag(
+    atBats.map((ab) => ({ id: ab.id, result: ab.result, hitType: ab.hit_type })),
+    pitches
+  );
+  const damageZones: PitcherZoneInsightInput["damageZones"] = [];
+  for (const bucket of PITCH_TYPE_BUCKETS) {
+    const pitchesForBucket = bucket === "all" ? flagged : flagged.filter((p) => p.pitch_type === bucket);
+    computeZoneDamageLines(pitchesForBucket).forEach((line, i) => {
+      if (line.rate !== null) damageZones.push({ zoneLabel: extendedZoneLabel(i), rate: line.rate, pitches: line.total, pitchType: bucket });
+    });
+  }
+  damageZones.sort((a, b) => b.rate - a.rate);
+  return damageZones.slice(0, 8);
 }
 
 function lastZoneIndexByAtBat(atBats: RawAtBat[], pitches: RawPitch[]): Map<string, number | null> {
@@ -109,7 +138,12 @@ export function buildPitcherZoneInsightInput(
     .map((line, i) => ({ zoneLabel: zoneLabel9(i), avg: line.avg, ab: line.ab }))
     .filter((z) => z.ab >= 3);
 
-  return { playerName, oppAvgZones, ...computeWhiffAndLocationZones(pitcherPitches) };
+  return {
+    playerName,
+    oppAvgZones,
+    ...computeWhiffAndLocationZones(pitcherPitches),
+    damageZones: computeDamageZones(pitchingAtBats, pitcherPitches),
+  };
 }
 
 // Whiff-rate/pitch-location maps batch: "generate it server-side and

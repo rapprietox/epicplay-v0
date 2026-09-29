@@ -1,4 +1,4 @@
-import type { AtBatResult, PitchOutcome, PitchType } from "@/lib/supabase/types";
+import type { AtBatResult, HitType, PitchOutcome, PitchType } from "@/lib/supabase/types";
 
 // ground_rule_double counts as a double everywhere a regular double does
 // (Fix 9, baseball-logic-fixes batch, minor tier).
@@ -333,6 +333,100 @@ export function pitcherLocationColor(line: ZoneLocationLine): string {
   if (line.pct <= 25) return "#A0701F";
   if (line.pct <= 35) return "#EF9F27";
   return "#F0C060";
+}
+
+// Damage Rate batch (pitcher Map 2's second toggle): "dangerous contact"
+// is an AT-BAT-level fact (its final result/hit_type), unlike whiff rate
+// which is a genuine per-pitch fact (any pitch can be swung at and
+// missed). Only the pitch that actually ended the at-bat -- the one put
+// in play -- can be "the" damage pitch, so this follows the same "last
+// pitch of the at-bat" convention computeZoneBattingLines already uses
+// for batting-average-by-zone (see AtBatWithZone above), just scored
+// pitch-by-pitch instead of at-bat-by-at-bat so it can share
+// WhiffRateHeatmap's per-pitch-type toggle and "total pitches" (not
+// "total balls in play") denominator, per spec.
+//
+// ground_rule_double isn't named in the spec's own result list
+// (single/double/triple/hr) but is functionally a fly-ball double in
+// every practical sense (see HIT_RESULTS's own "counts everywhere a
+// double does" precedent) -- included rather than silently excluded.
+export function isDamageAtBat(result: AtBatResult, hitType: HitType | null): boolean {
+  if (result === "hr") return true;
+  if (hitType === "linedrive") return true;
+  if (hitType === "flyball" && (result === "single" || result === "double" || result === "triple" || result === "ground_rule_double")) return true;
+  return false;
+}
+
+export interface DamageAtBat {
+  id: string;
+  result: AtBatResult | null;
+  hitType: HitType | null;
+}
+
+export interface DamagePitchInput {
+  at_bat_id: string;
+  pitch_number: number;
+}
+
+// Joins pitches to their at-bat's damage status -- true only on the one
+// pitch (per at-bat) that both ended it (highest pitch_number logged for
+// that at_bat_id) and qualifies per isDamageAtBat. Every other pitch,
+// including earlier pitches of the same at-bat, gets false: they still
+// count toward a zone's total-pitches denominator (computeZoneDamageLines
+// below), just never toward the damage numerator, since only one pitch
+// per at-bat can be "the pitch that got hit."
+export function attachDamageFlag<P extends DamagePitchInput>(atBats: DamageAtBat[], pitches: P[]): (P & { isDamage: boolean })[] {
+  const lastPitchNumberByAtBat = new Map<string, number>();
+  for (const p of pitches) {
+    const current = lastPitchNumberByAtBat.get(p.at_bat_id);
+    if (current === undefined || p.pitch_number > current) lastPitchNumberByAtBat.set(p.at_bat_id, p.pitch_number);
+  }
+  const damageAtBatIds = new Set(
+    atBats.filter((ab): ab is DamageAtBat & { result: AtBatResult } => ab.result !== null && isDamageAtBat(ab.result, ab.hitType)).map((ab) => ab.id)
+  );
+  return pitches.map((p) => ({
+    ...p,
+    isDamage: damageAtBatIds.has(p.at_bat_id) && lastPitchNumberByAtBat.get(p.at_bat_id) === p.pitch_number,
+  }));
+}
+
+export const MIN_PITCHES_FOR_DAMAGE_RATE = 3;
+
+export interface ZoneDamageLine {
+  total: number;
+  damage: number;
+  rate: number | null;
+}
+
+export interface DamagePitch {
+  zone_x: number | null;
+  zone_y: number | null;
+  isDamage: boolean;
+}
+
+export function computeZoneDamageLines(pitches: DamagePitch[]): ZoneDamageLine[] {
+  const lines: ZoneDamageLine[] = Array.from({ length: EXTENDED_ZONE_COUNT }, () => ({ total: 0, damage: 0, rate: null }));
+  for (const p of pitches) {
+    if (p.zone_x === null || p.zone_y === null) continue;
+    const { index } = extendedZoneFromCoords(p.zone_x, p.zone_y);
+    lines[index].total += 1;
+    if (p.isDamage) lines[index].damage += 1;
+  }
+  for (const line of lines) {
+    line.rate = line.total >= MIN_PITCHES_FOR_DAMAGE_RATE ? line.damage / line.total : null;
+  }
+  return lines;
+}
+
+// Green = safe for the pitcher, red = danger -- same direction as
+// pitcherWhiffRateColor's green-good scale, but its own cut points/hues
+// (this spec's bands don't line up with the whiff scale's).
+export function damageRateColor(line: ZoneDamageLine): string {
+  if (line.rate === null) return "#1A3D28";
+  if (line.rate <= 0.1) return "#2ECC71";
+  if (line.rate <= 0.25) return "#EF9F27";
+  if (line.rate <= 0.4) return "#E8720C";
+  return "#E24B4A";
 }
 
 // Shared "All / Fastball / Curveball / Changeup / Slider" toggle for Map

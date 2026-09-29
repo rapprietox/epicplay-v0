@@ -202,10 +202,20 @@ export interface PitcherZoneInsightInput {
   oppAvgZones: { zoneLabel: string; avg: number; ab: number }[];
   whiffZones: { zoneLabel: string; rate: number; swings: number; pitchType: string }[];
   locationZones: { zoneLabel: string; pct: number; count: number; pitchType: string }[];
+  // Damage Rate batch: share of pitches in each zone that produced
+  // dangerous contact (line drive, or a fly ball that fell for a hit, or
+  // any HR), min 3 pitches to qualify. Given alongside locationZones
+  // specifically so the model can cross-reference the two by zoneLabel
+  // and pitchType -- a zone that's both heavily targeted (locationZones)
+  // and heavily damaged (damageZones) is the single most actionable
+  // combination this data can surface (see the worked example below).
+  damageZones: { zoneLabel: string; rate: number; pitches: number; pitchType: string }[];
 }
 
 export async function generatePitcherZoneInsights(input: PitcherZoneInsightInput): Promise<string[]> {
-  if (input.oppAvgZones.length === 0 && input.whiffZones.length === 0 && input.locationZones.length === 0) return [];
+  if (input.oppAvgZones.length === 0 && input.whiffZones.length === 0 && input.locationZones.length === 0 && input.damageZones.length === 0) {
+    return [];
+  }
   const response = await client.messages.parse({
     model: "claude-opus-5",
     max_tokens: 500,
@@ -214,21 +224,26 @@ export async function generatePitcherZoneInsights(input: PitcherZoneInsightInput
         role: "user",
         content:
           `You are a pitching coach writing a short "Key Insights" summary directly to ${input.playerName}, ` +
-          `a pitcher, about their own zone tendencies, from three heat maps: oppAvgZones (opposing ` +
+          `a pitcher, about their own zone tendencies, from four heat maps: oppAvgZones (opposing ` +
           `batters' average against this pitcher by zone, min 3 AB to qualify -- a high average is bad ` +
           `for the pitcher), whiffZones (this pitcher's own swing-and-miss rate induced by zone, min 3 ` +
           `swings to qualify, "pitchType" is "all" or a specific pitch -- a high rate is good for the ` +
-          `pitcher, their out-pitch location), and locationZones (share of this pitcher's own pitches ` +
+          `pitcher, their out-pitch location), locationZones (share of this pitcher's own pitches ` +
           `landing in each zone, "pitchType" is "all" or a specific pitch -- a high share can mean the ` +
-          `pitcher is predictable/telegraphing). Pick the 3 most actionable patterns across all three ` +
-          `and write one line each, per the schema's own instructions, speaking directly to the pitcher ` +
-          `in second person ("your," "you") with concrete coaching advice (throw it more, avoid this ` +
-          `zone, mix your locations), not just a description of the number. If a category has no ` +
-          `qualifying data, skip it and lean on the others -- never fabricate a number.\n\n${JSON.stringify(
-            input,
-            null,
-            2
-          )}`,
+          `pitcher is predictable/telegraphing), and damageZones (share of pitches in each zone that ` +
+          `resulted in dangerous contact -- a line drive, or a fly ball that fell for a hit, or any home ` +
+          `run -- min 3 pitches to qualify, "pitchType" is "all" or a specific pitch -- a high rate is ` +
+          `bad for the pitcher). Cross-reference locationZones and damageZones by matching zoneLabel and ` +
+          `pitchType: a zone this pitcher throws to often (high pct in locationZones) that is ALSO a zone ` +
+          `where contact is dangerous (high rate in damageZones) is the single most actionable combination ` +
+          `available -- flag it explicitly when one exists, e.g. "You throw 34% of fastballs middle-in AND ` +
+          `batters are line-driving them at 43% -- this is your most dangerous zone combination." Pick the ` +
+          `3 most actionable patterns across all four maps (the location+damage combination, if one ` +
+          `qualifies, plus up to 2 more from whichever of the remaining maps has the clearest signal) and ` +
+          `write one line each, per the schema's own instructions, speaking directly to the pitcher in ` +
+          `second person ("your," "you") with concrete coaching advice (throw it more, avoid this zone, ` +
+          `mix your locations), not just a description of the number. If a category has no qualifying ` +
+          `data, skip it and lean on the others -- never fabricate a number.\n\n${JSON.stringify(input, null, 2)}`,
       },
     ],
     output_config: { format: zodOutputFormat(ZoneInsightSchema) },

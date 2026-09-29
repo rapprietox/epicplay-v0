@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { computeBattingLines, computePitchingLines, formatAvg } from "@/lib/stats";
-import { computeZoneBattingLines, zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
+import { computeZoneBattingLines, zoneIndexFromCoords, resultCategory, attachDamageFlag, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import { finalCountForAtBat, type CountState } from "@/lib/count-stats";
 import {
   DAY_TYPE_LABELS,
@@ -194,6 +194,21 @@ export function PlayerBreakdownClient({
     return filteredPitches.filter((p) => ids.has(p.at_bat_id));
   }, [filteredPitchingAtBats, filteredPitches]);
 
+  // Damage Rate batch: pitcherPitches augmented with which single pitch
+  // (per at-bat) was the one that actually got hit for damage -- see
+  // attachDamageFlag's own comment in heat-map.ts. A separate derived
+  // array rather than changing pitcherPitches itself, since
+  // PitcherHeatmap/PitcherExtendedStats below don't need this field and
+  // shouldn't have to carry it.
+  const pitcherPitchesWithDamage = useMemo(
+    () =>
+      attachDamageFlag(
+        filteredPitchingAtBats.map((ab) => ({ id: ab.id, result: ab.result, hitType: ab.hit_type })),
+        pitcherPitches
+      ),
+    [filteredPitchingAtBats, pitcherPitches]
+  );
+
   const batterPitches = useMemo(() => {
     const ids = new Set(filteredBattingAtBats.map((ab) => ab.id));
     return filteredPitches.filter((p) => ids.has(p.at_bat_id));
@@ -317,8 +332,8 @@ export function PlayerBreakdownClient({
         <>
           <ZoneAnalyticsRow
             battingAvgLines={pitchingAvgZoneLines}
-            whiffPitches={pitcherPitches}
-            locationPitches={pitcherPitches}
+            whiffPitches={pitcherPitchesWithDamage}
+            locationPitches={pitcherPitchesWithDamage}
             perspective="pitcher"
           />
           <KeyInsights insights={pitcherInsights} title="Pitching Key Insights" />
