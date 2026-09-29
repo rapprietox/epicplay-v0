@@ -13,6 +13,7 @@ import {
   type DayType,
   type TimeOfDay,
 } from "@/lib/game-time-filters";
+import { StatIcon } from "./stat-icons";
 
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
@@ -33,24 +34,33 @@ function pickLeader<T>(
   lines: Map<string, T>,
   getValue: (line: T) => number,
   hasQualified: (line: T) => boolean
-): { playerId: string | null; playerName: string | null; value: number | null } {
-  let best: { playerId: string; playerName: string; value: number } | null = null;
+): { playerId: string | null; playerName: string | null; playerJersey: number | null; value: number | null } {
+  let best: { playerId: string; playerName: string; playerJersey: number | null; value: number } | null = null;
   for (const player of players) {
     const line = lines.get(player.id);
     if (!line || !hasQualified(line)) continue;
     const value = getValue(line);
     if (!best || value > best.value) {
-      best = { playerId: player.id, playerName: player.name, value };
+      best = { playerId: player.id, playerName: player.name, playerJersey: player.jersey_number, value };
     }
   }
-  return best ?? { playerId: null, playerName: null, value: null };
+  return best ?? { playerId: null, playerName: null, playerJersey: null, value: null };
 }
 
 function buildRows(
   players: Player[],
   battingLines: Map<string, BattingLine>,
   pitchingLines: Map<string, PitchingLine>
-): { label: string; values: (number | null)[]; playerIds: (string | null)[]; playerNames: (string | null)[]; format: (v: number) => string }[] {
+): {
+  label: string;
+  values: (number | null)[];
+  playerIds: (string | null)[];
+  playerNames: (string | null)[];
+  // Redesign: the card's player-name line is "#43 Ruben Prieto" -- needs
+  // the jersey number alongside the id/name this already tracked.
+  playerJerseys: (number | null)[];
+  format: (v: number) => string;
+}[] {
   const battingHasAb = (l: BattingLine) => l.ab > 0;
   const battingHasPa = (l: BattingLine) => l.ab + l.bb + l.hbp > 0;
   const pitchingHasIp = (l: PitchingLine) => l.ip > 0;
@@ -94,24 +104,26 @@ function buildRows(
       values: [leader.value],
       playerIds: [leader.playerId],
       playerNames: [leader.playerName],
+      playerJerseys: [leader.playerJersey],
       format: spec.format,
     };
   });
 
   for (const spec of pitchingSpecs) {
-    let best: { playerId: string; playerName: string; value: number } | null = null;
+    let best: { playerId: string; playerName: string; playerJersey: number | null; value: number } | null = null;
     for (const player of players) {
       const line = pitchingLines.get(player.id);
       if (!line || !spec.qualifies(line)) continue;
       const value = spec.get(line);
       const better = !best || (spec.lowerIsBetter ? value < best.value : value > best.value);
-      if (better) best = { playerId: player.id, playerName: player.name, value };
+      if (better) best = { playerId: player.id, playerName: player.name, playerJersey: player.jersey_number, value };
     }
     rows.push({
       label: spec.label,
       values: [best?.value ?? null],
       playerIds: [best?.playerId ?? null],
       playerNames: [best?.playerName ?? null],
+      playerJerseys: [best?.playerJersey ?? null],
       format: spec.format,
     });
   }
@@ -161,15 +173,6 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
     const pitchingLines = computePitchingLines(filteredAtBats, filteredGames);
     return buildRows(players, battingLines, pitchingLines);
   }, [players, filteredAtBats, filteredStolenBases, filteredGames]);
-
-  const maxByLabel = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const row of rows) {
-      const v = row.values[0];
-      if (v !== null && Number.isFinite(v)) m.set(row.label, Math.max(m.get(row.label) ?? 0, v));
-    }
-    return m;
-  }, [rows]);
 
   return (
     <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5 shadow-[0_0_0_1px_rgba(240,192,96,0.05)]">
@@ -221,51 +224,86 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-1 gap-px overflow-hidden rounded-md border border-border bg-border md:grid-cols-2">
+      <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
         {rows.map((row) => {
           const value = row.values[0];
           const playerId = row.playerIds[0];
           const playerName = row.playerNames[0];
-          const max = maxByLabel.get(row.label) ?? 0;
-          const ratio = value !== null && max > 0 && Number.isFinite(value) ? value / max : 0;
+          const playerJersey = row.playerJerseys[0];
+          const hasData = value !== null && playerId !== null;
 
           const inner = (
-            <>
-              <div className="flex items-baseline justify-between">
-                <span className="text-xs font-medium uppercase tracking-wide text-foreground/50">
-                  {row.label}
-                </span>
-                <span className="font-heading text-2xl font-bold text-accent-gold">
-                  {value !== null ? row.format(value) : "—"}
-                </span>
-              </div>
-              <div className="mt-1.5 flex items-center justify-between gap-2">
-                <span className="truncate text-sm text-white">{playerName ?? "No data yet"}</span>
-              </div>
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-background">
-                <div
-                  className="h-full rounded-full bg-accent-gold/70"
-                  style={{ width: `${Math.max(ratio, value !== null ? 0.06 : 0) * 100}%` }}
-                />
-              </div>
-            </>
+            <StatDivider label={row.label}>
+              <p className="pl-4 text-[14px]" style={{ fontFamily: "var(--font-sans)", color: "#8AABCC" }}>
+                {hasData ? (
+                  <>
+                    <span style={{ color: "#F0C060" }}>#{playerJersey ?? "—"}</span> {playerName}
+                  </>
+                ) : (
+                  "No data yet"
+                )}
+              </p>
+              <p
+                className="text-center leading-none"
+                style={{
+                  fontFamily: "var(--font-heading)",
+                  fontWeight: 900,
+                  fontSize: 52,
+                  color: "#F0C060",
+                  opacity: hasData ? 1 : 0.35,
+                }}
+              >
+                {hasData ? row.format(value) : "—"}
+              </p>
+            </StatDivider>
           );
 
           return playerId ? (
-            <Link
-              key={row.label}
-              href={`/coach/players/${playerId}`}
-              className="bg-surface p-4 transition hover:bg-background/60"
-            >
+            <Link key={row.label} href={`/coach/players/${playerId}`} className="block transition hover:brightness-110">
               {inner}
             </Link>
           ) : (
-            <div key={row.label} className="bg-surface p-4 opacity-60">
-              {inner}
-            </div>
+            <div key={row.label}>{inner}</div>
           );
         })}
       </div>
     </section>
+  );
+}
+
+// Team Leaders Board redesign: "section divider with text inside" -- a
+// thin hairline (border color #1A3D28) with the stat name floated on top
+// of it, the background-colored patch behind the text is what makes the
+// line look like it's interrupted by the label rather than the label
+// just sitting on top of an unbroken rule. Same rule, unlabeled, closes
+// the card at the bottom.
+//
+// Adjustment batch: the glow moved here from the stat value below -- the
+// label (icon + text) is now the card's neon element, DM Mono 11px
+// uppercase, bright green with a two-layer glow; the number underneath
+// stays clean, glow-free gold. The icon sits to the label text's left,
+// same green (currentColor), 16x16.
+function StatDivider({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-h-[100px]" style={{ backgroundColor: "#080E08", padding: "8px 12px" }}>
+      <div className="relative h-px w-full" style={{ backgroundColor: "#1A3D28" }}>
+        <span
+          className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 whitespace-nowrap px-2 uppercase"
+          style={{
+            backgroundColor: "#080E08",
+            color: "#2ECC71",
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+            letterSpacing: "0.15em",
+            textShadow: "0 0 8px #2ECC71, 0 0 16px rgba(46,204,113,0.4)",
+          }}
+        >
+          <StatIcon label={label} />
+          {label}
+        </span>
+      </div>
+      <div className="flex flex-col justify-center gap-1 py-2">{children}</div>
+      <div className="h-px w-full" style={{ backgroundColor: "#1A3D28" }} />
+    </div>
   );
 }

@@ -34,6 +34,9 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--font-sans)"],
         heading: ["var(--font-heading)"],
+        // Team Leaders Board redesign: DM Mono for the stat-name label
+        // embedded in each card's divider line.
+        mono: ["var(--font-mono)"],
       },
     },
   },
