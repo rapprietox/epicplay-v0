@@ -119,23 +119,37 @@ export function TeamAnalytics({
             </select>
           </div>
 
-          <svg viewBox="0 0 100 100" className="mx-auto mt-3 w-full max-w-[280px] rounded-md border border-border bg-background">
-            <path d="M 50 92 L 8 50 A 60 60 0 0 1 92 50 Z" fill="#2D5A1B" stroke="#1A3D28" strokeWidth="0.5" />
-            <path d="M 50 92 L 28 70 A 32 32 0 0 1 72 70 Z" fill="#3A7A25" />
-            <rect x="35" y="35" width="24" height="24" fill="#A9814B" transform="rotate(45 50 62)" opacity="0.85" />
-            {filteredDots.map((d, i) => (
-              <circle
-                key={i}
-                cx={d.x}
-                cy={d.y}
-                r={selected === d ? 2.2 : 1.4}
-                fill={SPRAY_CATEGORY_COLOR[d.category]}
-                className="cursor-pointer"
-                style={selected === d ? { filter: "drop-shadow(0 0 4px #00FF7F)" } : undefined}
-                onClick={() => setSelected(d === selected ? null : d)}
-              />
-            ))}
-          </svg>
+          {/* field-2d.png spray chart batch (team version): same real-photo
+              background + dark overlay as the individual player spray
+              chart (src/app/coach/players/[id]/spray-chart.tsx) instead
+              of a hand-drawn SVG diamond. field_x/field_y are already a
+              direct 0-100 percentage against this image (see that
+              component's own comment), so an SVG viewBox="0 0 100 100"
+              overlay plots a dot at cx/cy exactly the same as
+              `left: x%, top: y%` would -- same math, same result. No
+              "Lines" view here (unlike the player page) -- out of scope
+              for this fix, which is the background swap only. */}
+          <div className="relative mx-auto mt-3 aspect-square w-full max-w-[280px] overflow-hidden rounded-md border border-border bg-background">
+            <div
+              className="absolute inset-0"
+              style={{ backgroundImage: "url('/field-2d.png')", backgroundSize: "cover", backgroundPosition: "center top" }}
+            />
+            <div className="pointer-events-none absolute inset-0" style={{ background: "rgba(0, 0, 0, 0.15)" }} />
+            <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full">
+              {filteredDots.map((d, i) => (
+                <circle
+                  key={i}
+                  cx={d.x}
+                  cy={d.y}
+                  r={selected === d ? 2.2 : 1.4}
+                  fill={SPRAY_CATEGORY_COLOR[d.category]}
+                  className="cursor-pointer"
+                  style={selected === d ? { filter: "drop-shadow(0 0 4px #00FF7F)" } : undefined}
+                  onClick={() => setSelected(d === selected ? null : d)}
+                />
+              ))}
+            </svg>
+          </div>
 
           {selected ? (
             <p className="mt-2 text-center text-xs text-foreground/60">
