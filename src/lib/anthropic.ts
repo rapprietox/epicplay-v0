@@ -135,6 +135,48 @@ export async function generateOpponentInsight(input: OpponentInsightInput): Prom
   return text && text.type === "text" ? text.text.trim() : "";
 }
 
+// Clubhouse batch: a personalized game-day message shown to the player
+// themselves (not a coach), so it speaks directly to them by first name
+// -- same free-text messages.create pattern as generateOpponentInsight
+// just above (closest existing analog: "record + recent performances +
+// opponent" framing), not cached here -- caching is the caller's job
+// (see getPregameMessage in src/app/player/clubhouse/insights.ts, same
+// unstable_cache-keyed-on-input pattern the zone insights already use).
+export interface PregameMessageInput {
+  playerName: string;
+  position: string;
+  opponentName: string;
+  lineupSpot: number | null;
+  recentGames: { opponent: string; line: string }[];
+  recentAvg: number | null;
+}
+
+export async function generatePregameMessage(input: PregameMessageInput): Promise<string> {
+  const response = await client.messages.create({
+    model: "claude-opus-5",
+    max_tokens: 200,
+    messages: [
+      {
+        role: "user",
+        content:
+          `You are a baseball coach sending a short, personal game-day hype text directly ` +
+          `to ${input.playerName}, one of your players, a few hours before their game. Using ` +
+          `only the data below, write 2-4 short sentences, speaking directly to them by first ` +
+          `name in second person ("you"), covering: they're playing ${input.opponentName} ` +
+          `today${input.lineupSpot ? `, batting ${input.lineupSpot}${input.lineupSpot === 1 ? "st" : input.lineupSpot === 2 ? "nd" : input.lineupSpot === 3 ? "rd" : "th"} at ${input.position}` : ` at ${input.position}`}; ` +
+          `a callout of their recent form if recentGames/recentAvg shows a real pattern (hot ` +
+          `or cold -- be honest either way, don't invent momentum that isn't there); and one ` +
+          `concrete, confident closing line. No emoji, no headers, no bullet points -- just the ` +
+          `message, like a text from a coach who believes in them.\n\n${JSON.stringify(input, null, 2)}`,
+      },
+    ],
+  });
+
+  if (response.stop_reason === "refusal") return "";
+  const text = response.content.find((block) => block.type === "text");
+  return text && text.type === "text" ? text.text.trim() : "";
+}
+
 // Whiff-rate/pitch-location maps batch: "Key Insights" block below the
 // three zone maps. Only the qualifying, most-extreme zones are sent
 // (not all 25 cells x however many pitch-type breakdowns) -- keeps the

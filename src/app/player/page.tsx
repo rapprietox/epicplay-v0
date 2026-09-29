@@ -15,6 +15,14 @@ export default async function PlayerPage() {
     .eq("id", user.id)
     .single();
 
+  // Clubhouse batch: a linked player (player_id set) always lands on the
+  // real Clubhouse -- this placeholder now only ever shows for the
+  // narrower edge case of a profile that's team-linked (so middleware let
+  // them through to /player) but not yet player-linked, e.g. hand-set via
+  // SQL per supabase/README.md without a player_id, or role='player' with
+  // no roster row claimed yet.
+  if (profile?.player_id) redirect("/player/clubhouse");
+
   const team = profile?.team_id
     ? (await supabase.from("teams").select("name").eq("id", profile.team_id).single()).data
     : null;

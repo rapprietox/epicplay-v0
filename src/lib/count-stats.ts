@@ -1,4 +1,5 @@
-import type { PitchOutcome, PitchType } from "@/lib/supabase/types";
+import type { AtBatResult, PitchOutcome, PitchType } from "@/lib/supabase/types";
+import { HIT_RESULTS } from "@/lib/heat-map";
 
 export interface CountPitch {
   pitch_number: number;
@@ -72,3 +73,72 @@ export const PITCH_TYPES: { value: PitchType; label: string }[] = [
 // the pitcher heat map) -- reused wherever this app computes a strike
 // rate from raw pitch outcomes.
 export const STRIKE_OUTCOMES = new Set<PitchOutcome>(["strike", "foul", "foul_tip", "inplay"]);
+
+// Clubhouse Pro batch: "Pressure Performance" -- deliberately reframed
+// from the originally-requested "Pressure Performance Index" (no formula
+// given, and this schema has no bases-loaded/RISP/late-and-close data at
+// all -- game_state.runners is live-only, never persisted historically).
+// Confirmed with the user: build an honestly-labeled proxy from data
+// that IS supported -- 2-strike performance and full-count outcomes,
+// both already derivable from finalCountForAtBat above, the same
+// function the existing Count Performance panel uses. No invented
+// composite score.
+const PRESSURE_NOT_AB_RESULTS = new Set<AtBatResult>(["walk", "intentional_walk", "hbp"]);
+
+export interface PressureAtBat {
+  result: AtBatResult;
+  finalCount: CountState | null;
+}
+
+export interface PressureSplits {
+  seasonAvg: number;
+  seasonAb: number;
+  twoStrikeAvg: number;
+  twoStrikeAb: number;
+  fullCountOutcomes: { k: number; bb: number; hit: number; other: number; total: number };
+}
+
+export function computePressureSplits(atBats: PressureAtBat[]): PressureSplits {
+  let seasonAb = 0;
+  let seasonH = 0;
+  let twoStrikeAb = 0;
+  let twoStrikeH = 0;
+  let k = 0;
+  let bb = 0;
+  let hit = 0;
+  let other = 0;
+  let fullCountTotal = 0;
+
+  for (const ab of atBats) {
+    const isAb = !PRESSURE_NOT_AB_RESULTS.has(ab.result);
+    if (isAb) {
+      seasonAb += 1;
+      if (HIT_RESULTS.has(ab.result)) seasonH += 1;
+    }
+    if (!ab.finalCount) continue;
+
+    if (ab.finalCount.strikes === 2 && isAb) {
+      twoStrikeAb += 1;
+      if (HIT_RESULTS.has(ab.result)) twoStrikeH += 1;
+    }
+
+    if (ab.finalCount.balls === 3 && ab.finalCount.strikes === 2) {
+      fullCountTotal += 1;
+      // dropped_third_strike_safe still counts as a strikeout-by-count
+      // outcome here, same precedent as the existing Count Performance
+      // panel (it's a strikeout by scoring rule, just not an out).
+      if (ab.result === "strikeout" || ab.result === "dropped_third_strike_safe") k += 1;
+      else if (ab.result === "walk" || ab.result === "intentional_walk") bb += 1;
+      else if (HIT_RESULTS.has(ab.result)) hit += 1;
+      else other += 1;
+    }
+  }
+
+  return {
+    seasonAvg: seasonAb > 0 ? seasonH / seasonAb : 0,
+    seasonAb,
+    twoStrikeAvg: twoStrikeAb > 0 ? twoStrikeH / twoStrikeAb : 0,
+    twoStrikeAb,
+    fullCountOutcomes: { k, bb, hit, other, total: fullCountTotal },
+  };
+}

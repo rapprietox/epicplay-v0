@@ -1878,16 +1878,22 @@ never commit it):
 ```
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=      # server-only; not currently used by any route, kept for future admin scripts
+SUPABASE_SERVICE_ROLE_KEY=      # server-only; Clubhouse batch: invite claim, promo redemption, Stripe webhook (src/lib/supabase/service-role.ts)
 NEXT_PUBLIC_SITE_URL=           # http://localhost:3000 in dev
-ANTHROPIC_API_KEY=              # server-only; season PDF + opponent photo extraction, scouting notes
+ANTHROPIC_API_KEY=              # server-only; season PDF + opponent photo extraction, scouting notes, Clubhouse pre-game/zone insights
+STRIPE_SECRET_KEY=              # server-only; Clubhouse Pro one-time $10 unlock (src/lib/stripe.ts)
+STRIPE_WEBHOOK_SECRET=          # server-only; verifies src/app/api/stripe/webhook/route.ts -- get a dev value via `stripe listen --forward-to localhost:3000/api/stripe/webhook`
+STRIPE_PRICE_ID=                # server-only; the real Stripe Dashboard Price for the $10 Clubhouse Pro checkout line item (src/app/player/clubhouse/actions.ts) -- not inline price_data
 ```
 
 Google OAuth Client ID/Secret are **not** app env vars -- they live in the
-Supabase Auth provider settings. `ANTHROPIC_API_KEY` is read implicitly by
-`new Anthropic()` in `src/lib/anthropic.ts` -- never pass it through to the
-client, and every call site is a Server Action or a Server Component, never
-a Client Component.
+Supabase Auth provider settings. `ANTHROPIC_API_KEY`/`STRIPE_SECRET_KEY` are
+read implicitly by `new Anthropic()`/`new Stripe()` in `src/lib/anthropic.ts`/
+`src/lib/stripe.ts` -- never pass either through to the client, and every
+call site is a Server Action, Route Handler, or Server Component, never a
+Client Component. `SUPABASE_SERVICE_ROLE_KEY` bypasses RLS entirely --
+`src/lib/supabase/service-role.ts` is the only place that should ever read
+it, and it must never be reachable from client code.
 
 ## Sprint status
 

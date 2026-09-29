@@ -49,6 +49,24 @@ export async function addPlayer(formData: FormData) {
   revalidatePath("/coach");
 }
 
+// Clubhouse batch: a plain coach-authenticated write (players is already
+// "coach/operator write" under RLS, no service role needed here -- the
+// service role only comes into play on the player's side of the claim,
+// where profiles/players writes are outside their own session's scope).
+// Re-clicking "Link Account" for an already-linked player just issues a
+// fresh token, invalidating any old unclaimed link -- there's no
+// separate "revoke" action.
+export async function generateInviteLink(playerId: string): Promise<string> {
+  const { supabase, teamId } = await requireCoachTeam();
+
+  const token = crypto.randomUUID();
+  const { error } = await supabase.from("players").update({ invite_token: token }).eq("id", playerId).eq("team_id", teamId);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/coach");
+  return `${process.env.NEXT_PUBLIC_SITE_URL}/invite/${token}`;
+}
+
 export async function extractSchedulePdf(formData: FormData): Promise<ExtractedGame[]> {
   const { supabase, teamId } = await requireCoachTeam();
 

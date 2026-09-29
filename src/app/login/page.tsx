@@ -11,10 +11,20 @@ export default function LoginPage() {
     setLoading(true);
     setError(null);
     const supabase = createClient();
+    // Clubhouse batch: an invite link (/invite/[token]) sends the player
+    // here as /login?next=/invite/TOKEN so the OAuth round trip lands
+    // them back on the invite page (which then claims it) instead of the
+    // usual "/". Read via window.location rather than useSearchParams()
+    // to avoid this page needing a Suspense boundary just for this one
+    // event-handler read. Same-origin-relative-path check here is a
+    // first pass for UX only -- the callback route re-validates
+    // authoritatively server-side before ever redirecting anywhere.
+    const rawNext = new URLSearchParams(window.location.search).get("next");
+    const next = rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`,
+        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback?next=${encodeURIComponent(next)}`,
       },
     });
     if (error) {

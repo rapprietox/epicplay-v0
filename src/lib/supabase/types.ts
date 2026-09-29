@@ -200,6 +200,12 @@ export interface Database {
           user_id: string | null;
           batting_hand: BattingHand | null;
           throwing_hand: ThrowingHand | null;
+          // Clubhouse batch: see the migration's own comment
+          // (20260929110001_clubhouse_invites_and_promo_codes.sql) --
+          // invite_token is cleared to null the moment it's claimed;
+          // clubhouse_unlocked is a one-time flip, never re-locked.
+          invite_token: string | null;
+          clubhouse_unlocked: boolean;
           created_at: string;
         };
         Insert: {
@@ -211,9 +217,31 @@ export interface Database {
           user_id?: string | null;
           batting_hand?: BattingHand | null;
           throwing_hand?: ThrowingHand | null;
+          invite_token?: string | null;
+          clubhouse_unlocked?: boolean;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["players"]["Insert"]>;
+        Relationships: [];
+      };
+      promo_codes: {
+        Row: {
+          id: string;
+          team_id: string;
+          code: string;
+          redeemed_by_player_id: string | null;
+          redeemed_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          team_id: string;
+          code: string;
+          redeemed_by_player_id?: string | null;
+          redeemed_at?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["promo_codes"]["Insert"]>;
         Relationships: [];
       };
       games: {

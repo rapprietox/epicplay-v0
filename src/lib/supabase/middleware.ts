@@ -16,7 +16,12 @@ const EXTRA_ALLOWED_SECTIONS: Record<string, string[]> = {
   coach: ["/operator"],
 };
 
-const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/auth-code-error"];
+// Clubhouse batch: "/invite" added -- an anonymous visitor must be able
+// to reach it at all, and right after Google sign-in the player's own
+// profiles.team_id is still null until the invite page's claimInvite()
+// call finishes, so without this the role-redirect block below would
+// bounce them to /pending before the claim ever runs.
+const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/auth-code-error", "/invite"];
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });

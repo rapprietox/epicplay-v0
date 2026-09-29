@@ -46,7 +46,20 @@ const LINE_CATEGORY_ORDER: LineHitCategory[] = ["flyball", "groundball", "linedr
 // field-diagram.jpg, so very old dots may be a little off against this
 // image -- a known, previously-documented limitation, not something
 // this batch attempts to retroactively correct.)
-export function SprayChart({ dots, fieldCalibration }: { dots: Dot[]; fieldCalibration: FieldCalibrationPoints | null }) {
+export function SprayChart({
+  dots,
+  fieldCalibration,
+  hideCalibrationHelpLink = false,
+}: {
+  dots: Dot[];
+  fieldCalibration: FieldCalibrationPoints | null;
+  // Clubhouse Pro batch: the coach-only /coach/calibrate-field route is
+  // unreachable for a player role (middleware bounces them back to
+  // /player/clubhouse) -- a prop on this shared component rather than a
+  // forked copy, since everything else about the "not calibrated" state
+  // is identical between the two contexts.
+  hideCalibrationHelpLink?: boolean;
+}) {
   const [view, setView] = useState<View>("lines");
 
   // Field-zone-validation batch: subtle foul/home-run tinting for the
@@ -146,10 +159,16 @@ export function SprayChart({ dots, fieldCalibration }: { dots: Dot[]; fieldCalib
 
       {!fieldCalibration ? (
         <p className="mt-3 rounded-md border border-accent-amber/40 bg-accent-amber/10 px-3 py-2 text-sm text-accent-amber">
-          Calibrate your field first —{" "}
-          <Link href="/coach/calibrate-field" className="underline hover:text-white">
-            /coach/calibrate-field
-          </Link>
+          {hideCalibrationHelpLink ? (
+            "Ask your coach to calibrate the field to unlock the spray chart."
+          ) : (
+            <>
+              Calibrate your field first —{" "}
+              <Link href="/coach/calibrate-field" className="underline hover:text-white">
+                /coach/calibrate-field
+              </Link>
+            </>
+          )}
         </p>
       ) : (
         <>
