@@ -13,10 +13,17 @@ export function PromoCodeForm() {
     setError(null);
     startTransition(async () => {
       try {
-        await redeemPromoCode(formData);
+        const result = await redeemPromoCode(formData);
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
         setSuccess(true);
         formRef.current?.reset();
       } catch (err) {
+        // redeemPromoCode no longer throws on a failed redemption (see
+        // its own comment on why), but the Server Action call itself can
+        // still fail at the transport level -- keep this as a fallback.
         setError(err instanceof Error ? err.message : "Couldn't redeem that code");
       }
     });

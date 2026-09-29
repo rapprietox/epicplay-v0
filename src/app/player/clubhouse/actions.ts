@@ -51,16 +51,35 @@ export async function createClubhouseCheckoutSession(): Promise<{ url: string }>
 // Promo codes batch: see src/lib/promo-codes.ts for the actual
 // redemption logic (service-role, since both tables it touches are
 // outside a player's own RLS write scope).
-export async function redeemPromoCode(formData: FormData) {
-  const { teamId, playerId } = await requirePlayer();
+//
+// Bug fix: this used to throw on a failed redemption and let the client
+// catch it -- but Next.js redacts a Server Action's thrown error message
+// in production builds (replaced with a generic digest-only error, by
+// design, since a thrown error could otherwise leak server internals to
+// the client). That's exactly why the real reason never showed up:
+// "Server Component error... hidden in production." Returning a plain
+// result object instead of throwing sidesteps that redaction entirely --
+// the client reads result.error directly, no exception in the loop.
+// requirePlayer()/redeemPromoCodeServerSide can still fail in ways this
+// doesn't anticipate (e.g. requirePlayer's own Supabase calls), so the
+// whole body is wrapped too, logged, and turned into the same friendly
+// message rather than left to propagate and get redacted anyway.
+export async function redeemPromoCode(formData: FormData): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const { teamId, playerId } = await requirePlayer();
 
-  const code = String(formData.get("code") ?? "")
-    .trim()
-    .toUpperCase();
-  if (!code) throw new Error("Enter a code");
+    const code = String(formData.get("code") ?? "")
+      .trim()
+      .toUpperCase();
+    if (!code) return { ok: false, error: "Enter a code" };
 
-  const result = await redeemPromoCodeServerSide({ code, teamId, playerId });
-  if (!result.ok) throw new Error(result.error);
+    const result = await redeemPromoCodeServerSide({ code, teamId, playerId });
+    if (!result.ok) return result;
 
-  revalidatePath("/player/clubhouse");
+    revalidatePath("/player/clubhouse");
+    return { ok: true };
+  } catch (err) {
+    console.error("[redeemPromoCode] unexpected error", err);
+    return { ok: false, error: "Invalid code or already used — try again" };
+  }
 }
