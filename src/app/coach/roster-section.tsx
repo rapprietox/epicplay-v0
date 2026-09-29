@@ -130,16 +130,19 @@ export function RosterSection({ players }: { players: Player[] }) {
         {players.map((p) => (
           <div
             key={p.id}
-            className="flex items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2 text-sm transition hover:border-accent-primary hover:bg-background/70"
+            className="flex items-start justify-between gap-3 rounded-md border border-border bg-background/40 px-3 py-2 text-sm transition hover:border-accent-primary hover:bg-background/70"
           >
-            <Link href={`/coach/players/${p.id}`} className="flex min-w-0 flex-1 items-center gap-3">
-              <span className="w-8 shrink-0 text-center text-foreground/50">{p.jersey_number ?? "—"}</span>
-              <span className="flex-1 truncate text-white">{p.name}</span>
+            {/* Player info -- left, full width, never overlapped. */}
+            <Link href={`/coach/players/${p.id}`} className="flex min-w-0 flex-1 items-center gap-2 py-1">
+              <span className="shrink-0 text-foreground/50">#{p.jersey_number ?? "—"}</span>
+              <span className="min-w-0 truncate text-white">{p.name}</span>
               <span className="shrink-0 text-foreground/50">{p.position ?? ""}</span>
               <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-foreground/50">
                 {p.batting_hand ?? "R"}/{p.throwing_hand ?? "R"}
               </span>
             </Link>
+
+            {/* Link status -- right, badge on top, action below it. */}
             <LinkAccountBadge player={p} />
           </div>
         ))}
@@ -152,6 +155,14 @@ export function RosterSection({ players }: { players: Player[] }) {
 // card row (nesting a button inside an anchor is invalid HTML and
 // clicking it would also trigger navigation) -- a sibling instead, same
 // row, own click handling.
+//
+// Layout fix: badge and its action stack vertically (badge on top,
+// button/copy-link below), right-aligned in their own shrink-0 column --
+// this is what actually keeps them from overlapping the player-info
+// column on the left, not just the outer card's own flex/justify-between
+// (that alone doesn't stop a wide inline row of badge+input+buttons on
+// the right from still colliding with a long player name on the left at
+// the sm:grid-cols-2 breakpoint's narrower card width).
 function LinkAccountBadge({ player }: { player: Player }) {
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -159,7 +170,11 @@ function LinkAccountBadge({ player }: { player: Player }) {
   const [isPending, startTransition] = useTransition();
 
   if (player.user_id) {
-    return <span className="shrink-0 rounded-full border border-accent-green/50 bg-accent-green/10 px-2 py-1 text-[10px] font-semibold text-accent-green">✅ Linked</span>;
+    return (
+      <span className="shrink-0 whitespace-nowrap rounded-full border border-accent-green/50 bg-accent-green/10 px-2 py-1 text-[10px] font-semibold text-accent-green">
+        ✅ Linked
+      </span>
+    );
   }
 
   if (inviteUrl) {
@@ -167,39 +182,47 @@ function LinkAccountBadge({ player }: { player: Player }) {
       `Link your EpicPlay Clubhouse account, ${player.name}: ${inviteUrl}`
     )}`;
     return (
-      <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      <div className="flex w-32 shrink-0 flex-col items-end gap-1" onClick={(e) => e.stopPropagation()}>
         <input
           readOnly
           value={inviteUrl}
           onFocus={(e) => e.target.select()}
-          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-[10px] text-foreground/70 outline-none"
+          className="w-full rounded border border-border bg-background px-1.5 py-1 text-[10px] text-foreground/70 outline-none"
         />
-        <button
-          type="button"
-          onClick={async () => {
-            await navigator.clipboard.writeText(inviteUrl);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          }}
-          className="rounded border border-border px-1.5 py-1 text-[10px] text-foreground/70 hover:border-accent-primary hover:text-white"
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
-        <a
-          href={whatsappUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="rounded border border-accent-green/50 px-1.5 py-1 text-[10px] text-accent-green hover:bg-accent-green/10"
-        >
-          WhatsApp
-        </a>
+        <div className="flex w-full gap-1">
+          <button
+            type="button"
+            onClick={async () => {
+              await navigator.clipboard.writeText(inviteUrl);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+            className="flex-1 rounded border border-border px-1.5 py-1 text-[10px] text-foreground/70 hover:border-accent-primary hover:text-white"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <a
+            href={whatsappUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 rounded border border-accent-green/50 px-1.5 py-1 text-center text-[10px] text-accent-green hover:bg-accent-green/10"
+          >
+            WhatsApp
+          </a>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-      <span className="rounded-full border border-border px-2 py-1 text-[10px] text-foreground/40">⚪ Not linked</span>
+    <div className="flex shrink-0 flex-col items-end gap-1" onClick={(e) => e.stopPropagation()}>
+      <span className="flex items-center gap-1 whitespace-nowrap rounded-full border border-accent-red/50 bg-accent-red/10 px-2 py-1 text-[10px] font-semibold text-accent-red">
+        {/* CSS-drawn dot, not the ⚪ emoji -- an emoji glyph renders in its
+            own fixed color on most platforms and can't be recolored via
+            `color`, which is exactly what "make the circle red too" needs. */}
+        <span className="h-1.5 w-1.5 rounded-full bg-accent-red" />
+        Not linked
+      </span>
       <button
         type="button"
         disabled={isPending}
@@ -213,11 +236,11 @@ function LinkAccountBadge({ player }: { player: Player }) {
             }
           })
         }
-        className="rounded border border-accent-primary px-2 py-1 text-[10px] font-medium text-accent-primary transition hover:bg-accent-primary/10 disabled:opacity-50"
+        className="whitespace-nowrap rounded border border-accent-primary px-2 py-1 text-[10px] font-medium text-accent-primary transition hover:bg-accent-primary/10 disabled:opacity-50"
       >
         {isPending ? "…" : "Link Account"}
       </button>
-      {error && <span className="text-[10px] text-accent-red">{error}</span>}
+      {error && <span className="text-right text-[10px] text-accent-red">{error}</span>}
     </div>
   );
 }
