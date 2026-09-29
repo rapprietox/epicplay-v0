@@ -64,7 +64,15 @@ export async function generateInviteLink(playerId: string): Promise<string> {
   if (error) throw new Error(error.message);
 
   revalidatePath("/coach");
-  return `${process.env.NEXT_PUBLIC_SITE_URL}/invite/${token}`;
+  // Defensive fallback only -- there is no hardcoded localhost URL to
+  // "replace" here; this already read NEXT_PUBLIC_SITE_URL. If the
+  // generated link is pointing at localhost in production, the actual
+  // fix is the Vercel env var itself (see the note where this function
+  // is called from), not this code -- this fallback only prevents the
+  // link from becoming literally "undefined/invite/<token>" if the var
+  // is ever unset, it doesn't correct a wrong value.
+  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+  return `${baseUrl}/invite/${token}`;
 }
 
 export async function extractSchedulePdf(formData: FormData): Promise<ExtractedGame[]> {
