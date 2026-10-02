@@ -161,6 +161,7 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
 
       <div
         className={`sticky bottom-0 z-10 shrink-0 bg-[#0A1F0D] pb-1 pt-2 ${isDashboard ? "mt-1.5" : "mt-3"} flex flex-col gap-2 sm:flex-row`}
+        style={{ borderTop: "1px solid #1A3D28" }}
       >
         <textarea
           value={input}

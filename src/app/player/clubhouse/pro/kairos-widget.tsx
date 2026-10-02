@@ -25,7 +25,14 @@ export function KairosWidget({ playerId }: { playerId: string }) {
 
   return (
     <>
-      <section ref={panelRef} className="glossy rounded-lg border-l-4 p-3" style={{ background: "#0A1F0D", borderLeft: "4px solid #2ECC71" }}>
+      {/* Fix 1 (follow-up): without overflow-hidden here, the sticky
+          input row's square corners could visually poke past this
+          card's own rounded-lg border at the bottom edge. */}
+      <section
+        ref={panelRef}
+        className="glossy overflow-hidden rounded-lg border-l-4 p-3"
+        style={{ background: "#0A1F0D", borderLeft: "4px solid #2ECC71" }}
+      >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-base" style={{ filter: "drop-shadow(0 0 6px #2ECC71) drop-shadow(0 0 3px #2ECC71)" }}>
@@ -64,7 +71,7 @@ export function KairosWidget({ playerId }: { playerId: string }) {
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-end sm:justify-end sm:p-6">
           <div
-            className="kairos-modal-slide-up glossy flex w-full max-h-[60vh] flex-col rounded-t-lg border-l-4 p-5 sm:max-w-md sm:rounded-lg"
+            className="kairos-modal-slide-up glossy flex w-full max-h-[60vh] flex-col overflow-hidden rounded-t-lg border-l-4 p-5 sm:max-w-md sm:rounded-lg"
             style={{ background: "#0A1F0D", borderLeft: "4px solid #2ECC71" }}
           >
             <div className="flex items-center justify-between">
