@@ -85,7 +85,17 @@ export function KairosWidget({ playerId }: { playerId: string }) {
                 ✕
               </button>
             </div>
-            <div className="mt-3 flex-1 overflow-y-auto">
+            {/* Five-fixes batch, Fix 3: this used to be the scrollable
+                container (overflow-y-auto) around the WHOLE chat,
+                including the input row -- if the message list grew, the
+                input/send button could scroll out of frame with no
+                visible cue. KairosChat now owns its own internal layout
+                (only its message list scrolls, the input row stays
+                pinned below it) -- this wrapper just needs to give it a
+                bounded height to lay out against (min-h-0 is what lets
+                a flex child shrink below its content size instead of
+                forcing the modal itself to grow past max-h-[60vh]). */}
+            <div className="mt-3 min-h-0 flex-1">
               <KairosChat playerId={playerId} variant="modal" />
             </div>
           </div>

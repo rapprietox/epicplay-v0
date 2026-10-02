@@ -103,8 +103,19 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
   const shown = messages.slice(-MAX_SHOWN_MESSAGES);
   const isDashboard = variant === "dashboard";
 
+  // Five-fixes batch, Fix 3: the modal used to wrap this WHOLE component
+  // (message list + input row) in one scrollable div in kairos-widget.tsx
+  // -- if the message list grew tall, the entire chat scrolled together
+  // and the input/send button could end up below the fold with no visual
+  // cue to scroll for it. Fixed by giving this component its own bounded
+  // layout (h-full flex-col) so ONLY the message list scrolls
+  // (flex-1 min-h-0 overflow-y-auto for the modal variant, which now
+  // sits inside a height-bounded parent -- see kairos-widget.tsx) while
+  // the input row stays a normal, always-visible flex sibling below it.
+  // sticky bottom-0 on the input row is belt-and-suspenders per spec, for
+  // any future container that reintroduces an outer scroll.
   return (
-    <div className="flex flex-col">
+    <div className={`flex flex-col ${isDashboard ? "" : "h-full"}`}>
       <div className="mb-0.5 flex items-center justify-between">
         <span className="text-[9px] uppercase tracking-wide text-[#5A7A64]">
           {remaining !== null ? `${remaining} of ${MONTHLY_LIMIT} messages remaining this month` : `${MONTHLY_LIMIT} messages remaining this month`}
@@ -116,7 +127,10 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
         )}
       </div>
 
-      <div ref={scrollRef} className={`flex flex-col gap-1.5 overflow-y-auto ${isDashboard ? "max-h-[64px]" : "max-h-[40vh]"}`}>
+      <div
+        ref={scrollRef}
+        className={`flex flex-col gap-1.5 overflow-y-auto ${isDashboard ? "max-h-[64px]" : "min-h-0 flex-1"}`}
+      >
         {shown.length === 0 && !loading && (
           <p className="px-1 py-1 text-xs text-[#9FCBAC]">
             {isDashboard ? "Ask KAIROS about your game…" : "Ask about your stats, your drills, or how to improve."}
@@ -145,7 +159,9 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
       )}
       {error && <p className="mt-2 text-xs text-accent-red">{error}</p>}
 
-      <div className={`${isDashboard ? "mt-1.5" : "mt-3"} flex flex-col gap-2 sm:flex-row`}>
+      <div
+        className={`sticky bottom-0 z-10 shrink-0 bg-[#0A1F0D] pb-1 pt-2 ${isDashboard ? "mt-1.5" : "mt-3"} flex flex-col gap-2 sm:flex-row`}
+      >
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}

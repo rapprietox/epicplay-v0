@@ -9,7 +9,7 @@ import type { Milestone } from "@/lib/milestones";
 import { StrikeZoneHeatmap } from "@/app/coach/players/[id]/strike-zone-heatmap";
 import { ZoneAnalyticsRow } from "@/app/coach/players/[id]/zone-analytics-row";
 import { KeyInsights } from "@/app/coach/players/[id]/key-insights";
-import { SprayChart } from "@/app/coach/players/[id]/spray-chart";
+import { PlayerSprayChart } from "./pro/player-spray-chart";
 import { HitterExtendedStats } from "@/app/coach/players/[id]/hitter-extended-stats";
 import { PressurePerformance } from "./pro/pressure-performance";
 import { WalkupSongSelector } from "./pro/walkup-song-selector";
@@ -120,7 +120,7 @@ export function ProSection({
 
       <KeyInsights insights={insights} />
 
-      <SprayChart dots={sprayDots} fieldCalibration={fieldCalibration} hideCalibrationHelpLink />
+      <PlayerSprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
 
       <section className="glossy rounded-lg border border-border bg-surface p-5">
         <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">Splits &amp; Extras</h2>

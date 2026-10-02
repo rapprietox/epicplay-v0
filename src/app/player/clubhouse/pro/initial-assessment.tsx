@@ -37,7 +37,11 @@ export function InitialAssessment({ text }: { text: string }) {
         <RegenerateAssessmentButton />
       </div>
 
-      <div className="mt-4 flex flex-col gap-4">
+      {/* Five-fixes batch, Fix 2: the card itself stays the same size --
+          only this inner text container scrolls, capped at 320px, so a
+          long assessment no longer gets silently cut off with no way to
+          read the rest. */}
+      <div className="mt-4 flex max-h-[320px] flex-col gap-4 overflow-y-auto pr-1">
         {(sections.length ? sections : [{ header: "Assessment", body: text }]).map((s) => (
           <div key={s.header}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-accent-green">{s.header}</h3>

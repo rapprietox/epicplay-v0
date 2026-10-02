@@ -143,16 +143,17 @@ export function KairosChat({ teamId, variant = "dashboard" }: { teamId: string; 
           </button>
         </div>
       )}
-      {/* Panel-height batch: "dashboard" caps the viewport at a genuinely
-          small, fixed height (not vh-relative like the modal, which
-          should track the viewport) so the panel itself never grows past
-          spec regardless of how much history is loaded -- shown.length is
-          unchanged (still the last MAX_SHOWN_MESSAGES), only the visible
-          window shrinks; the rest is one scroll away, never pushing
-          layout. */}
+      {/* Panel-height batch: "dashboard" caps the viewport at a fixed
+          height (not vh-relative like the modal, which should track the
+          viewport) so the panel itself never grows past spec regardless
+          of how much history is loaded. Five-fixes batch, Fix 1: the
+          previous 64px cap read as too cramped in practice -- doubled to
+          140px, still a hard cap (not open-ended growth), input stays
+          pinned below it. shown.length is unchanged (still the last
+          MAX_SHOWN_MESSAGES), only the visible window's height changed. */}
       <div
         ref={scrollRef}
-        className={`flex flex-col gap-1.5 overflow-y-auto ${isDashboard ? "max-h-[64px]" : "max-h-[40vh]"}`}
+        className={`flex flex-col gap-1.5 overflow-y-auto ${isDashboard ? "max-h-[140px]" : "max-h-[40vh]"}`}
       >
         {shown.length === 0 && !loading && (
           <p className="px-1 py-1 text-xs text-[#9FCBAC]">

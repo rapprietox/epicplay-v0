@@ -76,27 +76,44 @@ export function ZoneAnalyticsRow({
           : "Batting average, swing-and-miss rate, and pitch-location tendency, side by side"}
       </p>
 
-      <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div>
+      {/* Player-Clubhouse alignment batch, Fix 4: 1 column on mobile, 2 on
+          tablet, 3 on desktop, per spec -- items-stretch so all three
+          cards share the row's tallest height. Map 1 (inline below, a
+          plain 3x3 grid -- there's no ring for a batting-average-by-zone
+          stat) previously used its own 220px grid with no toggle row,
+          which put its actual grid several pixels higher than Map 2/3's
+          (280x320 ZoneGrid, preceded by a PitchTypeToggle row). It now
+          mirrors that exact structure -- title, subtitle, an invisible
+          spacer the same height as PitchTypeToggle's rendered row, then
+          a 280x320-framed grid -- so all three titles, toggle rows, and
+          grids land at the same vertical position across columns. */}
+      <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 items-stretch">
+        <div className="flex h-full flex-col">
           <p className="text-center text-xs font-semibold uppercase tracking-wide text-white">{map1Title}</p>
           <p className="text-center text-[10px] text-foreground/40">{map1Subtitle}</p>
-          <div className="mx-auto mt-3 grid w-full max-w-[220px] grid-cols-3 grid-rows-3 gap-1 rounded-md border-2 border-border bg-background p-1">
-            {battingAvgLines.map((line, i) => (
-              <div
-                key={i}
-                className="flex aspect-square flex-col items-center justify-center rounded transition-colors duration-700"
-                style={{ backgroundColor: revealed ? zoneColor(line) : "#1A3D28" }}
-              >
-                {line.ab > 0 ? (
-                  <>
-                    <span className="font-heading text-sm font-bold text-background">{formatAvg(line.avg)}</span>
-                    <span className="text-[9px] text-background/70">{line.ab} AB</span>
-                  </>
-                ) : (
-                  <span className="text-[10px] text-foreground/30">—</span>
-                )}
-              </div>
-            ))}
+          <div className="mt-2 h-[26px]" aria-hidden="true" />
+          <div className="mt-3">
+            <div
+              className="mx-auto grid w-full max-w-[280px] grid-cols-3 grid-rows-3 gap-[3px] rounded-md border-2 border-border bg-background p-1"
+              style={{ minHeight: 320 }}
+            >
+              {battingAvgLines.map((line, i) => (
+                <div
+                  key={i}
+                  className="flex h-full w-full flex-col items-center justify-center rounded transition-colors duration-700"
+                  style={{ backgroundColor: revealed ? zoneColor(line) : "#1A3D28" }}
+                >
+                  {line.ab > 0 ? (
+                    <>
+                      <span className="font-heading text-[13px] font-bold text-background">{formatAvg(line.avg)}</span>
+                      <span className="text-[9px] text-background/70">{line.ab} AB</span>
+                    </>
+                  ) : (
+                    <span className="text-[10px] text-foreground/30">—</span>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
           <p className="mt-2 text-center text-[9px] text-foreground/30">Zoned by the last pitch of each at-bat -- ring not applicable</p>
         </div>
