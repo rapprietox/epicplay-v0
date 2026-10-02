@@ -120,15 +120,18 @@ export function TeamAnalytics({
           </div>
 
           {/* field-2d.png spray chart batch (team version): same real-photo
-              background + dark overlay as the individual player spray
-              chart (src/app/coach/players/[id]/spray-chart.tsx) instead
-              of a hand-drawn SVG diamond. field_x/field_y are already a
-              direct 0-100 percentage against this image (see that
-              component's own comment), so an SVG viewBox="0 0 100 100"
-              overlay plots a dot at cx/cy exactly the same as
-              `left: x%, top: y%` would -- same math, same result. No
-              "Lines" view here (unlike the player page) -- out of scope
-              for this fix, which is the background swap only. */}
+              background + dark overlay as the shared PlayerSprayChart
+              (src/app/player/clubhouse/pro/player-spray-chart.tsx, now
+              used by both the coach's per-player page and the player's
+              own Clubhouse) instead of a hand-drawn SVG diamond.
+              field_x/field_y are already a direct 0-100 percentage
+              against this image (see that component's own comment), so
+              an SVG viewBox="0 0 100 100" overlay plots a dot at cx/cy
+              exactly the same as `left: x%, top: y%` would -- same math,
+              same result. No 2D/3D toggle here (unlike that shared
+              component) -- this is a standalone, simpler inline
+              implementation for the team-wide view, out of scope for
+              this fix. */}
           <div className="relative mx-auto mt-3 aspect-square w-full max-w-[280px] overflow-hidden rounded-md border border-border bg-background">
             <div
               className="absolute inset-0"

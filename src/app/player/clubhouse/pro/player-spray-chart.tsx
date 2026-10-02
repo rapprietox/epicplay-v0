@@ -27,53 +27,83 @@ const HIT_TYPE_FILTERS: { value: HitTypeFilter; label: string }[] = [
 
 const LINE_CATEGORY_ORDER: LineHitCategory[] = ["flyball", "groundball", "linedrive", "popup", "hr", "other"];
 
-// Five-fixes batch, Fix 5. A forked, player-Clubhouse-only spray chart --
-// not a mode on the shared src/app/coach/players/[id]/spray-chart.tsx,
-// which stays exactly as it was (its own Lines/Dots toggle, used
-// unchanged by the coach's per-player page AND the coach's team-wide
-// spray chart in team-analytics.tsx). The 2D/3D split requested here is
-// a bigger behavioral fork than that shared component's existing
-// hideCalibrationHelpLink prop -- a different background image, a
-// different toggle vocabulary (2D/3D vs Lines/Dots), and per-hit-type
-// trajectory physics (arc height, glow, animation duration) the coach's
-// pages never asked for. Forking avoids bloating the shared component
-// with player-only branches and avoids silently changing the coach's
-// already-working views.
+// Spray-chart batch: a single shared component now used by BOTH the
+// coach's per-player page (src/app/coach/players/[id]/player-breakdown-client.tsx)
+// and the player's own Clubhouse (src/app/player/clubhouse/pro-section.tsx)
+// -- the old coach-only SprayChart (Lines/Dots toggle) has been deleted,
+// not kept alongside this one, since coaches asked to see the same
+// 2D/Dots-3D/Trajectory view players get rather than maintaining two
+// divergent spray charts. The team-wide spray chart in
+// src/app/coach/team-analytics.tsx is a separate, simpler inline
+// implementation (no 2D/3D toggle) and is unaffected by any of this.
 //
-// Trajectory shape per hit type -- ground ball and line drive render as
-// straight lines (the spec's own wording for both), fly ball and home
-// run as a parabolic arc via a quadratic bezier whose control point is
-// offset "up" (toward negative y) from the straight-line midpoint,
-// scaled by the shot's own distance so a short and a long fly ball both
-// read as a believable arc rather than a fixed pixel bulge. Popup and
-// "other" (unknown hit_type) aren't named in the spec -- extrapolated
-// from the same LINE_HIT_CATEGORY_COLOR palette the shared Lines view
-// already uses: popup gets a small, quick arc (a short, high, harmless
-// pop-up), "other" a plain straight line at the same pace as a ground
-// ball, the safest default with no real trajectory data to justify a
-// curve.
+// 3D trajectory redesign, v2: "everything is a parabola -- just
+// different heights and angles." One quadratic-bezier shape for every
+// hit type (parabolaPath below) -- start at home plate, end at the
+// landing spot, control point X at the horizontal midpoint, control
+// point Y offset "up" from the straight-line midpoint by peakPct * the
+// shot's own distance. The earlier version gave ground ball a bespoke
+// bounce-bump path and line drive a motion-blur duplicate + end flash;
+// both are gone now in favor of one consistent curve family, differing
+// only by how high it peaks -- a barely-there 5% bulge for a ground
+// ball reads as "almost flat" without needing a separate path shape.
+// Home run is still the one exception with its own decoration
+// (overshoot + starburst), since "continues past the wall" and "lands
+// with an explosion" are genuinely different asks, not just a taller
+// version of the same arc.
+//
+// Popup and "other" (unknown hit_type) aren't named in the spec --
+// extrapolated the same way as before: small/modest peak heights with
+// no special decoration, the safest default with no real trajectory
+// data to justify anything more.
 interface TrajectoryStyle {
   color: string;
   durationMs: number;
-  arcFactor: number; // 0 = straight line, higher = more bowed arc
-  glow: boolean;
+  strokeWidth: number;
+  peakPct: number; // peak height as a fraction of the home-to-landing distance
+  overshootFactor: number; // extends the path's endpoint this fraction further past the real landing spot
+  glow: string | undefined; // exact CSS filter value, or undefined for no glow
+  starburst: boolean;
 }
 
 const TRAJECTORY_STYLE: Record<LineHitCategory, TrajectoryStyle> = {
-  groundball: { color: "#EF9F27", durationMs: 300, arcFactor: 0, glow: false },
-  linedrive: { color: "#F0C060", durationMs: 300, arcFactor: 0.04, glow: false },
-  flyball: { color: "#2ECC71", durationMs: 700, arcFactor: 0.16, glow: false },
-  hr: { color: "#F0C060", durationMs: 1000, arcFactor: 0.28, glow: true },
-  popup: { color: LINE_HIT_CATEGORY_COLOR.popup, durationMs: 400, arcFactor: 0.12, glow: false },
-  other: { color: LINE_HIT_CATEGORY_COLOR.other, durationMs: 300, arcFactor: 0, glow: false },
+  groundball: { color: "#EF9F27", durationMs: 350, strokeWidth: 2.5, peakPct: 0.05, overshootFactor: 0, glow: undefined, starburst: false },
+  linedrive: { color: "#F0C060", durationMs: 300, strokeWidth: 3, peakPct: 0.15, overshootFactor: 0, glow: undefined, starburst: false },
+  flyball: { color: "#2ECC71", durationMs: 800, strokeWidth: 3, peakPct: 0.45, overshootFactor: 0, glow: undefined, starburst: false },
+  hr: {
+    color: "#F0C060",
+    durationMs: 1200,
+    strokeWidth: 4,
+    peakPct: 0.7,
+    overshootFactor: 0.15,
+    glow: "drop-shadow(0 0 8px #F0C060)",
+    starburst: true,
+  },
+  popup: { color: LINE_HIT_CATEGORY_COLOR.popup, durationMs: 400, strokeWidth: 2, peakPct: 0.25, overshootFactor: 0, glow: undefined, starburst: false },
+  other: { color: LINE_HIT_CATEGORY_COLOR.other, durationMs: 300, strokeWidth: 2, peakPct: 0.08, overshootFactor: 0, glow: undefined, starburst: false },
 };
 
-function arcPath(x1: number, y1: number, x2: number, y2: number, arcFactor: number): string {
-  if (arcFactor === 0) return `M ${x1},${y1} L ${x2},${y2}`;
-  const dist = Math.hypot(x2 - x1, y2 - y1);
-  const midX = (x1 + x2) / 2;
-  const midY = (y1 + y2) / 2 - dist * arcFactor;
-  return `M ${x1},${y1} Q ${midX},${midY} ${x2},${y2}`;
+interface PathResult {
+  d: string;
+  endX: number;
+  endY: number;
+}
+
+// The one shape every hit type now shares. overshootFactor (home run
+// only) extends the endpoint beyond the real landing coordinate first,
+// so the peak then sits centered over the whole dramatized flight --
+// the ball/starburst animate to this extended point, while the detail
+// panel on click still reports the real at-bat's own data regardless of
+// where it's dramatized to land.
+function parabolaPath(x1: number, y1: number, x2: number, y2: number, peakPct: number, overshootFactor: number): PathResult {
+  const dist = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const dirX = (x2 - x1) / dist;
+  const dirY = (y2 - y1) / dist;
+  const endX = x2 + dirX * dist * overshootFactor;
+  const endY = y2 + dirY * dist * overshootFactor;
+  const midX = (x1 + endX) / 2;
+  const midY = (y1 + endY) / 2 - dist * peakPct;
+  return { d: `M ${x1},${y1} Q ${midX},${midY} ${endX},${endY}`, endX, endY };
 }
 
 export function PlayerSprayChart({ dots, fieldCalibration }: { dots: Dot[]; fieldCalibration: FieldCalibrationPoints | null }) {
@@ -112,6 +142,10 @@ export function PlayerSprayChart({ dots, fieldCalibration }: { dots: Dot[]; fiel
     const t = setTimeout(() => setRevealed(true), 50);
     return () => clearTimeout(t);
   }, [filtered, view]);
+
+  // 150ms stagger between each trajectory (per spec), capped so a big
+  // game log doesn't push the last few plays minutes into the future.
+  const delayMsFor = (i: number) => Math.min(i, 20) * 150;
 
   return (
     <section className="glossy rounded-lg border border-border bg-surface p-5">
@@ -193,7 +227,14 @@ export function PlayerSprayChart({ dots, fieldCalibration }: { dots: Dot[]; fiel
               >
                 <div className="pointer-events-none absolute inset-0" style={{ background: "rgba(0, 0, 0, 0.15)" }} />
 
-                <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full">
+                <svg
+                  key={`${view}-${hitTypeFilter}-${gameTypeFilter}`}
+                  viewBox="0 0 100 100"
+                  className="absolute inset-0 h-full w-full"
+                  style={
+                    view === "3d" ? { transform: "perspective(600px) rotateX(20deg)", transformOrigin: "bottom center" } : undefined
+                  }
+                >
                   {view === "2d"
                     ? // 2D view: dots only, per spec -- no lines, no line toggle.
                       filtered.map((d, i) => {
@@ -222,46 +263,94 @@ export function PlayerSprayChart({ dots, fieldCalibration }: { dots: Dot[]; fiel
                           />
                         );
                       })
-                    : // 3D view: animated trajectory lines, home plate as origin.
+                    : // 3D view: one parabola shape for every hit type, just
+                      // a different peak height/angle -- home plate as origin.
                       filtered.map((d, i) => {
                         const cat = lineHitCategory(d);
                         const style = TRAJECTORY_STYLE[cat];
                         const isSelected = selected === d;
-                        const path = arcPath(fieldCalibration.home_plate.x, fieldCalibration.home_plate.y, d.x, d.y, style.arcFactor);
+                        const home = fieldCalibration.home_plate;
+                        const { d: path, endX, endY } = parabolaPath(home.x, home.y, d.x, d.y, style.peakPct, style.overshootFactor);
+                        const delayMs = delayMsFor(i);
+                        const delaySec = delayMs / 1000;
+                        const durationSec = style.durationMs / 1000;
+                        const strokeW = d.category === "out" ? Math.max(1, style.strokeWidth - 1) : style.strokeWidth;
+
                         return (
-                          <g key={i}>
+                          <g key={i} onClick={() => setSelected(d === selected ? null : d)} className="cursor-pointer">
                             <path
                               d={path}
                               fill="none"
                               stroke={style.color}
-                              strokeWidth={d.category === "out" ? 1 : 2}
+                              strokeWidth={strokeW}
                               strokeLinecap="round"
                               pathLength={1}
                               style={{
                                 strokeDasharray: 1,
                                 strokeDashoffset: revealed ? 0 : 1,
                                 transition: `stroke-dashoffset ${style.durationMs}ms ease-out`,
-                                transitionDelay: `${Math.min(i, 40) * 20}ms`,
-                                filter: style.glow ? "drop-shadow(0 0 3px #F0C060) drop-shadow(0 0 6px #F0C060)" : undefined,
-                                opacity: isSelected ? 1 : 0.85,
+                                transitionDelay: `${delayMs}ms`,
+                                filter: style.glow,
+                                opacity: isSelected ? 1 : 0.9,
                               }}
                             />
+
+                            {/* A very short fading trail behind the ball: 3
+                                ghost dots tracing the SAME path, each starting
+                                a little later than the real ball so at any
+                                instant they sit a little behind it, each more
+                                transparent than the last. */}
+                            {[0.3, 0.17, 0.08].map((ghostOpacity, gi) => {
+                              const ghostDelaySec = delaySec + durationSec * (0.06 * (gi + 1));
+                              return (
+                                <circle key={`ghost-${gi}`} r={1.6} fill={style.color} opacity={revealed ? ghostOpacity : 0}>
+                                  <animateMotion dur={`${durationSec}s`} begin={`${ghostDelaySec}s`} fill="freeze" path={path} />
+                                </circle>
+                              );
+                            })}
+
+                            {/* The ball itself, traveling the path via SMIL
+                                animateMotion -- fill="freeze" leaves it
+                                sitting at the landing spot once it arrives,
+                                doubling as the static landing marker. */}
                             <circle
-                              cx={d.x}
-                              cy={d.y}
-                              r={isSelected ? 1.8 : 1}
+                              r={isSelected ? 2 : 1.6}
                               fill={style.color}
                               stroke={cat === "hr" ? "#030A06" : "none"}
                               strokeWidth={cat === "hr" ? 0.3 : 0}
-                              className="cursor-pointer"
+                              opacity={revealed ? 1 : 0}
                               style={{
-                                opacity: revealed ? 1 : 0,
-                                transition: "opacity 0.3s ease-out",
-                                transitionDelay: `${Math.min(i, 40) * 20 + style.durationMs}ms`,
-                                filter: isSelected ? "drop-shadow(0 0 4px #00FF7F)" : undefined,
+                                transition: "opacity 0.15s ease-out",
+                                transitionDelay: `${delayMs}ms`,
+                                filter: isSelected ? "drop-shadow(0 0 4px #00FF7F)" : style.glow,
                               }}
-                              onClick={() => setSelected(d === selected ? null : d)}
-                            />
+                            >
+                              <animateMotion dur={`${durationSec}s`} begin={`${delaySec}s`} fill="freeze" path={path} />
+                            </circle>
+
+                            {/* Home run: an 8-line radiating starburst once it lands. */}
+                            {style.starburst &&
+                              Array.from({ length: 8 }).map((_, k) => {
+                                const angle = (k / 8) * Math.PI * 2;
+                                const len = 3.2;
+                                return (
+                                  <line
+                                    key={k}
+                                    x1={endX}
+                                    y1={endY}
+                                    x2={endX + Math.cos(angle) * len}
+                                    y2={endY + Math.sin(angle) * len}
+                                    stroke="#F0C060"
+                                    strokeWidth={0.6}
+                                    strokeLinecap="round"
+                                    style={{
+                                      animation: revealed
+                                        ? `player-spray-starburst 0.45s ease-out ${delaySec + durationSec}s forwards`
+                                        : "none",
+                                    }}
+                                  />
+                                );
+                              })}
                           </g>
                         );
                       })}
@@ -272,15 +361,22 @@ export function PlayerSprayChart({ dots, fieldCalibration }: { dots: Dot[]; fiel
                 <div className="absolute bottom-1.5 right-1.5 rounded-md border border-border bg-background/85 px-2 py-1.5 backdrop-blur-sm">
                   {breakdown.map((row) => (
                     <div key={row.category} className="flex items-center gap-1.5 text-[9px] leading-tight text-foreground/70">
-                      <span
-                        className="h-1.5 w-1.5 shrink-0 rounded-full"
-                        style={{
-                          backgroundColor: LINE_HIT_CATEGORY_COLOR[row.category],
-                          boxShadow: row.category === "hr" ? "0 0 3px #F0C060" : undefined,
-                        }}
-                      />
+                      <svg width="14" height="6" className="shrink-0">
+                        <line
+                          x1="0"
+                          y1="3"
+                          x2="14"
+                          y2="3"
+                          stroke={LINE_HIT_CATEGORY_COLOR[row.category]}
+                          strokeWidth={row.category === "hr" ? 3 : 2}
+                          strokeLinecap="round"
+                          style={row.category === "hr" ? { filter: "drop-shadow(0 0 2px #F0C060)" } : undefined}
+                        />
+                      </svg>
                       <span>{LINE_HIT_CATEGORY_LABEL[row.category]}</span>
-                      <span className="ml-auto pl-2 text-white">{Math.round(row.pct)}%</span>
+                      <span className="ml-auto pl-2 text-white">
+                        {row.count} &middot; {Math.round(row.pct)}%
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -313,6 +409,14 @@ export function PlayerSprayChart({ dots, fieldCalibration }: { dots: Dot[]; fiel
           </div>
         </>
       )}
+
+      <style>{`
+        @keyframes player-spray-starburst {
+          0% { opacity: 0; }
+          25% { opacity: 1; }
+          100% { opacity: 0; }
+        }
+      `}</style>
     </section>
   );
 }

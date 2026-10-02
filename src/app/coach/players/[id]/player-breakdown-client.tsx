@@ -15,7 +15,7 @@ import {
 } from "@/lib/game-time-filters";
 import type { AtBatResult, Database, FieldCalibrationPoints, GameType, PitchType } from "@/lib/supabase/types";
 import { StrikeZoneHeatmap } from "./strike-zone-heatmap";
-import { SprayChart } from "./spray-chart";
+import { PlayerSprayChart } from "@/app/player/clubhouse/pro/player-spray-chart";
 import { PitcherHeatmap } from "./pitcher-heatmap";
 import { HitterExtendedStats } from "./hitter-extended-stats";
 import { PitcherExtendedStats } from "./pitcher-extended-stats";
@@ -324,7 +324,7 @@ export function PlayerBreakdownClient({
         </>
       )}
 
-      <SprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
+      <PlayerSprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
 
       {pitchingZoneAtBats.length > 0 && <PitcherHeatmap atBats={pitcherAtBatsByType} pitches={pitcherPitches} />}
 
