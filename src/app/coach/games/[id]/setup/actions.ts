@@ -72,6 +72,33 @@ export async function saveLineupAndUmpire(
   revalidatePath(`/coach/games/${gameId}/setup`);
 }
 
+export interface ActiveGameConflict {
+  gameId: string;
+  opponentName: string;
+}
+
+// Launch-audit Fix 7: nothing in the schema stops two games from both
+// being status='active' for the same team (e.g. an earlier game that
+// was never properly ended) -- the operator screen's own "no ?game= in
+// the URL" fallback just picks whichever active game is newest, which
+// could silently resolve to the wrong one. This is a pre-flight check,
+// called from the client before startGame -- it deliberately doesn't
+// block anything itself (the coach gets a real choice: end the old one,
+// or knowingly continue with two active games), it just makes that
+// choice visible instead of letting it happen by accident.
+export async function checkOtherActiveGame(gameId: string): Promise<ActiveGameConflict | null> {
+  const { supabase, teamId } = await requireCoachGame(gameId);
+  const { data: other } = await supabase
+    .from("games")
+    .select("id, opponent_name")
+    .eq("team_id", teamId)
+    .eq("status", "active")
+    .neq("id", gameId)
+    .limit(1)
+    .maybeSingle();
+  return other ? { gameId: other.id, opponentName: other.opponent_name } : null;
+}
+
 export async function startGame(gameId: string, loggingMode: LoggingMode) {
   const { supabase, game } = await requireCoachGame(gameId);
 

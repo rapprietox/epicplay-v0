@@ -158,11 +158,15 @@ export interface Database {
         Row: {
           id: string;
           name: string;
+          // Launch-audit Fix 1: who created this team via self-serve
+          // onboarding. Null for teams created the old (manual SQL) way.
+          created_by: string | null;
           created_at: string;
         };
         Insert: {
           id?: string;
           name: string;
+          created_by?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["teams"]["Insert"]>;

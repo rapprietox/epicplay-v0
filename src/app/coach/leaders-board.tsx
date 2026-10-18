@@ -174,6 +174,21 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
     return buildRows(players, battingLines, pitchingLines);
   }, [players, filteredAtBats, filteredStolenBases, filteredGames]);
 
+  // Launch-audit Fix 8: a brand-new team's first look at this card was
+  // 15 "No data yet" tiles at once -- not broken, just a noisier first
+  // impression than one plain line. The filters above the grid are
+  // meaningless with zero completed games too, so they're hidden along
+  // with the grid, not just the tiles.
+  const hasCompletedGame = games.some((g) => g.status === "completed");
+  if (!hasCompletedGame) {
+    return (
+      <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5 shadow-[0_0_0_1px_rgba(240,192,96,0.05)]">
+        <h2 className="font-heading text-2xl font-bold uppercase tracking-wide text-accent-gold">Team Leaders</h2>
+        <p className="mt-3 text-sm text-foreground/50">No stats yet — complete your first game to see team leaders appear here.</p>
+      </section>
+    );
+  }
+
   return (
     <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5 shadow-[0_0_0_1px_rgba(240,192,96,0.05)]">
       <div className="flex flex-wrap items-center justify-between gap-3">

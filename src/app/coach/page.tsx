@@ -6,6 +6,7 @@ import { StadiumBackground } from "@/components/stadium-background";
 import { RosterSection } from "./roster-section";
 import { SeasonImportSection } from "./season-import-section";
 import { NextGamePanel } from "./next-game-panel";
+import { LastGameCard } from "./last-game-card";
 import { LeadersBoard } from "./leaders-board";
 import { ScheduleTable } from "./schedule-table";
 import { RealtimeRefresh } from "./realtime-refresh";
@@ -137,6 +138,8 @@ export default async function CoachPage() {
           atBats={atBats ?? []}
           players={players ?? []}
         />
+
+        <LastGameCard games={allGames} />
 
         <LeadersBoard players={players ?? []} atBats={atBats ?? []} stolenBases={stolenBases ?? []} games={allGames} />
 

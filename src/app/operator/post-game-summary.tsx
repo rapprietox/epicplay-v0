@@ -1,8 +1,55 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { endGame } from "./actions";
+
+// Launch-audit Fix 2: endGame is the single most consequential write of
+// the whole game (marks it complete, computes the accuracy score), at
+// the exact moment -- right after the last play, at a real field -- a
+// dropped connection is most likely. Every at-bat-logging write already
+// retries through withOfflineRetry (src/lib/operator/sync-queue.ts),
+// but that queue is fire-and-forget by design: it never tells the
+// caller whether the write succeeded, which is wrong for this screen --
+// the coach needs to SEE "Game submitted," not have it silently retry
+// in the background while they've already put the tablet down. So this
+// keeps the visible submit/error/success states that screen was built
+// around, and adds what was actually missing: the notes text surviving
+// a reload (localStorage, keyed per game) and a one-tap retry that
+// doesn't require retyping anything. No automatic retry-on-reconnect
+// timer -- only a manual "Try Again" tap, so a coach is never surprised
+// by a resubmission firing on its own while they've moved on.
+const pendingKey = (gameId: string) => `epicplay_pending_end_game_${gameId}`;
+
+function loadPendingNotes(gameId: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(pendingKey(gameId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { notes?: string };
+    return parsed.notes ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingNotes(gameId: string, notes: string) {
+  try {
+    window.localStorage.setItem(pendingKey(gameId), JSON.stringify({ notes }));
+  } catch {
+    // Private browsing / storage disabled -- the retry button and
+    // controlled textarea still work within this one page session,
+    // just won't survive an actual reload.
+  }
+}
+
+function clearPendingNotes(gameId: string) {
+  try {
+    window.localStorage.removeItem(pendingKey(gameId));
+  } catch {
+    // Nothing to clean up if it was never written.
+  }
+}
 
 export function PostGameSummary({
   gameId,
@@ -27,14 +74,26 @@ export function PostGameSummary({
   const [result, setResult] = useState<{ accuracyScore: number | null } | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  // A reload while a submission was pending (e.g. the tab crashed right
+  // after a failed attempt) restores whatever notes were typed, so the
+  // operator never has to retype them to retry.
+  useEffect(() => {
+    const restored = loadPendingNotes(gameId);
+    if (restored !== null) setNotes(restored);
+  }, [gameId]);
+
   function submit() {
     setError(null);
+    savePendingNotes(gameId, notes);
     startTransition(async () => {
       try {
         const res = await endGame(gameId, notes);
+        clearPendingNotes(gameId);
         setResult(res);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to submit game");
+      } catch {
+        setError(
+          "Couldn't save — check your connection and tap Try Again. Your at-bats are already saved — only the final game record needs to be submitted."
+        );
       }
     });
   }
@@ -88,7 +147,7 @@ export function PostGameSummary({
               disabled={isPending}
               className="mt-4 w-full rounded-md bg-accent-green px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
             >
-              {isPending ? "Submitting…" : "Submit"}
+              {isPending ? "Submitting…" : error ? "Try Again" : "Submit"}
             </button>
           </>
         )}

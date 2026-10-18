@@ -4,8 +4,10 @@ import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import type { Database, LoggingMode, PlayerPositionCalibration } from "@/lib/supabase/types";
 import { nearestSavedPosition } from "@/lib/field-zones";
-import { saveLineupAndUmpire, startGame, type LineupSlot } from "./actions";
+import { saveLineupAndUmpire, startGame, checkOtherActiveGame, type LineupSlot, type ActiveGameConflict } from "./actions";
+import { endGame } from "@/app/operator/actions";
 import { LoggingModeSelector } from "./logging-mode-selector";
+import { FallbackPositionList } from "./fallback-position-list";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
 
@@ -95,6 +97,11 @@ export function LineupBuilder({
   const [hasSavedLineup, setHasSavedLineup] = useState(() => initialLineup.some((l) => l.status === "starting"));
   const [isSaving, startSave] = useTransition();
   const [isStarting, startStart] = useTransition();
+  // Launch-audit Fix 7: set only when Start Game finds another game for
+  // this team already active -- renders the End-previous/Continue-anyway
+  // dialog in place of actually starting, until the coach picks one.
+  const [activeConflict, setActiveConflict] = useState<ActiveGameConflict | null>(null);
+  const [isResolvingConflict, startResolveConflict] = useTransition();
   const [dragOver, setDragOver] = useState<"field" | "dh" | "eh" | null>(null);
   // Batting-order-card batch: drag-reorder state for the card's own rows
   // -- separate from `dragOver` (roster -> field/DH/EH placement), since
@@ -254,17 +261,57 @@ export function LineupBuilder({
     });
   }
 
+  // Launch-audit Fix 7: the actual save -> startGame -> redirect sequence,
+  // factored out so all three paths (no conflict, "end previous game",
+  // "continue anyway") run the exact same steps rather than three
+  // near-copies of it.
+  async function proceedToStart() {
+    // Start reads the lineup/umpire name back from the database, so
+    // the in-progress edits here must be persisted first -- this is
+    // the "auto-save when Start Game is clicked" half of Fix 1.
+    await saveLineupAndUmpire(gameId, { lineup: buildLineupPayload(), umpireName });
+    setHasSavedLineup(true);
+    await startGame(gameId, loggingMode);
+    window.location.href = `/operator?game=${gameId}`;
+  }
+
   function start() {
     setError(null);
     startStart(async () => {
       try {
-        // Start reads the lineup/umpire name back from the database, so
-        // the in-progress edits here must be persisted first -- this is
-        // the "auto-save when Start Game is clicked" half of Fix 1.
-        await saveLineupAndUmpire(gameId, { lineup: buildLineupPayload(), umpireName });
-        setHasSavedLineup(true);
-        await startGame(gameId, loggingMode);
-        window.location.href = `/operator?game=${gameId}`;
+        const conflict = await checkOtherActiveGame(gameId);
+        if (conflict) {
+          setActiveConflict(conflict);
+          return;
+        }
+        await proceedToStart();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to start game");
+      }
+    });
+  }
+
+  function endPreviousAndStart() {
+    if (!activeConflict) return;
+    setError(null);
+    startResolveConflict(async () => {
+      try {
+        await endGame(activeConflict.gameId, "");
+        setActiveConflict(null);
+        await proceedToStart();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to end the previous game");
+      }
+    });
+  }
+
+  function continueAnyway() {
+    if (!activeConflict) return;
+    setError(null);
+    setActiveConflict(null);
+    startResolveConflict(async () => {
+      try {
+        await proceedToStart();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to start game");
       }
@@ -283,13 +330,22 @@ export function LineupBuilder({
   return (
     <div>
       {!fieldPositionsCalibration && (
-        <p className="mb-3 rounded-md border border-accent-amber/40 bg-accent-amber/10 px-3 py-2 text-xs text-accent-amber">
-          Calibrate player positions first —{" "}
-          <a href="/coach/calibrate-field" className="underline hover:text-white">
-            /coach/calibrate-field
+        <div className="mb-3 rounded-md border border-accent-amber/40 bg-accent-amber/10 px-4 py-3">
+          <p className="text-sm text-accent-amber">
+            Before you can use the visual lineup builder you need to calibrate your field image once. This takes 2
+            minutes and only needs to be done once per season.
+          </p>
+          <a
+            href="/coach/calibrate-field"
+            className="mt-3 inline-block rounded-md bg-accent-amber px-4 py-2 text-sm font-bold text-background transition hover:brightness-110"
+          >
+            Calibrate Field Now →
           </a>
-          . DH/EH still work in the meantime, but field positions can&apos;t be placed until then.
-        </p>
+          <p className="mt-2 text-xs text-accent-amber/80">
+            Don&apos;t want to stop and calibrate right now? Use the position list below instead — it builds the exact
+            same lineup, just without the drag-and-drop diagram.
+          </p>
+        </div>
       )}
 
       <p className="text-xs uppercase tracking-wide text-foreground/40">
@@ -350,22 +406,21 @@ export function LineupBuilder({
 
         {/* Field diagram + DH/EH drop zones */}
         <div>
-          <div
-            ref={fieldRef}
-            onDragOver={(e) => {
-              if (!fieldPositionsCalibration) return;
-              e.preventDefault();
-              setDragOver("field");
-            }}
-            onDragLeave={() => setDragOver((d) => (d === "field" ? null : d))}
-            onDrop={handleFieldDrop}
-            className={`glossy relative aspect-square w-full max-w-[420px] overflow-hidden rounded-lg border bg-background transition ${
-              dragOver === "field" ? "border-accent-gold shadow-[0_0_16px_rgba(240,192,96,0.35)]" : "border-border"
-            }`}
-            style={{ backgroundImage: "url('/field-2d.png')", backgroundSize: "cover", backgroundPosition: "center" }}
-          >
-            {fieldPositionsCalibration &&
-              placements
+          {fieldPositionsCalibration ? (
+            <div
+              ref={fieldRef}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver("field");
+              }}
+              onDragLeave={() => setDragOver((d) => (d === "field" ? null : d))}
+              onDrop={handleFieldDrop}
+              className={`glossy relative aspect-square w-full max-w-[420px] overflow-hidden rounded-lg border bg-background transition ${
+                dragOver === "field" ? "border-accent-gold shadow-[0_0_16px_rgba(240,192,96,0.35)]" : "border-border"
+              }`}
+              style={{ backgroundImage: "url('/field-2d.png')", backgroundSize: "cover", backgroundPosition: "center" }}
+            >
+              {placements
                 .filter((p) => p.position !== DH && p.position !== EH)
                 .map((p) => {
                   const loc = fieldPositionsCalibration[p.position as keyof PlayerPositionCalibration];
@@ -382,23 +437,20 @@ export function LineupBuilder({
                   );
                 })}
 
-            {dhPlacement && dhFieldLoc && (
-              <PositionedAvatar
-                key={`${dhPlacement.playerId}-dh-field`}
-                x={dhFieldLoc.x}
-                y={dhFieldLoc.y}
-                battingOrder={dhPlacement.battingOrder}
-                jersey={players.find((pl) => pl.id === dhPlacement.playerId)?.jersey_number ?? null}
-                onRemove={() => removePlayer(dhPlacement.playerId)}
-              />
-            )}
-
-            {!fieldPositionsCalibration && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40 p-4 text-center">
-                <p className="text-xs text-foreground/60">Not calibrated — see the banner above.</p>
-              </div>
-            )}
-          </div>
+              {dhPlacement && dhFieldLoc && (
+                <PositionedAvatar
+                  key={`${dhPlacement.playerId}-dh-field`}
+                  x={dhFieldLoc.x}
+                  y={dhFieldLoc.y}
+                  battingOrder={dhPlacement.battingOrder}
+                  jersey={players.find((pl) => pl.id === dhPlacement.playerId)?.jersey_number ?? null}
+                  onRemove={() => removePlayer(dhPlacement.playerId)}
+                />
+              )}
+            </div>
+          ) : (
+            <FallbackPositionList players={players} placements={placements} onAssign={placePlayer} onRemove={removePlayer} />
+          )}
 
           <div className="mt-3 grid w-full max-w-[420px] grid-cols-2 gap-2">
             <DropZone
@@ -560,6 +612,49 @@ export function LineupBuilder({
         </p>
       )}
       {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
+
+      {/* Launch-audit Fix 7: a real choice, not a block -- two games
+          active for the same team is legal data, just probably a
+          mistake (an old game nobody properly ended), so this surfaces
+          it instead of letting the operator screen's own "pick the
+          newest active game" fallback resolve it silently later. */}
+      {activeConflict && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="glossy w-full max-w-sm rounded-lg border border-accent-amber/40 bg-surface p-5">
+            <p className="font-heading text-lg font-bold text-white">Game already in progress</p>
+            <p className="mt-2 text-sm text-foreground/70">
+              You have another game in progress (vs {activeConflict.opponentName}). Do you want to end that game
+              first or continue with this one?
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={endPreviousAndStart}
+                disabled={isResolvingConflict}
+                className="rounded-md bg-accent-amber px-4 py-2 text-sm font-semibold text-background disabled:opacity-50"
+              >
+                {isResolvingConflict ? "Working…" : "End previous game"}
+              </button>
+              <button
+                type="button"
+                onClick={continueAnyway}
+                disabled={isResolvingConflict}
+                className="rounded-md border border-border px-4 py-2 text-sm font-medium text-white hover:border-accent-primary disabled:opacity-50"
+              >
+                Continue with new game
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveConflict(null)}
+                disabled={isResolvingConflict}
+                className="text-center text-xs text-foreground/40 hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Fix 1: Print Lineup only activates once this game has a
           persisted lineup -- either from an earlier visit (hasSavedLineup

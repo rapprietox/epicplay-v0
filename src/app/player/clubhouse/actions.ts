@@ -19,33 +19,54 @@ async function requirePlayer() {
   return { supabase, teamId: profile.team_id, playerId: profile.player_id };
 }
 
+export type CheckoutResult = { ok: true; url: string } | { ok: false; error: string };
+
 // Clubhouse Pro batch: uses a real pre-created Stripe Price
 // (STRIPE_PRICE_ID) rather than inline price_data -- the $10 one-time
 // Clubhouse Pro price now lives in the Stripe Dashboard, not hardcoded
 // here. Checkout happens entirely server-side; the client just navigates
 // to the returned URL (no @stripe/stripe-js, no Stripe Elements needed
 // since this app never collects card details itself).
-export async function createClubhouseCheckoutSession(): Promise<{ url: string }> {
-  const { supabase, playerId } = await requirePlayer();
+//
+// Launch-audit Fix 3: returns a result object instead of throwing --
+// same reasoning as redeemPromoCode's own fix (Next.js redacts a thrown
+// Server Action error message in production, and even where it
+// doesn't, the raw "missing STRIPE_PRICE_ID" string is an internal
+// detail that means nothing to a player and shouldn't reach them at
+// all). A real misconfiguration still gets logged server-side for
+// whoever can actually fix it.
+export async function createClubhouseCheckoutSession(): Promise<CheckoutResult> {
+  try {
+    const { supabase, playerId } = await requirePlayer();
 
-  const { data: player } = await supabase.from("players").select("name, clubhouse_unlocked").eq("id", playerId).single();
-  if (!player) throw new Error("Player not found");
-  if (player.clubhouse_unlocked) throw new Error("Already unlocked");
+    const { data: player } = await supabase.from("players").select("name, clubhouse_unlocked").eq("id", playerId).single();
+    if (!player) return { ok: false, error: "Couldn't find your player profile -- try reloading the page." };
+    if (player.clubhouse_unlocked) return { ok: false, error: "Clubhouse Pro is already unlocked for you." };
 
-  const priceId = process.env.STRIPE_PRICE_ID;
-  if (!priceId) throw new Error("Clubhouse Pro checkout isn't configured yet (missing STRIPE_PRICE_ID)");
+    const priceId = process.env.STRIPE_PRICE_ID;
+    if (!priceId) {
+      console.error("[createClubhouseCheckoutSession] STRIPE_PRICE_ID is not set");
+      return { ok: false, error: "Payment is temporarily unavailable. Please try again later or contact your coach for a promo code." };
+    }
 
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-  const session = await stripe.checkout.sessions.create({
-    mode: "payment",
-    line_items: [{ price: priceId, quantity: 1 }],
-    success_url: `${siteUrl}/player/clubhouse?unlocked=1`,
-    cancel_url: `${siteUrl}/player/clubhouse`,
-    metadata: { player_id: playerId },
-  });
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${siteUrl}/player/clubhouse?unlocked=1`,
+      cancel_url: `${siteUrl}/player/clubhouse`,
+      metadata: { player_id: playerId },
+    });
 
-  if (!session.url) throw new Error("Failed to create checkout session");
-  return { url: session.url };
+    if (!session.url) {
+      console.error("[createClubhouseCheckoutSession] Stripe session created with no url", session.id);
+      return { ok: false, error: "Payment is temporarily unavailable. Please try again later or contact your coach for a promo code." };
+    }
+    return { ok: true, url: session.url };
+  } catch (err) {
+    console.error("[createClubhouseCheckoutSession] unexpected error", err);
+    return { ok: false, error: "Payment is temporarily unavailable. Please try again later or contact your coach for a promo code." };
+  }
 }
 
 // Promo codes batch: see src/lib/promo-codes.ts for the actual

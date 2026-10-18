@@ -10,12 +10,12 @@ export function CheckoutButton() {
   function handleClick() {
     setError(null);
     startTransition(async () => {
-      try {
-        const { url } = await createClubhouseCheckoutSession();
-        window.location.href = url;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Couldn't start checkout -- try again?");
+      const result = await createClubhouseCheckoutSession();
+      if (!result.ok) {
+        setError(result.error);
+        return;
       }
+      window.location.href = result.url;
     });
   }
 

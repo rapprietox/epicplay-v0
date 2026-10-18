@@ -3620,11 +3620,31 @@ function QuickModeLeftPanel({
   // lineup strip only ever shows the 9 real batting slots.
   const slots = lineup.filter((l): l is Lineup & { batting_order: number } => l.batting_order !== null).sort((a, b) => a.batting_order - b.batting_order);
   const nextBattingOrder = (state.battingOrderPosition % 9) + 1;
+  // Launch-audit Fix 9: a one-tap glossary for the standard-scorekeeping
+  // abbreviations (K/Kl/BB/HBP/FC/SAC) the Quick Mode buttons use with
+  // no other in-product explanation. An inline expand block, not an
+  // absolutely-positioned popup -- this panel's own wrapper below is
+  // overflow-hidden, which would silently clip a floating popover the
+  // same way an earlier batch's strike-zone popup was clipped before it
+  // got portaled out; a push-down block has no such risk and still
+  // satisfies "one tap to open, one tap to close, doesn't interrupt
+  // logging."
+  const [showGlossary, setShowGlossary] = useState(false);
 
   return (
     <div className="flex flex-col overflow-hidden border-b border-border p-2 md:border-b-0 md:border-r">
       <div className="flex items-center justify-between">
-        <p className="text-[15px] uppercase tracking-[0.08em] text-[#7AB893]">Quick Mode — scorekeeper</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-[15px] uppercase tracking-[0.08em] text-[#7AB893]">Quick Mode — scorekeeper</p>
+          <button
+            type="button"
+            onClick={() => setShowGlossary((s) => !s)}
+            title="What do these abbreviations mean?"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border text-[11px] font-bold text-foreground/50 hover:border-accent-primary hover:text-white"
+          >
+            ?
+          </button>
+        </div>
         <p className="text-[11px] text-foreground/50">
           {state.mode === "hitting"
             ? `#${battingPlayerInfo?.jersey_number ?? "—"} ${battingPlayerInfo?.name ?? "Batter"}`
@@ -3633,6 +3653,25 @@ function QuickModeLeftPanel({
           {state.inningHalf.toUpperCase()} {state.inning} · {state.outs} out{state.outs === 1 ? "" : "s"}
         </p>
       </div>
+
+      {showGlossary && (
+        <div className="mt-1.5 shrink-0 rounded-md border border-border bg-surface/60 p-2 text-[11px] text-foreground/70">
+          <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+            <dt className="font-semibold text-white">K</dt>
+            <dd>Strikeout swinging</dd>
+            <dt className="font-semibold text-white">Kl</dt>
+            <dd>Strikeout looking</dd>
+            <dt className="font-semibold text-white">BB</dt>
+            <dd>Walk (base on balls)</dd>
+            <dt className="font-semibold text-white">HBP</dt>
+            <dd>Hit by pitch</dd>
+            <dt className="font-semibold text-white">FC</dt>
+            <dd>Fielder&apos;s choice</dd>
+            <dt className="font-semibold text-white">SAC</dt>
+            <dd>Sacrifice</dd>
+          </dl>
+        </div>
+      )}
 
       {/* Batting order / lineup strip -- collapsible, current batter
           highlighted, next batter marked "on deck," already-batted-this-
