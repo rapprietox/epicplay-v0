@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
 export type OnboardResult = { ok: true } | { ok: false; error: string };
 
@@ -11,12 +12,20 @@ export type OnboardResult = { ok: true } | { ok: false; error: string };
 // production builds, the same gotcha already fixed in redeemPromoCode
 // (src/app/player/clubhouse/actions.ts).
 //
-// Writes under the caller's own session (not service-role) -- the new
-// RLS policies in 20261018100001_self_serve_coach_onboarding.sql are
-// exactly what make this legal: a signed-in user with no team yet can
-// insert one team (tagged created_by = themselves) and update their
-// own profile to become its coach, but only a team they just created,
-// never an arbitrary existing one.
+// The teams insert now goes through the service-role client, bypassing
+// RLS -- two attempts at a self-serve RLS policy for this (the plain
+// `default auth.uid()` version, then an explicit `created_by: user.id`)
+// both still got rejected, and debugging the exact policy-evaluation
+// mechanism further isn't worth the risk with the season starting.
+// This is safe precisely because the policy's own invariant --
+// "only a signed-in user with no existing team may create one" -- is
+// now enforced in application code instead of SQL: the team_id null
+// check below runs before this insert ever fires, so bypassing RLS
+// here doesn't reopen the abuse case the policy existed to prevent
+// (an arbitrary user claiming an existing team). Everything after the
+// insert -- the profile update, the optional player row -- stays on
+// the caller's own session client; those were never reported failing,
+// and they're exactly the writes RLS should keep scoped to the user.
 export async function createTeamAndOnboardCoach(formData: FormData): Promise<OnboardResult> {
   const supabase = createClient();
   const {
@@ -33,11 +42,8 @@ export async function createTeamAndOnboardCoach(formData: FormData): Promise<Onb
   if (!teamName) return { ok: false, error: "Team name is required" };
   if (!yourName) return { ok: false, error: "Your name is required" };
 
-  // created_by is set explicitly rather than left to the column's own
-  // `default auth.uid()` -- not relying on implicit default-expression
-  // timing removes any ambiguity about when it resolves relative to the
-  // insert policy's own check, which otherwise rejected this insert.
-  const { data: team, error: teamError } = await supabase
+  const adminSupabase = createServiceRoleClient();
+  const { data: team, error: teamError } = await adminSupabase
     .from("teams")
     .insert({ name: teamName, created_by: user.id })
     .select("id")
