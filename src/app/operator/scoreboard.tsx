@@ -42,6 +42,7 @@ export function Scoreboard({
   outs,
   balls,
   strikes,
+  showBallsStrikes = true,
   isLive,
   celebrateKey,
   celebrateTier,
@@ -57,6 +58,11 @@ export function Scoreboard({
   outs: number;
   balls: number;
   strikes: number;
+  // Urgent mobile fixes, Fix 3: Quick Mode never logs pitches, so balls
+  // and strikes are always 0 there -- showing two permanently-empty dot
+  // groups was misleading, not just unused chrome. Full mode (the
+  // default) is unaffected.
+  showBallsStrikes?: boolean;
   isLive: boolean;
   // Bumped by the caller every time a run scores in hitting mode --
   // remounts the score number's celebration animation (scale pulse + gold
@@ -110,8 +116,12 @@ export function Scoreboard({
 
       <div className="mt-1 flex items-center justify-between font-mono text-[11px]">
         <div className="flex items-center gap-2.5">
-          <DotGroup label="B" count={balls} color="#2ECC71" max={4} />
-          <DotGroup label="S" count={strikes} color="#E24B4A" />
+          {showBallsStrikes && (
+            <>
+              <DotGroup label="B" count={balls} color="#2ECC71" max={4} />
+              <DotGroup label="S" count={strikes} color="#E24B4A" />
+            </>
+          )}
           <DotGroup label="O" count={outs} color="#EF9F27" />
         </div>
 

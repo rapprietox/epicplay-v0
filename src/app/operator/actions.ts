@@ -228,6 +228,12 @@ export interface QuickAtBatInput {
   // this is captured at the same moment the at-bat is logged.
   outsBefore: number;
   rispBefore: boolean;
+  // Urgent mobile fixes, Fix 5: Quick Mode's own field-tap step (a
+  // simplified field-diagram overlay shown after a ball-in-play result,
+  // with a Skip option) -- null for anything skipped, or for a result
+  // that never had a landing spot to begin with (strikeout/walk/HBP).
+  fieldX?: number | null;
+  fieldY?: number | null;
 }
 
 export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: string }> {
@@ -252,6 +258,8 @@ export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: 
       scorebook_notation: input.scorebookNotation ?? null,
       outs_before: input.outsBefore,
       risp_before: input.rispBefore,
+      field_x: input.fieldX ?? null,
+      field_y: input.fieldY ?? null,
       confirmed_at: new Date().toISOString(),
     })
     .select("id")

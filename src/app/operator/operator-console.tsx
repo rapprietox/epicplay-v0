@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import type {
   AtBatResult,
@@ -75,7 +76,7 @@ import {
   undoAtBat,
 } from "./actions";
 import { StrikeZoneGrid, OUTCOME_COLOR, classifyZone } from "./strike-zone-grid";
-import { QuickModeGrid, type QuickModeButtonDef } from "./quick-mode-grid";
+import { QuickModeGrid, MobileQuickModeGrid, type QuickModeButtonDef } from "./quick-mode-grid";
 import { KairosVoiceButton } from "./kairos-voice-button";
 import { FieldDiagram } from "./field-diagram";
 import { BaserunnerDiamond } from "./baserunner-diamond";
@@ -86,6 +87,11 @@ import { ChainSubstitutionModal, type ChainResult } from "./chain-substitution-m
 import { PitchCountModal } from "./pitch-count-modal";
 import { PostGameSummary } from "./post-game-summary";
 import { StadiumBackground } from "@/components/stadium-background";
+
+// Urgent mobile fixes, Fix 5: the only Quick Mode results with no
+// landing spot to tap -- a strikeout/walk/HBP never puts the ball in
+// play at all.
+const NO_FIELD_TAP_RESULTS = new Set<AtBatResult>(["strikeout", "walk", "hbp"]);
 
 type Game = Database["public"]["Tables"]["games"]["Row"];
 type Season = Database["public"]["Tables"]["seasons"]["Row"];
@@ -285,8 +291,18 @@ export function OperatorConsole({
   useEffect(() => setPendingSync(pendingCount()), []);
 
   const [banner, setBanner] = useState<string | null>(null);
+  // Urgent mobile fixes, Fix 5: staged while the field-tap overlay is
+  // open -- cleared either by a real tap (resolveQuickFieldTap) or Skip
+  // (skipQuickFieldTap), both of which then actually call handleQuickPick.
+  const [pendingFieldTapPick, setPendingFieldTapPick] = useState<QuickModeButtonDef | null>(null);
   const [runnerPicker, setRunnerPicker] = useState<Base | null>(null);
   const [runnerActionMenu, setRunnerActionMenu] = useState<Base | null>(null);
+  // Urgent mobile fixes, Fix 4: captured at tap time so the menu can be
+  // portaled and anchored near the real tap point instead of centered
+  // in the right panel, where it was overflowing small phone screens.
+  const [runnerActionAnchor, setRunnerActionAnchor] = useState<{ clientX: number; clientY: number; topHalf: boolean; leftHalf: boolean } | null>(
+    null
+  );
   const [scoreMethodPrompt, setScoreMethodPrompt] = useState<{ base: Base; runner: RunnerState } | null>(null);
   // Fix 2: a generic "Out" on a runner now asks why before applying it --
   // "Picked Off" keeps its own unambiguous one-tap path unchanged (see
@@ -1574,12 +1590,14 @@ export function OperatorConsole({
 
     if (action === "scored" && !scoreMethod) {
       setRunnerActionMenu(null);
+      setRunnerActionAnchor(null);
       setScoreMethodPrompt({ base, runner });
       return;
     }
 
     dispatch({ type: "APPLY_RUNNER_ACTION", base, action, scoreMethod, forced });
     setRunnerActionMenu(null);
+    setRunnerActionAnchor(null);
     setScoreMethodPrompt(null);
 
     if (action === "advance" || action === "stolen_base") {
@@ -1958,7 +1976,10 @@ export function OperatorConsole({
   // results a plain Fly Out/Ground Out already produces; the interactive
   // queue is what actually decides whether anyone scored, for ANY
   // flyout/lineout, not just ones tapped through the "sac" buttons.
-  async function handleQuickPick(pick: { label: string; result: AtBatResult; hitType: HitType | null; isSac: boolean; scorebookNotation?: string }) {
+  async function handleQuickPick(
+    pick: { label: string; result: AtBatResult; hitType: HitType | null; isSac: boolean; scorebookNotation?: string },
+    fieldSpot: { x: number; y: number } | null
+  ) {
     if (state.outs >= 3) return;
     setBanner(null);
     const batter = currentBatterRunner();
@@ -1986,6 +2007,8 @@ export function OperatorConsole({
         scorebookNotation: pick.scorebookNotation ?? null,
         outsBefore: state.outs,
         rispBefore: Boolean(state.runners.second || state.runners.third),
+        fieldX: fieldSpot?.x ?? null,
+        fieldY: fieldSpot?.y ?? null,
       });
       dispatch({
         type: "QUICK_CONFIRM_LOCAL",
@@ -2013,6 +2036,35 @@ export function OperatorConsole({
     } catch (err) {
       setBanner(err instanceof Error ? err.message : "Failed to log at-bat -- check connection and try again");
     }
+  }
+
+  // Urgent mobile fixes, Fix 5: a ball in play (anything except
+  // strikeout/walk/HBP, none of which have a landing spot) now stages
+  // the pick and shows a one-tap field diagram before actually logging
+  // it, instead of logging immediately on the grid tap. "Skip" (or
+  // tapping nothing) still logs the at-bat -- field_x/field_y just stay
+  // null, same as any other at-bat nobody tapped a location for.
+  function startQuickPick(def: QuickModeButtonDef) {
+    if (state.outs >= 3) return;
+    if (NO_FIELD_TAP_RESULTS.has(def.result)) {
+      void handleQuickPick(def, null);
+      return;
+    }
+    setPendingFieldTapPick(def);
+  }
+
+  function resolveQuickFieldTap(x: number, y: number) {
+    if (!pendingFieldTapPick) return;
+    const pick = pendingFieldTapPick;
+    setPendingFieldTapPick(null);
+    void handleQuickPick(pick, { x, y });
+  }
+
+  function skipQuickFieldTap() {
+    if (!pendingFieldTapPick) return;
+    const pick = pendingFieldTapPick;
+    setPendingFieldTapPick(null);
+    void handleQuickPick(pick, null);
   }
 
   // Quick Mode scorekeeper batch: Double Play, entered by picking which
@@ -2531,7 +2583,7 @@ export function OperatorConsole({
             battedThisHalfInning={battedThisHalfInning}
             collapsed={lineupStripCollapsed}
             onToggleCollapsed={() => setLineupStripCollapsed((c) => !c)}
-            onPick={(def) => void handleQuickPick(def)}
+            onPick={startQuickPick}
             onDoublePlay={() => setQuickRunnerPrompt("doublePlay")}
             onStolenBase={() => setQuickRunnerPrompt("stolenBase")}
             onIbb={() => setIbbConfirmOpen(true)}
@@ -2741,6 +2793,7 @@ export function OperatorConsole({
               outs={state.outs}
               balls={state.balls}
               strikes={state.strikes}
+              showBallsStrikes={game.logging_mode !== "quick"}
               isLive={game.status === "active"}
               celebrateKey={scoreCelebrate.key}
               celebrateTier={scoreCelebrate.tier}
@@ -2917,8 +2970,17 @@ export function OperatorConsole({
               />
             )}
 
-            {rightPanelMode === "runnerAction" && runnerActionMenu && state.runners[runnerActionMenu] && (
-              <RunnerQuickActionMenu
+            {/* Urgent mobile fixes, Fix 4: this used to render inline,
+                centered in this panel -- which overflowed small phone
+                screens since it was never anchored or boundary-checked.
+                Moved to RunnerActionMenuPortal (below, near-identical
+                technique to strike-zone-grid.tsx's PopupPortal), so it's
+                omitted from this slot entirely now; nothing else needs
+                to render here in its place, the portal floats on top
+                regardless of what else the right panel is showing. */}
+            {rightPanelMode === "runnerAction" && runnerActionMenu && state.runners[runnerActionMenu] && runnerActionAnchor && (
+              <RunnerActionMenuPortal
+                anchor={runnerActionAnchor}
                 base={runnerActionMenu}
                 runner={state.runners[runnerActionMenu]!}
                 onAction={(a) => {
@@ -2929,16 +2991,21 @@ export function OperatorConsole({
                   if (a === "out") {
                     setOutReasonPrompt({ base: runnerActionMenu, runner: state.runners[runnerActionMenu]! });
                     setRunnerActionMenu(null);
+                    setRunnerActionAnchor(null);
                     return;
                   }
                   if (a === "advance") {
                     setAdvanceReasonPrompt({ base: runnerActionMenu, runner: state.runners[runnerActionMenu]! });
                     setRunnerActionMenu(null);
+                    setRunnerActionAnchor(null);
                     return;
                   }
                   applyRunnerAction(runnerActionMenu, a);
                 }}
-                onClose={() => setRunnerActionMenu(null)}
+                onClose={() => {
+                  setRunnerActionMenu(null);
+                  setRunnerActionAnchor(null);
+                }}
               />
             )}
 
@@ -3190,7 +3257,19 @@ export function OperatorConsole({
                 <BaserunnerDiamond
                   runners={state.runners}
                   pending={state.runnersPendingConfirmation}
-                  onBaseTap={(b) => (state.runners[b] ? setRunnerActionMenu(b) : setRunnerPicker(b))}
+                  onBaseTap={(b, e) => {
+                    if (state.runners[b]) {
+                      setRunnerActionMenu(b);
+                      setRunnerActionAnchor({
+                        clientX: e.clientX,
+                        clientY: e.clientY,
+                        topHalf: e.clientY < window.innerHeight / 2,
+                        leftHalf: e.clientX < window.innerWidth / 2,
+                      });
+                    } else {
+                      setRunnerPicker(b);
+                    }
+                  }}
                 />
               </div>
             )}
@@ -3508,6 +3587,37 @@ export function OperatorConsole({
           onEndInning={confirmEndInning}
         />
       )}
+
+      {/* Urgent mobile fixes, Fix 5. */}
+      {pendingFieldTapPick && <QuickFieldTapModal label={pendingFieldTapPick.label} onTap={resolveQuickFieldTap} onSkip={skipQuickFieldTap} />}
+    </div>
+  );
+}
+
+// Urgent mobile fixes, Fix 5: a lighter-weight version of Full Mode's
+// own field-tap step -- one FieldDiagram (same field-2d.png component,
+// same 0-100 tap math, so this builds the exact same spray-chart data),
+// a Skip button for "too fast to see" or "don't know," and nothing
+// else. Quick Mode never asks for hit type/fielding credit the way
+// Full Mode does -- this is deliberately just the one piece (location)
+// the request asked for.
+function QuickFieldTapModal({ label, onTap, onSkip }: { label: string; onTap: (x: number, y: number) => void; onSkip: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#030A06]/95 p-4">
+      <div className="glossy w-full max-w-sm rounded-lg border border-accent-primary/50 bg-card p-4 text-center">
+        <p className="font-heading text-lg font-bold text-white">{label} — where did it land?</p>
+        <p className="mt-1 text-xs text-foreground/50">Tap the spot on the field, or skip if you&apos;re not sure.</p>
+        <div className="mt-3 flex justify-center">
+          <FieldDiagram tap={null} onTap={onTap} />
+        </div>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="mt-3 min-h-[48px] w-full rounded-md border border-border text-sm font-medium text-foreground/70 hover:border-accent-primary hover:text-white"
+        >
+          Skip
+        </button>
+      </div>
     </div>
   );
 }
@@ -3645,13 +3755,20 @@ function QuickModeLeftPanel({
             ?
           </button>
         </div>
-        <p className="text-[11px] text-foreground/50">
-          {state.mode === "hitting"
-            ? `#${battingPlayerInfo?.jersey_number ?? "—"} ${battingPlayerInfo?.name ?? "Batter"}`
-            : state.opponentBatterName || "Opposing batter"}
-          {" · "}
-          {state.inningHalf.toUpperCase()} {state.inning} · {state.outs} out{state.outs === 1 ? "" : "s"}
-        </p>
+        {/* Urgent mobile fixes, Fix 6: the batter name used to share one
+            11px line with the inning/outs info -- split so the name
+            itself can hit the requested 24px minimum without also
+            blowing up the smaller supporting info next to it. */}
+        <div className="text-right">
+          <p className="font-heading text-[24px] font-bold leading-tight text-white">
+            {state.mode === "hitting"
+              ? `#${battingPlayerInfo?.jersey_number ?? "—"} ${battingPlayerInfo?.name ?? "Batter"}`
+              : state.opponentBatterName || "Opposing batter"}
+          </p>
+          <p className="text-[11px] text-foreground/50">
+            {state.inningHalf.toUpperCase()} {state.inning} · {state.outs} out{state.outs === 1 ? "" : "s"}
+          </p>
+        </div>
       </div>
 
       {showGlossary && (
@@ -3720,29 +3837,67 @@ function QuickModeLeftPanel({
       )}
 
       <div className="mt-2 flex-1 overflow-y-auto pb-2">
-        <QuickModeGrid onPick={onPick} disabled={state.outs >= 3} />
+        {/* Urgent mobile fixes, Fix 1: a dense 4x4 grid of the most
+            common outcomes (including Double Play/IBB, which used to
+            live further down the page) so a phone screen shows every
+            common play with no scrolling. Less common actions move to
+            a small "More" strip right below it -- still on this same
+            screen, just not in the primary no-scroll view. */}
+        <div className="sm:hidden">
+          <MobileQuickModeGrid
+            onPick={onPick}
+            onDoublePlay={onDoublePlay}
+            onIbb={onIbb}
+            disabled={state.outs >= 3}
+            dpDisabled={state.outs > 1 || !anyRunnerOnBase}
+          />
+          <p className="mb-1 mt-3 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">More</p>
+          <div className="flex flex-wrap gap-3">
+            <QuickButton
+              label="Foul Out"
+              onClick={() => onPick({ label: "Foul Out", result: "flyout", hitType: null, isSac: false, scorebookNotation: "Foul Out" })}
+              disabled={state.outs >= 3}
+              className="flex-1"
+            />
+            <QuickButton
+              label="Sac Bunt"
+              onClick={() => onPick({ label: "Sac Bunt", result: "groundout", hitType: "bunt", isSac: true })}
+              disabled={state.outs >= 3}
+              className="flex-1"
+            />
+            <QuickButton label="Stolen Base" onClick={onStolenBase} disabled={!anyRunnerOnBase} className="flex-1" />
+            <QuickButton label="Wild Pitch" onClick={onWildPitch} disabled={!anyRunnerOnBase} className="flex-1" />
+            <QuickButton label="Passed Ball" onClick={onPassedBall} disabled={!anyRunnerOnBase} className="flex-1" />
+            <QuickButton label="Balk" onClick={onBalk} disabled={!anyRunnerOnBase} className="flex-1" />
+          </div>
+        </div>
 
-        {/* Double Play needs a follow-up "which runner" pick (see
-            quickRunnerPrompt in the shared right panel), so it isn't a
-            flat QuickModeGrid button like the others -- it can't resolve
-            in one tap. Disabled past 1 out (a double play always records
-            2, which would overflow 3) or with nobody on base. */}
-        <button
-          type="button"
-          disabled={state.outs > 1 || !anyRunnerOnBase}
-          onClick={onDoublePlay}
-          className="glossy mt-2 min-h-[48px] w-full rounded-md border-2 border-accent-amber px-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-accent-amber/20 disabled:cursor-not-allowed disabled:opacity-30"
-        >
-          Double Play
-        </button>
+        {/* Desktop/tablet: unchanged from before this batch. */}
+        <div className="hidden sm:block">
+          <QuickModeGrid onPick={onPick} disabled={state.outs >= 3} />
 
-        <p className="mb-1 mt-3 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">Special plays</p>
-        <div className="flex flex-wrap gap-2">
-          <QuickButton label="Stolen Base" onClick={onStolenBase} disabled={!anyRunnerOnBase} className="flex-1" />
-          <QuickButton label="IBB" onClick={onIbb} disabled={state.outs >= 3} className="flex-1" />
-          <QuickButton label="Wild Pitch" onClick={onWildPitch} disabled={!anyRunnerOnBase} className="flex-1" />
-          <QuickButton label="Passed Ball" onClick={onPassedBall} disabled={!anyRunnerOnBase} className="flex-1" />
-          <QuickButton label="Balk" onClick={onBalk} disabled={!anyRunnerOnBase} className="flex-1" />
+          {/* Double Play needs a follow-up "which runner" pick (see
+              quickRunnerPrompt in the shared right panel), so it isn't a
+              flat QuickModeGrid button like the others -- it can't resolve
+              in one tap. Disabled past 1 out (a double play always records
+              2, which would overflow 3) or with nobody on base. */}
+          <button
+            type="button"
+            disabled={state.outs > 1 || !anyRunnerOnBase}
+            onClick={onDoublePlay}
+            className="glossy mt-2 min-h-[48px] w-full rounded-md border-2 border-accent-amber px-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-accent-amber/20 disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            Double Play
+          </button>
+
+          <p className="mb-1 mt-3 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">Special plays</p>
+          <div className="flex flex-wrap gap-2">
+            <QuickButton label="Stolen Base" onClick={onStolenBase} disabled={!anyRunnerOnBase} className="flex-1" />
+            <QuickButton label="IBB" onClick={onIbb} disabled={state.outs >= 3} className="flex-1" />
+            <QuickButton label="Wild Pitch" onClick={onWildPitch} disabled={!anyRunnerOnBase} className="flex-1" />
+            <QuickButton label="Passed Ball" onClick={onPassedBall} disabled={!anyRunnerOnBase} className="flex-1" />
+            <QuickButton label="Balk" onClick={onBalk} disabled={!anyRunnerOnBase} className="flex-1" />
+          </div>
         </div>
       </div>
 
@@ -3939,7 +4094,12 @@ function QuickButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`h-10 rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground/80 hover:border-accent-primary hover:text-white disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
+      // Urgent mobile fixes, Fix 6: 48px minimum on mobile (h-12); the
+      // existing h-10 (40px) compact-footer sizing -- a deliberate
+      // exception to this app's usual 48px tap-target rule, see the
+      // Pickoff/Substitution row's own history -- still applies from
+      // the sm breakpoint up, unchanged.
+      className={`h-12 sm:h-10 rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground/80 hover:border-accent-primary hover:text-white disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
     >
       {label}
     </button>
@@ -4095,6 +4255,70 @@ const RUNNER_QUICK_ACTIONS: { action: RunnerQuickAction; label: string }[] = [
 // size batch): min-w/button-height/text size are now explicit tap-target
 // and readability minimums per spec, not just "whatever max-w-xs and
 // text-xs happen to produce."
+// Urgent mobile fixes, Fix 4. Same technique as strike-zone-grid.tsx's
+// PopupPortal: portaled straight to <body>, position: fixed in real
+// viewport pixels, anchored on whichever side of the tap point keeps
+// it on-screen (below/above by topHalf, left/right-anchored by
+// leftHalf), then a post-render getBoundingClientRect() check nudges it
+// back in if it still overflows -- a pure CSS quadrant guess can't know
+// the menu's actual rendered size, only measuring it after paint can
+// guarantee "always fully visible." 16px margin per spec (strike-zone's
+// own popup used 8px for a smaller popup; this one asked for 16px
+// explicitly).
+function RunnerActionMenuPortal({
+  anchor,
+  base,
+  runner,
+  onAction,
+  onClose,
+}: {
+  anchor: { clientX: number; clientY: number; topHalf: boolean; leftHalf: boolean };
+  base: Base;
+  runner: RunnerState;
+  onAction: (action: RunnerQuickAction) => void;
+  onClose: () => void;
+}) {
+  const popupRef = useRef<HTMLDivElement>(null);
+  const [nudge, setNudge] = useState({ dx: 0, dy: 0 });
+
+  useLayoutEffect(() => {
+    setNudge({ dx: 0, dy: 0 });
+    const el = popupRef.current;
+    if (!el) return;
+    const margin = 16;
+    const rect = el.getBoundingClientRect();
+    let dx = 0;
+    let dy = 0;
+    if (rect.left < margin) dx = margin - rect.left;
+    else if (rect.right > window.innerWidth - margin) dx = window.innerWidth - margin - rect.right;
+    if (rect.top < margin) dy = margin - rect.top;
+    else if (rect.bottom > window.innerHeight - margin) dy = window.innerHeight - margin - rect.bottom;
+    if (dx !== 0 || dy !== 0) setNudge({ dx, dy });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor.clientX, anchor.clientY, anchor.topHalf, anchor.leftHalf]);
+
+  if (typeof document === "undefined") return null;
+
+  const gap = 8;
+  const baseTransform = `translate(${anchor.leftHalf ? "0" : "-100%"}, ${anchor.topHalf ? `${gap}px` : `calc(-100% - ${gap}px)`})`;
+
+  return createPortal(
+    <div
+      ref={popupRef}
+      className="fixed z-50"
+      style={{
+        left: anchor.clientX,
+        top: anchor.clientY,
+        transform: `${baseTransform} translate(${nudge.dx}px, ${nudge.dy}px)`,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <RunnerQuickActionMenu base={base} runner={runner} onAction={onAction} onClose={onClose} />
+    </div>,
+    document.body
+  );
+}
+
 function RunnerQuickActionMenu({
   base,
   runner,

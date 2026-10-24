@@ -33,7 +33,12 @@ export function BaserunnerDiamond({
 }: {
   runners: Runners;
   pending?: boolean;
-  onBaseTap: (base: "first" | "second" | "third") => void;
+  // Urgent mobile fixes, Fix 4: the event is passed through so the
+  // caller can anchor the runner-action menu at the real tap point
+  // (clientX/clientY), the same way the strike-zone grid's own popup
+  // already does -- a plain base name alone wasn't enough to position
+  // anything near the tap.
+  onBaseTap: (base: "first" | "second" | "third", e: React.MouseEvent) => void;
 }) {
   return (
     <svg viewBox="0 0 200 200" className="h-full w-full">
@@ -53,7 +58,7 @@ export function BaserunnerDiamond({
         // the dot is "who exactly."
         const fill = runner ? (pending ? "#EF9F27" : "#2ECC71") : "#0A2214";
         return (
-          <g key={base} onClick={() => onBaseTap(base)} className="cursor-pointer">
+          <g key={base} onClick={(e) => onBaseTap(base, e)} className="cursor-pointer">
             <rect
               x={pos.x - BASE_HALF}
               y={pos.y - BASE_HALF}

@@ -364,6 +364,10 @@ export function LineupBuilder({
                   draggable
                   onDragStart={(e) => handleDragStart(e, p.id)}
                   onDragEnd={() => setDragOver(null)}
+                  // Urgent mobile fixes, Fix 2: stops the browser's own
+                  // touch-scroll gesture from competing with a drag that
+                  // starts on this element.
+                  style={{ touchAction: "none" }}
                   className="flex-1 cursor-grab rounded-md border border-border bg-background/40 px-3 py-1.5 text-sm text-white transition hover:border-accent-primary active:cursor-grabbing"
                 >
                   #{p.jersey_number ?? "—"} {p.name}
@@ -532,6 +536,7 @@ export function LineupBuilder({
                   setDraggedOrderIndex(null);
                   setDragOverOrderIndex(null);
                 }}
+                style={{ touchAction: "none" }}
                 className={`flex cursor-grab items-center gap-2 rounded-md border px-2 py-1.5 text-sm transition active:cursor-grabbing ${
                   dragOverOrderIndex === i ? "border-accent-gold bg-accent-gold/10" : "border-transparent hover:border-border"
                 }`}
