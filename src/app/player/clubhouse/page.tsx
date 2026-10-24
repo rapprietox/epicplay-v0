@@ -13,6 +13,7 @@ import { recentGamesAvg, currentHitStreak, streakStatus } from "@/lib/streaks";
 import { computeHeadToHead } from "@/lib/head-to-head";
 import { computeMilestones } from "@/lib/milestones";
 import { ClubhouseHeader } from "./header";
+import { ClubhouseNavBar } from "./clubhouse-nav-bar";
 import { PregameCard } from "./pregame-card";
 import { GameHistory } from "./game-history";
 import { ProSection } from "./pro-section";
@@ -201,8 +202,9 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   }
 
   return (
-    <main className="min-h-screen bg-background px-4 py-8 sm:px-6">
-      <div className="mx-auto flex max-w-3xl flex-col gap-6">
+    <main className="min-h-screen bg-background">
+      <ClubhouseNavBar />
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6">
         <ClubhouseHeader player={player} teamName={team?.name ?? "Team"} line={seasonLine} />
 
         <PregameCard todaysGame={todaysGame} message={pregameMessage} lastGame={gameHistoryRows[0] ?? null} />
