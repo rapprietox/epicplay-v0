@@ -33,7 +33,15 @@ export async function createTeamAndOnboardCoach(formData: FormData): Promise<Onb
   if (!teamName) return { ok: false, error: "Team name is required" };
   if (!yourName) return { ok: false, error: "Your name is required" };
 
-  const { data: team, error: teamError } = await supabase.from("teams").insert({ name: teamName }).select("id").single();
+  // created_by is set explicitly rather than left to the column's own
+  // `default auth.uid()` -- not relying on implicit default-expression
+  // timing removes any ambiguity about when it resolves relative to the
+  // insert policy's own check, which otherwise rejected this insert.
+  const { data: team, error: teamError } = await supabase
+    .from("teams")
+    .insert({ name: teamName, created_by: user.id })
+    .select("id")
+    .single();
   if (teamError || !team) return { ok: false, error: teamError?.message ?? "Failed to create team -- try again?" };
 
   const { error: profileError } = await supabase
