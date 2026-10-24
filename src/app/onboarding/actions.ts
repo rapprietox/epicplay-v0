@@ -12,20 +12,24 @@ export type OnboardResult = { ok: true } | { ok: false; error: string };
 // production builds, the same gotcha already fixed in redeemPromoCode
 // (src/app/player/clubhouse/actions.ts).
 //
-// The teams insert now goes through the service-role client, bypassing
-// RLS -- two attempts at a self-serve RLS policy for this (the plain
-// `default auth.uid()` version, then an explicit `created_by: user.id`)
-// both still got rejected, and debugging the exact policy-evaluation
-// mechanism further isn't worth the risk with the season starting.
-// This is safe precisely because the policy's own invariant --
-// "only a signed-in user with no existing team may create one" -- is
-// now enforced in application code instead of SQL: the team_id null
-// check below runs before this insert ever fires, so bypassing RLS
-// here doesn't reopen the abuse case the policy existed to prevent
-// (an arbitrary user claiming an existing team). Everything after the
-// insert -- the profile update, the optional player row -- stays on
-// the caller's own session client; those were never reported failing,
-// and they're exactly the writes RLS should keep scoped to the user.
+// Both the teams insert AND the role/team_id profile update now go
+// through the service-role client, bypassing RLS for both -- the
+// self-serve RLS policies for each (20261018100001_self_serve_coach_onboarding.sql)
+// were rejected in practice despite looking correct on paper, and
+// debugging the exact policy-evaluation mechanism further isn't worth
+// the risk with the season starting. Those two policies are effectively
+// unused now, not removed -- harmless to leave in place. This is safe
+// precisely because the policies' own invariant -- "only a signed-in
+// user with no existing team may become its coach" -- is enforced in
+// application code instead of SQL: the team_id null check below runs
+// before either write fires, so bypassing RLS here doesn't reopen the
+// abuse case the policies existed to prevent (an arbitrary user
+// claiming an existing team, or promoting themselves to coach of one).
+// The optional player row (and the player_id update after it) stays on
+// the caller's own session client -- by that point the profiles row
+// already reflects role='coach', so the existing "players: coach/
+// operator write" / "profiles: coach updates team" policies apply
+// normally, regardless of which client made the earlier writes.
 export async function createTeamAndOnboardCoach(formData: FormData): Promise<OnboardResult> {
   const supabase = createClient();
   const {
@@ -50,7 +54,7 @@ export async function createTeamAndOnboardCoach(formData: FormData): Promise<Onb
     .single();
   if (teamError || !team) return { ok: false, error: teamError?.message ?? "Failed to create team -- try again?" };
 
-  const { error: profileError } = await supabase
+  const { error: profileError } = await adminSupabase
     .from("profiles")
     .update({ role: "coach", team_id: team.id, full_name: yourName })
     .eq("id", user.id);
