@@ -32,13 +32,37 @@ export default async function ScorebookPage({ params }: { params: { id: string }
   const { data: game } = await supabase.from("games").select("*").eq("id", params.id).eq("team_id", profile.team_id).single();
   if (!game) notFound();
 
-  const [{ data: team }, { data: lineup }, { data: players }, { data: hittingAtBats }, { data: pitchingAtBats }] = await Promise.all([
+  const [{ data: team }, { data: lineup }, { data: players }, { data: hittingAtBats }, { data: pitchingAtBats }, { data: substitutions }] = await Promise.all([
     supabase.from("teams").select("name").eq("id", profile.team_id).single(),
     supabase.from("lineup").select("*").eq("game_id", game.id).eq("status", "starting").order("batting_order"),
     supabase.from("players").select("id, name, jersey_number").eq("team_id", profile.team_id),
     supabase.from("at_bats").select("*").eq("game_id", game.id).eq("mode", "hitting").not("confirmed_at", "is", null),
     supabase.from("at_bats").select("*").eq("game_id", game.id).eq("mode", "pitching").not("confirmed_at", "is", null),
+    supabase.from("substitutions").select("player_out_id, player_in_id").eq("game_id", game.id),
   ]);
+
+  // Bug fix: a substituted-in player keeps batting in the SAME lineup
+  // slot as whoever they replaced, but `lineup` only ever has one row
+  // per slot (the starter -- substitutions are their own table, not a
+  // second lineup row). Every cell below used to be looked up by
+  // slot.player_id alone, so a sub's at-bats (and steals) -- same
+  // batting_order_position, different player_id -- never matched
+  // anything and silently never rendered. Walking the substitution chain
+  // from each starter gives every player_id that ever occupied this
+  // slot, so their at-bats/steals/strikeouts can all be folded into the
+  // one row a paper scorebook would actually use for that batting spot.
+  const subInByOutId = new Map((substitutions ?? []).map((s) => [s.player_out_id, s.player_in_id]));
+  function playerIdChainFor(startingPlayerId: string): string[] {
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let current: string | null = startingPlayerId;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      chain.push(current);
+      current = subInByOutId.get(current) ?? null;
+    }
+    return chain;
+  }
 
   const allAtBatIds = [...(hittingAtBats ?? []), ...(pitchingAtBats ?? [])].map((ab) => ab.id);
   const [{ data: pitches }, { data: stolenBases }, { data: gameEvents }] = await Promise.all([
@@ -66,7 +90,9 @@ export default async function ScorebookPage({ params }: { params: { id: string }
 
   // One cell per (batter, inning) -- a batter rarely bats twice in the
   // same numbered inning, but a big inning can do it; joined with " / "
-  // rather than picked/overwritten so nothing silently disappears.
+  // rather than picked/overwritten so nothing silently disappears. Keyed
+  // by player_id (unchanged) -- the render side now also checks every
+  // id in the slot's substitution chain, not just the starter's.
   const cellsByPlayerInning = new Map<string, AtBat[]>();
   for (const ab of hittingAtBats ?? []) {
     if (!ab.player_id) continue;
@@ -224,19 +250,31 @@ export default async function ScorebookPage({ params }: { params: { id: string }
             </thead>
             <tbody>
               {(lineup ?? []).map((slot, i) => {
-                const p = playerById.get(slot.player_id);
-                const line = battingLines.get(slot.player_id);
+                const chain = playerIdChainFor(slot.player_id);
+                const displayName = chain
+                  .map((pid) => {
+                    const p = playerById.get(pid);
+                    return p ? `#${p.jersey_number ?? "—"} ${p.name}` : "Player";
+                  })
+                  .join(" → ");
+                const line = chain.reduce(
+                  (acc, pid) => {
+                    const l = battingLines.get(pid);
+                    if (!l) return acc;
+                    return { ab: acc.ab + l.ab, runsScored: acc.runsScored + l.runsScored, h: acc.h + l.h, rbi: acc.rbi + l.rbi, bb: acc.bb + l.bb };
+                  },
+                  { ab: 0, runsScored: 0, h: 0, rbi: 0, bb: 0 }
+                );
+                const k = (hittingAtBats ?? []).filter((ab) => chain.includes(ab.player_id ?? "") && ab.result === "strikeout").length;
                 return (
                   <tr key={slot.id} className={`border-b border-black/30 ${i % 2 === 1 ? "bg-black/5" : ""}`}>
                     <td className="border-r border-black/30 py-1 text-center">{slot.batting_order}</td>
-                    <td className="border-r border-black/30 py-1 pl-1">
-                      #{p?.jersey_number ?? "—"} {p?.name ?? "Player"}
-                    </td>
+                    <td className="border-r border-black/30 py-1 pl-1">{displayName}</td>
                     <td className="border-r border-black/30 py-1 text-center">{slot.position}</td>
                     {innings.map((inning) => {
-                      const cellAtBats = cellsByPlayerInning.get(`${slot.player_id}-${inning}`) ?? [];
-                      const sb = sbByPlayerInning.get(`${slot.player_id}-${inning}`) ?? 0;
-                      const cs = csByPlayerInning.get(`${slot.player_id}-${inning}`) ?? 0;
+                      const cellAtBats = chain.flatMap((pid) => cellsByPlayerInning.get(`${pid}-${inning}`) ?? []);
+                      const sb = chain.reduce((sum, pid) => sum + (sbByPlayerInning.get(`${pid}-${inning}`) ?? 0), 0);
+                      const cs = chain.reduce((sum, pid) => sum + (csByPlayerInning.get(`${pid}-${inning}`) ?? 0), 0);
                       return (
                         <td key={inning} className="border-r border-black/30 p-0.5 align-top">
                           <div className="flex flex-col items-center gap-0.5">
@@ -249,14 +287,12 @@ export default async function ScorebookPage({ params }: { params: { id: string }
                         </td>
                       );
                     })}
-                    <td className="border-r border-black/30 py-1 text-center font-mono">{line?.ab ?? 0}</td>
-                    <td className="border-r border-black/30 py-1 text-center font-mono">{line?.runsScored ?? 0}</td>
-                    <td className="border-r border-black/30 py-1 text-center font-mono">{line?.h ?? 0}</td>
-                    <td className="border-r border-black/30 py-1 text-center font-mono">{line?.rbi ?? 0}</td>
-                    <td className="border-r border-black/30 py-1 text-center font-mono">{line?.bb ?? 0}</td>
-                    <td className="py-1 text-center font-mono">
-                      {(hittingAtBats ?? []).filter((ab) => ab.player_id === slot.player_id && ab.result === "strikeout").length}
-                    </td>
+                    <td className="border-r border-black/30 py-1 text-center font-mono">{line.ab}</td>
+                    <td className="border-r border-black/30 py-1 text-center font-mono">{line.runsScored}</td>
+                    <td className="border-r border-black/30 py-1 text-center font-mono">{line.h}</td>
+                    <td className="border-r border-black/30 py-1 text-center font-mono">{line.rbi}</td>
+                    <td className="border-r border-black/30 py-1 text-center font-mono">{line.bb}</td>
+                    <td className="py-1 text-center font-mono">{k}</td>
                   </tr>
                 );
               })}
@@ -289,7 +325,9 @@ export default async function ScorebookPage({ params }: { params: { id: string }
         <p className="mt-2 text-[9px] italic text-black/50">
           LOB is a best-effort approximation (runners on base created minus runs scored minus recorded runner outs this inning) -- this
           schema does not store an authoritative per-inning left-on-base count. Diamond marks show each batter&apos;s own plate-appearance
-          outcome; a runner&apos;s eventual run on a later teammate&apos;s at-bat is not linked back to the original cell.
+          outcome; a runner&apos;s eventual run on a later teammate&apos;s at-bat is not linked back to the original cell. A row shows every
+          player who batted in that lineup spot (e.g. &quot;#2 Christian Cris &rarr; #43 Ruben Prieto&quot;) -- substitutions share the
+          starter&apos;s row rather than getting a row of their own, matching how a paper scorebook tracks a batting slot.
         </p>
 
         <div className="mt-5">
