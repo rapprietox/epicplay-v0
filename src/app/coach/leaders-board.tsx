@@ -35,53 +35,55 @@ interface Leader {
   playerJersey: number | null;
 }
 
-// Fix 1 (tied leaders): collects EVERY player tied at the best value,
-// not just the first one encountered -- the old version kept whichever
-// player happened to come first in `players` order on a tie, silently
-// hiding the others. A leading value of 0 (nobody's hit a HR yet, a
-// pitcher with a 0.00 ERA included -- per the request's own example)
-// is treated as "no leader" rather than crowning whoever happens to
-// have the first 0 in roster order.
-function pickLeaders<T>(
+interface RankedPlayer extends Leader {
+  value: number;
+}
+
+export interface LeaderRow {
+  label: string;
+  value: number | null;
+  leaders: Leader[];
+  ranking: RankedPlayer[];
+  format: (v: number) => string;
+  lowerIsBetter: boolean;
+}
+
+// Full ranking fix: every qualifying player, best to worst -- the card
+// only ever needs the leader(s), but the "view full leaderboard" modal
+// needs everyone else too, so this is computed once and both the card
+// and the modal read from the same list rather than two separate passes.
+function buildRanking<T>(
   players: Player[],
   lines: Map<string, T>,
   getValue: (line: T) => number,
   hasQualified: (line: T) => boolean,
   lowerIsBetter: boolean
-): { value: number | null; leaders: Leader[] } {
-  let bestValue: number | null = null;
+): RankedPlayer[] {
+  const entries: RankedPlayer[] = [];
   for (const player of players) {
     const line = lines.get(player.id);
     if (!line || !hasQualified(line)) continue;
     const value = getValue(line);
     if (!Number.isFinite(value)) continue;
-    if (bestValue === null || (lowerIsBetter ? value < bestValue : value > bestValue)) {
-      bestValue = value;
-    }
+    entries.push({ playerId: player.id, playerName: player.name, playerJersey: player.jersey_number, value });
   }
-  if (bestValue === null || bestValue === 0) return { value: null, leaders: [] };
-
-  const leaders: Leader[] = [];
-  for (const player of players) {
-    const line = lines.get(player.id);
-    if (!line || !hasQualified(line)) continue;
-    if (getValue(line) === bestValue) {
-      leaders.push({ playerId: player.id, playerName: player.name, playerJersey: player.jersey_number });
-    }
-  }
-  return { value: bestValue, leaders };
+  entries.sort((a, b) => (lowerIsBetter ? a.value - b.value : b.value - a.value));
+  return entries;
 }
 
-function buildRows(
-  players: Player[],
-  battingLines: Map<string, BattingLine>,
-  pitchingLines: Map<string, PitchingLine>
-): {
-  label: string;
-  value: number | null;
-  leaders: Leader[];
-  format: (v: number) => string;
-}[] {
+// A leading value of 0 (nobody's hit a HR yet, a pitcher with a 0.00
+// ERA included -- per the request's own example) is treated as "no
+// leader" on the card rather than crowning whoever happens to sort
+// first at 0 -- the full ranking (for the modal) still lists everyone,
+// zeroes included, since a complete leaderboard is a different thing
+// than "who's the card's one leader."
+function leadersFromRanking(ranking: RankedPlayer[]): { value: number | null; leaders: Leader[] } {
+  const topValue = ranking[0]?.value ?? null;
+  if (topValue === null || topValue === 0) return { value: null, leaders: [] };
+  return { value: topValue, leaders: ranking.filter((r) => r.value === topValue) };
+}
+
+function buildRows(players: Player[], battingLines: Map<string, BattingLine>, pitchingLines: Map<string, PitchingLine>): LeaderRow[] {
   const battingHasAb = (l: BattingLine) => l.ab > 0;
   const battingHasPa = (l: BattingLine) => l.ab + l.bb + l.hbp > 0;
   const pitchingHasIp = (l: PitchingLine) => l.ip > 0;
@@ -118,14 +120,17 @@ function buildRows(
     { label: "Innings Pitched", get: (l) => l.ip, qualifies: pitchingHasIp, format: (v) => v.toFixed(1) },
   ];
 
-  const rows = battingSpecs.map((spec) => {
-    const { value, leaders } = pickLeaders(players, battingLines, spec.get, spec.qualifies, false);
-    return { label: spec.label, value, leaders, format: spec.format };
+  const rows: LeaderRow[] = battingSpecs.map((spec) => {
+    const ranking = buildRanking(players, battingLines, spec.get, spec.qualifies, false);
+    const { value, leaders } = leadersFromRanking(ranking);
+    return { label: spec.label, value, leaders, ranking, format: spec.format, lowerIsBetter: false };
   });
 
   for (const spec of pitchingSpecs) {
-    const { value, leaders } = pickLeaders(players, pitchingLines, spec.get, spec.qualifies, !!spec.lowerIsBetter);
-    rows.push({ label: spec.label, value, leaders, format: spec.format });
+    const lowerIsBetter = !!spec.lowerIsBetter;
+    const ranking = buildRanking(players, pitchingLines, spec.get, spec.qualifies, lowerIsBetter);
+    const { value, leaders } = leadersFromRanking(ranking);
+    rows.push({ label: spec.label, value, leaders, ranking, format: spec.format, lowerIsBetter });
   }
 
   return rows;
@@ -139,6 +144,12 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
   // together, not three separate views.
   const [timeOfDayFilter, setTimeOfDayFilter] = useState<TimeOfDay | "all">("all");
   const [dayTypeFilter, setDayTypeFilter] = useState<DayType | "all">("all");
+  // Leaderboard modal fix: a stat card used to link straight to the
+  // single leader's player page, which made a tie meaningless (nowhere
+  // to click) and hid everyone else's rank entirely. Every card now
+  // opens this modal instead -- navigation only ever happens from an
+  // individual player row inside it.
+  const [selectedStat, setSelectedStat] = useState<LeaderRow | null>(null);
 
   const matchingGameIds = useMemo(() => {
     const ids = new Set<string>();
@@ -280,18 +291,88 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
             </StatDivider>
           );
 
-          // A single leader links to their player page; a tie has no one
-          // destination to send the whole card to, so it stays plain.
-          return row.leaders.length === 1 ? (
-            <Link key={row.label} href={`/coach/players/${row.leaders[0].playerId}`} className="block transition hover:brightness-110">
+          // Every card opens the full leaderboard modal now -- no more
+          // linking straight to a single player's page from here.
+          return (
+            <button
+              key={row.label}
+              type="button"
+              onClick={() => setSelectedStat(row)}
+              className="block w-full text-left transition hover:brightness-110"
+            >
               {inner}
-            </Link>
-          ) : (
-            <div key={row.label}>{inner}</div>
+            </button>
           );
         })}
       </div>
+
+      {selectedStat && <LeaderboardModal row={selectedStat} onClose={() => setSelectedStat(null)} />}
     </section>
+  );
+}
+
+// Leaderboard modal fix: every qualifying player ranked for the clicked
+// stat, with a bar scaled relative to the leader -- for a lowerIsBetter
+// stat (ERA/WHIP) that's leaderValue/value (leader's own ratio is 1, a
+// worse/higher value shrinks it), otherwise the plain value/leaderValue
+// ratio. leaderValue === 0 is special-cased either way to avoid a 0/0 or
+// a misleadingly-full bar for a value that isn't actually the best.
+function barPct(value: number, leaderValue: number, lowerIsBetter: boolean): number {
+  if (leaderValue === 0) return lowerIsBetter ? (value === 0 ? 100 : 0) : 0;
+  const ratio = lowerIsBetter ? leaderValue / value : value / leaderValue;
+  return Math.max(0, Math.min(100, ratio * 100));
+}
+
+function LeaderboardModal({ row, onClose }: { row: LeaderRow; onClose: () => void }) {
+  const leaderValue = row.ranking[0]?.value ?? 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <div
+        className="glossy max-h-[80vh] w-full max-w-md overflow-y-auto rounded-lg border-2 p-5"
+        style={{ backgroundColor: "#080E08", borderColor: "#2ECC71" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-heading text-xl font-bold uppercase tracking-wide text-white">{row.label}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-md px-2 py-1 text-foreground/50 transition hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+
+        {row.ranking.length === 0 ? (
+          <p className="mt-4 text-sm text-foreground/50">No qualifying players yet.</p>
+        ) : (
+          <div className="mt-4 flex flex-col gap-2">
+            {row.ranking.map((r, i) => (
+              <Link
+                key={r.playerId}
+                href={`/coach/players/${r.playerId}`}
+                onClick={onClose}
+                className="flex items-center gap-3 rounded-md px-2 py-2 transition hover:bg-white/5"
+              >
+                <span className="w-5 shrink-0 text-right text-xs text-foreground/40">{i + 1}</span>
+                <span className="w-24 shrink-0 truncate text-sm text-white">
+                  <span style={{ color: "#F0C060" }}>#{r.playerJersey ?? "—"}</span> {r.playerName}
+                </span>
+                <span className="relative h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                  <span
+                    className="absolute inset-y-0 left-0 rounded-full"
+                    style={{ width: `${barPct(r.value, leaderValue, row.lowerIsBetter)}%`, backgroundColor: "#2ECC71" }}
+                  />
+                </span>
+                <span className="w-12 shrink-0 text-right font-mono text-sm text-accent-gold">{row.format(r.value)}</span>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
