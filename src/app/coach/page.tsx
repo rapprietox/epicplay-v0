@@ -79,6 +79,7 @@ export default async function CoachPage() {
     lastZoneByAtBat.set(ab.id, last && last.zone_x !== null && last.zone_y !== null ? zoneIndexFromCoords(last.zone_x, last.zone_y) : null);
   }
   const gameById = new Map(allGames.map((g) => [g.id, g]));
+  const playerById = new Map((players ?? []).map((p) => [p.id, p]));
 
   const teamZoneAtBats: AtBatWithZone[] = confirmedAtBats
     .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null && ab.mode === "hitting")
@@ -92,13 +93,18 @@ export default async function CoachPage() {
   const hittingAtBatIds = new Set(confirmedAtBats.filter((ab) => ab.mode === "hitting").map((ab) => ab.id));
   const teamHitterPitches = (teamPitches ?? []).filter((p) => hittingAtBatIds.has(p.at_bat_id));
 
-  const teamSprayDots: (SprayDot & { opponentName: string })[] = confirmedAtBats
+  // Fix 2 (team spray chart tooltip): the dot data never carried who hit
+  // the ball -- fine on the per-player page (you're already looking at
+  // one player), but this chart mixes every player's dots together, so
+  // the tooltip had no way to say whose at-bat it was.
+  const teamSprayDots: (SprayDot & { opponentName: string; playerName: string; playerJersey: number | null })[] = confirmedAtBats
     .filter(
-      (ab): ab is typeof ab & { result: AtBatResult; field_x: number; field_y: number } =>
-        ab.result !== null && ab.field_x !== null && ab.field_y !== null && ab.mode === "hitting"
+      (ab): ab is typeof ab & { result: AtBatResult; field_x: number; field_y: number; player_id: string } =>
+        ab.result !== null && ab.field_x !== null && ab.field_y !== null && ab.mode === "hitting" && ab.player_id !== null
     )
     .map((ab) => {
       const g = gameById.get(ab.game_id);
+      const p = playerById.get(ab.player_id);
       return {
         x: ab.field_x,
         y: ab.field_y,
@@ -107,6 +113,8 @@ export default async function CoachPage() {
         inning: ab.inning,
         gameDate: g?.game_date ?? "",
         opponentName: g?.opponent_name ?? "Unknown",
+        playerName: p?.name ?? "Unknown",
+        playerJersey: p?.jersey_number ?? null,
         hitType: ab.hit_type,
       };
     });

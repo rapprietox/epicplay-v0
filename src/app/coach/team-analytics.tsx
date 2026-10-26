@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { computeZoneBattingLines, zoneColor, SPRAY_CATEGORY_COLOR, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import { formatAvg } from "@/lib/stats";
 import { formatGameDate } from "@/lib/dates";
+import { RESULT_LABELS } from "@/lib/operator/types";
 import type { PitchOutcome, PitchType } from "@/lib/supabase/types";
 import { ZoneAnalyticsRow } from "./players/[id]/zone-analytics-row";
 
@@ -15,6 +16,11 @@ interface TeamHitterPitch {
   pitch_type: PitchType | null;
 }
 
+// Fix 2: carries who hit the ball -- this chart mixes every player's
+// dots together (unlike the per-player spray chart), so the tooltip
+// needs a name/jersey the plain SprayDot type never had to track.
+type TeamSprayDot = SprayDot & { playerName: string; playerJersey: number | null };
+
 export function TeamAnalytics({
   zoneAtBats,
   sprayDots,
@@ -23,7 +29,7 @@ export function TeamAnalytics({
   hitterPitches,
 }: {
   zoneAtBats: AtBatWithZone[];
-  sprayDots: SprayDot[];
+  sprayDots: TeamSprayDot[];
   opponentNames: string[];
   nextOpponentName: string | null;
   // Whiff-rate/pitch-location maps batch: every pitch thrown to one of
@@ -33,7 +39,7 @@ export function TeamAnalytics({
 }) {
   const [revealed, setRevealed] = useState(false);
   const [opponentFilter, setOpponentFilter] = useState<string>("all");
-  const [selected, setSelected] = useState<SprayDot | null>(null);
+  const [selected, setSelected] = useState<TeamSprayDot | null>(null);
 
   const lines = useMemo(() => computeZoneBattingLines(zoneAtBats), [zoneAtBats]);
 
@@ -155,10 +161,17 @@ export function TeamAnalytics({
           </div>
 
           {selected ? (
-            <p className="mt-2 text-center text-xs text-foreground/60">
-              <span className="capitalize text-white">{selected.result.replace("_", " ")}</span> &middot; Inning {selected.inning} &middot;{" "}
-              {selected.gameDate ? formatGameDate(selected.gameDate) : "—"} &middot; vs {selected.opponentName}
-            </p>
+            <div className="mt-2 text-center text-xs text-foreground/60">
+              <p className="font-semibold text-white">
+                #{selected.playerJersey ?? "—"} {selected.playerName}
+              </p>
+              <p>
+                {RESULT_LABELS[selected.result]} &middot; Inning {selected.inning}
+              </p>
+              <p>
+                {selected.gameDate ? formatGameDate(selected.gameDate) : "—"} &middot; vs {selected.opponentName}
+              </p>
+            </div>
           ) : (
             <p className="mt-2 text-center text-xs text-foreground/40">
               {filteredDots.length === 0 ? "No balls in play for this filter." : "Tap a dot for details."}
