@@ -10,9 +10,13 @@ type Game = Database["public"]["Tables"]["games"]["Row"];
 // by a schedule import that was later edited), so this only ever shows
 // teams there's actually scouting data for.
 export function OpponentScoutingSection({ opponents, games }: { opponents: Opponent[]; games: Game[] }) {
+  // Fix 2: a scheduled-but-not-yet-played game ('setup') isn't scouting
+  // data yet -- only a completed game actually tells you anything about
+  // an opponent. Counting every game regardless of status was inflating
+  // these numbers with games that haven't happened.
   const gamesByOpponentId = new Map<string, number>();
   for (const g of games) {
-    if (!g.opponent_id) continue;
+    if (!g.opponent_id || g.status !== "completed") continue;
     gamesByOpponentId.set(g.opponent_id, (gamesByOpponentId.get(g.opponent_id) ?? 0) + 1);
   }
 

@@ -33,12 +33,14 @@ export default async function CoachPage() {
 
   const teamId = profile.team_id;
 
-  const [{ data: team }, { data: players }, { data: games }, { data: opponents }] = await Promise.all([
+  const [{ data: team }, { data: players }, { data: games }, { data: opponents }, { data: seasons }] = await Promise.all([
     supabase.from("teams").select("name").eq("id", teamId).single(),
     supabase.from("players").select("*").eq("team_id", teamId).order("jersey_number", { ascending: true }),
     supabase.from("games").select("*").eq("team_id", teamId),
     supabase.from("opponents").select("*").eq("team_id", teamId).order("name"),
+    supabase.from("seasons").select("id").eq("team_id", teamId).limit(1),
   ]);
+  const hasSeason = (seasons ?? []).length > 0;
 
   const allGames = games ?? [];
   const gameIds = allGames.map((g) => g.id);
@@ -156,8 +158,14 @@ export default async function CoachPage() {
         <OpponentScoutingSection opponents={opponents ?? []} games={allGames} />
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <RosterSection players={players ?? []} />
-          <SeasonImportSection />
+          <RosterSection players={players ?? []} className={hasSeason ? "lg:col-span-2" : undefined} />
+          {/* Fix 3: a season (2026 DLL Season, etc.) already exists for
+              most teams by the time this page matters -- this form is
+              the one-time season-creation flow, not an editor, so it
+              hides once a season is on record rather than inviting a
+              second, conflicting one. col-span-2 keeps Roster from
+              leaving an empty gap on wide screens when this is hidden. */}
+          {!hasSeason && <SeasonImportSection />}
         </div>
 
         <div className="flex justify-end">

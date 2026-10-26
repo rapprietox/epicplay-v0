@@ -29,22 +29,47 @@ interface Props {
   games: Game[];
 }
 
-function pickLeader<T>(
+interface Leader {
+  playerId: string;
+  playerName: string;
+  playerJersey: number | null;
+}
+
+// Fix 1 (tied leaders): collects EVERY player tied at the best value,
+// not just the first one encountered -- the old version kept whichever
+// player happened to come first in `players` order on a tie, silently
+// hiding the others. A leading value of 0 (nobody's hit a HR yet, a
+// pitcher with a 0.00 ERA included -- per the request's own example)
+// is treated as "no leader" rather than crowning whoever happens to
+// have the first 0 in roster order.
+function pickLeaders<T>(
   players: Player[],
   lines: Map<string, T>,
   getValue: (line: T) => number,
-  hasQualified: (line: T) => boolean
-): { playerId: string | null; playerName: string | null; playerJersey: number | null; value: number | null } {
-  let best: { playerId: string; playerName: string; playerJersey: number | null; value: number } | null = null;
+  hasQualified: (line: T) => boolean,
+  lowerIsBetter: boolean
+): { value: number | null; leaders: Leader[] } {
+  let bestValue: number | null = null;
   for (const player of players) {
     const line = lines.get(player.id);
     if (!line || !hasQualified(line)) continue;
     const value = getValue(line);
-    if (!best || value > best.value) {
-      best = { playerId: player.id, playerName: player.name, playerJersey: player.jersey_number, value };
+    if (!Number.isFinite(value)) continue;
+    if (bestValue === null || (lowerIsBetter ? value < bestValue : value > bestValue)) {
+      bestValue = value;
     }
   }
-  return best ?? { playerId: null, playerName: null, playerJersey: null, value: null };
+  if (bestValue === null || bestValue === 0) return { value: null, leaders: [] };
+
+  const leaders: Leader[] = [];
+  for (const player of players) {
+    const line = lines.get(player.id);
+    if (!line || !hasQualified(line)) continue;
+    if (getValue(line) === bestValue) {
+      leaders.push({ playerId: player.id, playerName: player.name, playerJersey: player.jersey_number });
+    }
+  }
+  return { value: bestValue, leaders };
 }
 
 function buildRows(
@@ -53,12 +78,8 @@ function buildRows(
   pitchingLines: Map<string, PitchingLine>
 ): {
   label: string;
-  values: (number | null)[];
-  playerIds: (string | null)[];
-  playerNames: (string | null)[];
-  // Redesign: the card's player-name line is "#43 Ruben Prieto" -- needs
-  // the jersey number alongside the id/name this already tracked.
-  playerJerseys: (number | null)[];
+  value: number | null;
+  leaders: Leader[];
   format: (v: number) => string;
 }[] {
   const battingHasAb = (l: BattingLine) => l.ab > 0;
@@ -98,34 +119,13 @@ function buildRows(
   ];
 
   const rows = battingSpecs.map((spec) => {
-    const leader = pickLeader(players, battingLines, spec.get, spec.qualifies);
-    return {
-      label: spec.label,
-      values: [leader.value],
-      playerIds: [leader.playerId],
-      playerNames: [leader.playerName],
-      playerJerseys: [leader.playerJersey],
-      format: spec.format,
-    };
+    const { value, leaders } = pickLeaders(players, battingLines, spec.get, spec.qualifies, false);
+    return { label: spec.label, value, leaders, format: spec.format };
   });
 
   for (const spec of pitchingSpecs) {
-    let best: { playerId: string; playerName: string; playerJersey: number | null; value: number } | null = null;
-    for (const player of players) {
-      const line = pitchingLines.get(player.id);
-      if (!line || !spec.qualifies(line)) continue;
-      const value = spec.get(line);
-      const better = !best || (spec.lowerIsBetter ? value < best.value : value > best.value);
-      if (better) best = { playerId: player.id, playerName: player.name, playerJersey: player.jersey_number, value };
-    }
-    rows.push({
-      label: spec.label,
-      values: [best?.value ?? null],
-      playerIds: [best?.playerId ?? null],
-      playerNames: [best?.playerName ?? null],
-      playerJerseys: [best?.playerJersey ?? null],
-      format: spec.format,
-    });
+    const { value, leaders } = pickLeaders(players, pitchingLines, spec.get, spec.qualifies, !!spec.lowerIsBetter);
+    rows.push({ label: spec.label, value, leaders, format: spec.format });
   }
 
   return rows;
@@ -241,18 +241,25 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
 
       <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
         {rows.map((row) => {
-          const value = row.values[0];
-          const playerId = row.playerIds[0];
-          const playerName = row.playerNames[0];
-          const playerJersey = row.playerJerseys[0];
-          const hasData = value !== null && playerId !== null;
+          const hasData = row.value !== null && row.leaders.length > 0;
+          // Fix 1: show every tied leader, not just the first -- 2-3
+          // tied names separated by a dot, 4+ collapses to the first 2
+          // plus "and X more" per the request.
+          const shown = row.leaders.length > 3 ? row.leaders.slice(0, 2) : row.leaders;
+          const extraCount = row.leaders.length > 3 ? row.leaders.length - 2 : 0;
 
           const inner = (
             <StatDivider label={row.label}>
               <p className="pl-4 text-[14px]" style={{ fontFamily: "var(--font-sans)", color: "#8AABCC" }}>
                 {hasData ? (
                   <>
-                    <span style={{ color: "#F0C060" }}>#{playerJersey ?? "—"}</span> {playerName}
+                    {shown.map((l, idx) => (
+                      <span key={l.playerId}>
+                        {idx > 0 && " · "}
+                        <span style={{ color: "#F0C060" }}>#{l.playerJersey ?? "—"}</span> {l.playerName}
+                      </span>
+                    ))}
+                    {extraCount > 0 && <span> and {extraCount} more</span>}
                   </>
                 ) : (
                   "No data yet"
@@ -268,13 +275,15 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
                   opacity: hasData ? 1 : 0.35,
                 }}
               >
-                {hasData ? row.format(value) : "—"}
+                {hasData ? row.format(row.value as number) : "—"}
               </p>
             </StatDivider>
           );
 
-          return playerId ? (
-            <Link key={row.label} href={`/coach/players/${playerId}`} className="block transition hover:brightness-110">
+          // A single leader links to their player page; a tie has no one
+          // destination to send the whole card to, so it stays plain.
+          return row.leaders.length === 1 ? (
+            <Link key={row.label} href={`/coach/players/${row.leaders[0].playerId}`} className="block transition hover:brightness-110">
               {inner}
             </Link>
           ) : (

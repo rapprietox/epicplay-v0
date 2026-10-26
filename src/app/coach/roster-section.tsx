@@ -16,7 +16,7 @@ interface Player {
   user_id?: string | null;
 }
 
-export function RosterSection({ players }: { players: Player[] }) {
+export function RosterSection({ players, className }: { players: Player[]; className?: string }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -34,7 +34,7 @@ export function RosterSection({ players }: { players: Player[] }) {
   }
 
   return (
-    <section className="glossy rounded-lg border border-border bg-surface p-5">
+    <section className={`glossy rounded-lg border border-border bg-surface p-5 ${className ?? ""}`}>
       <h2 className="font-heading text-xl font-semibold uppercase tracking-wide text-white">
         Roster
       </h2>
