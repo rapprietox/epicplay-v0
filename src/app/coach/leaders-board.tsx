@@ -72,14 +72,21 @@ function buildRanking<T>(
 }
 
 // A leading value of 0 (nobody's hit a HR yet, a pitcher with a 0.00
-// ERA included -- per the request's own example) is treated as "no
+// A leading value of 0 (nobody's hit a HR yet) is treated as "no
 // leader" on the card rather than crowning whoever happens to sort
 // first at 0 -- the full ranking (for the modal) still lists everyone,
 // zeroes included, since a complete leaderboard is a different thing
 // than "who's the card's one leader."
-function leadersFromRanking(ranking: RankedPlayer[]): { value: number | null; leaders: Leader[] } {
+//
+// Bug fix: this must only apply to higher-is-better counting stats.
+// For a lowerIsBetter rate stat (ERA, WHIP), 0 is the best possible
+// value, not an absence of one -- a pitcher who hasn't allowed a hit
+// or walk yet has a real, excellent 0.00 WHIP. Suppressing it hid the
+// WHOLE card (both pitchers, not just the 0.00 one) the moment any
+// qualifying pitcher's WHIP legitimately computed to exactly 0.
+function leadersFromRanking(ranking: RankedPlayer[], lowerIsBetter: boolean): { value: number | null; leaders: Leader[] } {
   const topValue = ranking[0]?.value ?? null;
-  if (topValue === null || topValue === 0) return { value: null, leaders: [] };
+  if (topValue === null || (topValue === 0 && !lowerIsBetter)) return { value: null, leaders: [] };
   return { value: topValue, leaders: ranking.filter((r) => r.value === topValue) };
 }
 
@@ -122,14 +129,14 @@ function buildRows(players: Player[], battingLines: Map<string, BattingLine>, pi
 
   const rows: LeaderRow[] = battingSpecs.map((spec) => {
     const ranking = buildRanking(players, battingLines, spec.get, spec.qualifies, false);
-    const { value, leaders } = leadersFromRanking(ranking);
+    const { value, leaders } = leadersFromRanking(ranking, false);
     return { label: spec.label, value, leaders, ranking, format: spec.format, lowerIsBetter: false };
   });
 
   for (const spec of pitchingSpecs) {
     const lowerIsBetter = !!spec.lowerIsBetter;
     const ranking = buildRanking(players, pitchingLines, spec.get, spec.qualifies, lowerIsBetter);
-    const { value, leaders } = leadersFromRanking(ranking);
+    const { value, leaders } = leadersFromRanking(ranking, lowerIsBetter);
     rows.push({ label: spec.label, value, leaders, ranking, format: spec.format, lowerIsBetter });
   }
 
