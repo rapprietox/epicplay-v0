@@ -34,7 +34,7 @@ export default async function CoachPage() {
   const teamId = profile.team_id;
 
   const [{ data: team }, { data: players }, { data: games }, { data: opponents }, { data: seasons }] = await Promise.all([
-    supabase.from("teams").select("name").eq("id", teamId).single(),
+    supabase.from("teams").select("name, spray_chart_locked").eq("id", teamId).single(),
     supabase.from("players").select("*").eq("team_id", teamId).order("jersey_number", { ascending: true }),
     supabase.from("games").select("*").eq("team_id", teamId),
     supabase.from("opponents").select("*").eq("team_id", teamId).order("name"),
@@ -97,7 +97,10 @@ export default async function CoachPage() {
   // the ball -- fine on the per-player page (you're already looking at
   // one player), but this chart mixes every player's dots together, so
   // the tooltip had no way to say whose at-bat it was.
-  const teamSprayDots: (SprayDot & { opponentName: string; playerName: string; playerJersey: number | null })[] = confirmedAtBats
+  // Manual dot positioning batch: carries the at_bats row's own id so a
+  // dragged dot can be persisted back to the exact row it came from.
+  const teamSprayDots: (SprayDot & { atBatId: string; opponentName: string; playerName: string; playerJersey: number | null })[] =
+    confirmedAtBats
     .filter(
       (ab): ab is typeof ab & { result: AtBatResult; field_x: number; field_y: number; player_id: string } =>
         ab.result !== null && ab.field_x !== null && ab.field_y !== null && ab.mode === "hitting" && ab.player_id !== null
@@ -106,6 +109,7 @@ export default async function CoachPage() {
       const g = gameById.get(ab.game_id);
       const p = playerById.get(ab.player_id);
       return {
+        atBatId: ab.id,
         x: ab.field_x,
         y: ab.field_y,
         category: resultCategory(ab.result),
@@ -161,6 +165,7 @@ export default async function CoachPage() {
           opponentNames={(opponents ?? []).map((o) => o.name)}
           nextOpponentName={nextGame?.opponent_name ?? null}
           hitterPitches={teamHitterPitches}
+          sprayChartLocked={team?.spray_chart_locked ?? false}
         />
 
         <OpponentScoutingSection opponents={opponents ?? []} games={allGames} />

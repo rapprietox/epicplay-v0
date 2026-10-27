@@ -242,3 +242,48 @@ export async function editGame(
   if (error) throw new Error(error.message);
   revalidatePath("/coach");
 }
+
+export type SprayDotMutationResult = { ok: true } | { ok: false; error: string };
+
+// Manual spray-chart dot positioning batch: a drag-release fires often
+// enough (and is low-stakes enough) that a result object beats throwing
+// -- the client shows an inline error/retry rather than an uncaught
+// exception for what's really just a "try again" case.
+export async function updateSprayDotPosition(atBatId: string, fieldX: number, fieldY: number): Promise<SprayDotMutationResult> {
+  try {
+    const { supabase, teamId } = await requireCoachTeam();
+    // field_x/field_y's own check constraint is 0-100 -- clamp here too,
+    // not just client-side, since this is the actual write path.
+    const x = Math.max(0, Math.min(100, fieldX));
+    const y = Math.max(0, Math.min(100, fieldY));
+    // Scoped through a two-step lookup (at_bats has no team_id of its
+    // own) so a coach can't reposition a dot belonging to another team's
+    // game -- two plain queries rather than an embedded select("games(...)")
+    // join, since this hand-written types.ts has no real Relationships
+    // metadata for the typed client to infer an embedded join from (see
+    // CLAUDE.md's note on src/lib/supabase/types.ts).
+    const { data: atBat } = await supabase.from("at_bats").select("game_id").eq("id", atBatId).single();
+    if (!atBat) return { ok: false, error: "At-bat not found" };
+    const { data: game } = await supabase.from("games").select("team_id").eq("id", atBat.game_id).single();
+    if (!game || game.team_id !== teamId) return { ok: false, error: "At-bat not found for this team" };
+
+    const { error } = await supabase.from("at_bats").update({ field_x: x, field_y: y }).eq("id", atBatId);
+    if (error) return { ok: false, error: error.message };
+    revalidatePath("/coach");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to save position" };
+  }
+}
+
+export async function setSprayChartLocked(locked: boolean): Promise<SprayDotMutationResult> {
+  try {
+    const { supabase, teamId } = await requireCoachTeam();
+    const { error } = await supabase.from("teams").update({ spray_chart_locked: locked }).eq("id", teamId);
+    if (error) return { ok: false, error: error.message };
+    revalidatePath("/coach");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to update lock state" };
+  }
+}

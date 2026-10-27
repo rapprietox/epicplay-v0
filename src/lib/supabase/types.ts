@@ -162,12 +162,16 @@ export interface Database {
           // onboarding. Null for teams created the old (manual SQL) way.
           created_by: string | null;
           created_at: string;
+          // Manual spray-chart dot positioning batch: team-scoped, not
+          // per-game -- see the migration's own comment for why.
+          spray_chart_locked: boolean;
         };
         Insert: {
           id?: string;
           name: string;
           created_by?: string | null;
           created_at?: string;
+          spray_chart_locked?: boolean;
         };
         Update: Partial<Database["public"]["Tables"]["teams"]["Insert"]>;
         Relationships: [];
