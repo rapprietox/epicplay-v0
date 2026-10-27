@@ -24,6 +24,44 @@ interface TeamHitterPitch {
 // needed to persist a dragged dot back to the exact row it came from.
 type TeamSprayDot = SprayDot & { atBatId: string; playerName: string; playerJersey: number | null };
 
+// Bug fix: dots within this radius (same 0-100 unit scale as the chart)
+// visually merge into one -- spread them into a small ring around their
+// shared center instead. Non-transitive on purpose (A-clusters-with-B
+// doesn't pull in everything within range of B too): the handful of
+// real-world collisions this is for are pairs/trios, not long chains,
+// and keeping it simple avoids a cluster unexpectedly swallowing an
+// unrelated dot that's merely close to one member of it.
+const DOT_CLUSTER_RADIUS = 2.5;
+const DOT_SPREAD_RADIUS = 1.8;
+
+function declutterDots<T extends { x: number; y: number }>(dots: T[]): T[] {
+  const result = new Array<T>(dots.length);
+  const used = new Array(dots.length).fill(false);
+  for (let i = 0; i < dots.length; i++) {
+    if (used[i]) continue;
+    const cluster = [i];
+    used[i] = true;
+    for (let j = i + 1; j < dots.length; j++) {
+      if (used[j]) continue;
+      if (Math.hypot(dots[j].x - dots[i].x, dots[j].y - dots[i].y) < DOT_CLUSTER_RADIUS) {
+        cluster.push(j);
+        used[j] = true;
+      }
+    }
+    if (cluster.length === 1) {
+      result[i] = dots[i];
+      continue;
+    }
+    const cx = cluster.reduce((sum, k) => sum + dots[k].x, 0) / cluster.length;
+    const cy = cluster.reduce((sum, k) => sum + dots[k].y, 0) / cluster.length;
+    cluster.forEach((k, n) => {
+      const angle = (n / cluster.length) * Math.PI * 2;
+      result[k] = { ...dots[k], x: cx + Math.cos(angle) * DOT_SPREAD_RADIUS, y: cy + Math.sin(angle) * DOT_SPREAD_RADIUS };
+    });
+  }
+  return result;
+}
+
 export function TeamAnalytics({
   zoneAtBats,
   sprayDots,
@@ -92,6 +130,15 @@ export function TeamAnalytics({
     [filteredDots, positionOverrides]
   );
   const selected = displayDots.find((d) => d.atBatId === selectedId) ?? null;
+
+  // Bug fix: several at-bats land at identical or near-identical
+  // coordinates (two "fly out to CF" results with no more precise spray
+  // data both default to the same spot, for example) and were rendering
+  // exactly on top of each other -- one dot visually hid the other, not
+  // a missing-data or query bug. This only changes where a dot PAINTS;
+  // the real field_x/field_y (and what the drag-to-reposition feature
+  // reads/saves) are untouched.
+  const renderDots = useMemo(() => declutterDots(displayDots), [displayDots]);
 
   useEffect(() => {
     setRevealed(false);
@@ -279,7 +326,7 @@ export function TeamAnalytics({
             />
             <div className="pointer-events-none absolute inset-0" style={{ background: "rgba(0, 0, 0, 0.15)" }} />
             <svg ref={svgRef} viewBox="0 0 100 100" className="absolute inset-0 h-full w-full">
-              {displayDots.map((d) => {
+              {renderDots.map((d) => {
                 const isSelected = selected?.atBatId === d.atBatId;
                 const isDragging = draggingId === d.atBatId;
                 return (
