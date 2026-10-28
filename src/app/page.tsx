@@ -50,9 +50,16 @@ export default async function HomePage() {
   } = await supabase.auth.getUser();
 
   if (!user) {
+    console.log("Marketing page served - anonymous user");
     return (
       <>
         <title>EpicPlay AI War Room</title>
+        {/* Temporary test - remove after confirming this branch is reached on Vercel */}
+        <div
+          style={{ position: "fixed", top: 0, left: 0, zIndex: 9999, background: "red", color: "white", padding: "8px" }}
+        >
+          MARKETING PAGE LOADED v2
+        </div>
         <div id="marketing-page" dangerouslySetInnerHTML={{ __html: marketingHtml }} />
       </>
     );
