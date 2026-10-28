@@ -6,57 +6,64 @@ type GameEvent = Pick<Database["public"]["Tables"]["game_events"]["Row"], "event
 
 const MIN_PA_FOR_EPS = 5;
 
-export type EpsTier = "elite" | "strong" | "average" | "developing";
+// Update 2: six-tier scale, replacing the earlier four-tier one.
+export type EpsTier = "legendary" | "elite" | "strong" | "solid" | "developing" | "beginner";
 
 export const EPS_TIER_LABEL: Record<EpsTier, string> = {
+  legendary: "Legendary 🏆",
   elite: "Elite 🔥",
   strong: "Strong 💪",
-  average: "Average ⚾",
+  solid: "Solid ⚾",
   developing: "Developing 📈",
+  beginner: "Beginner 🌱",
 };
 
 export function epsTier(eps: number): EpsTier {
+  if (eps >= 85) return "legendary";
   if (eps >= 70) return "elite";
   if (eps >= 55) return "strong";
-  if (eps >= 40) return "average";
-  return "developing";
+  if (eps >= 40) return "solid";
+  if (eps >= 25) return "developing";
+  return "beginner";
 }
 
-// EPS = (OPS x 40) + (BB% x 100) + ((1 - K%) x 30) + (SB_success_rate x 20) + (RISP_AVG x 50)
-// Two terms need a documented default when the underlying data doesn't
-// exist for a player, rather than withholding the whole score (the
-// request's only stated gate is "minimum 5 PA", not "minimum RISP/SB
-// data"):
-//   - RISP_AVG: null (not >= 2 RISP at-bats) contributes 0, not a block.
-//     This matters a lot right now -- at_bats.risp_before is null for
-//     every at-bat logged before the column existed, which today means
-//     EVERY historical at-bat for this team. Treating null as a hard
-//     block would make EPS show "--" for the whole roster indefinitely;
-//     treating it as 0 lets the score reflect what IS known and simply
-//     improves as risp_before starts getting populated going forward.
-//   - SB_success_rate: 0 attempts (no steals, no caught-stealing) -> 0,
-//     not a divide-by-zero.
-// Clamped to [0, 100] -- the raw weighted sum can technically exceed
-// that range in a small/extreme sample (the "scaled 0-100" framing is a
-// display bound, not a literal re-derivation of the formula's weights).
-export function computeEps(line: Pick<BattingLine, "ops" | "bb" | "k" | "pa" | "sb">, caughtStealing: number, rispAvg: number | null): number | null {
+// Update 1: this request said "replace the formula in src/lib/stats.ts"
+// and gave calculateEPS(stats: BattingLine) reading stats.cs directly --
+// kept here in src/lib/eps.ts instead, with caught-stealing still a
+// separate parameter, not a BattingLine field. BattingLine is produced
+// by computeBattingLines(atBats, stolenBases), which has no access to
+// game_events at all (caught_stealing only exists there) -- adding a
+// `cs` field would mean threading game_events into computeBattingLines'
+// own signature and updating every one of its call sites (leaders-board,
+// the player profile page, Clubhouse, kairos-actions, situational-stats,
+// lineup-analysis), not just this one formula. Keeping EPS as its own
+// small function that takes the extra data as its own argument is the
+// same approach the previous EPS version already used, just with the
+// new math ported in.
+//
+// This version also drops the RISP term entirely -- the new formula
+// doesn't have one. RISP AVG still exists as its own column in the
+// Lineup Analysis grid (computed independently there), just no longer
+// feeds EPS.
+//
+// Weights sum to at most 40+30+20+10 = 100 by construction (each term
+// is itself capped before scaling), which is what actually fixes "scale
+// 0-100" -- the previous version could exceed 100 in a small/extreme
+// sample and relied on an outer clamp instead of the formula itself
+// bounding it.
+export function computeEps(line: Pick<BattingLine, "obp" | "slg" | "bb" | "k" | "pa" | "sb">, caughtStealing: number): number | null {
   if (line.pa < MIN_PA_FOR_EPS) return null;
-  const bbPct = line.pa > 0 ? line.bb / line.pa : 0;
-  const kPct = line.pa > 0 ? line.k / line.pa : 0;
+
+  const ops = Math.min((line.obp + line.slg) / 2.0, 1) * 40;
+  const bbPct = Math.min(line.bb / line.pa, 1) * 30;
+  const contactPct = Math.max(1 - line.k / line.pa, 0) * 20;
   const sbAttempts = line.sb + caughtStealing;
-  const sbSuccessRate = sbAttempts > 0 ? line.sb / sbAttempts : 0;
-  const rispTerm = rispAvg ?? 0;
+  // Neutral 5 of the 10 possible points when there's no steal attempt at
+  // all to judge, rather than 0 (which would read as "bad baserunning"
+  // for a player who's simply never tried).
+  const sbSuccess = sbAttempts > 0 ? (line.sb / sbAttempts) * 10 : 5;
 
-  const raw = line.ops * 40 + bbPct * 100 + (1 - kPct) * 30 + sbSuccessRate * 20 + rispTerm * 50;
-  return Math.max(0, Math.min(100, raw));
-}
-
-const MIN_RISP_AB = 2;
-
-function rispAvgFor(playerId: string, atBats: AtBat[]): number | null {
-  const rispAtBats = atBats.filter((ab) => ab.player_id === playerId && ab.risp_before === true);
-  const line = computeBattingLines(rispAtBats, []).get(playerId);
-  return line && line.ab >= MIN_RISP_AB ? line.avg : null;
+  return Math.round((ops + bbPct + contactPct + sbSuccess) * 10) / 10;
 }
 
 function caughtStealingFor(playerId: string, gameEvents: GameEvent[]): number {
@@ -68,7 +75,7 @@ function caughtStealingFor(playerId: string, gameEvents: GameEvent[]): number {
 export function computeEpsForPlayer(playerId: string, atBats: AtBat[], gameEvents: GameEvent[]): number | null {
   const line = computeBattingLines(atBats.filter((ab) => ab.player_id === playerId), []).get(playerId);
   if (!line) return null;
-  return computeEps(line, caughtStealingFor(playerId, gameEvents), rispAvgFor(playerId, atBats));
+  return computeEps(line, caughtStealingFor(playerId, gameEvents));
 }
 
 // Roster-wide convenience wrapper -- the Team Leaders Board needs every
@@ -82,7 +89,7 @@ export function computeEpsForRoster(playerIds: string[], atBats: AtBat[], gameEv
       result.set(playerId, null);
       continue;
     }
-    result.set(playerId, computeEps(line, caughtStealingFor(playerId, gameEvents), rispAvgFor(playerId, atBats)));
+    result.set(playerId, computeEps(line, caughtStealingFor(playerId, gameEvents)));
   }
   return result;
 }

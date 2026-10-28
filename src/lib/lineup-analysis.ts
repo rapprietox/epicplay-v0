@@ -1,15 +1,15 @@
-import { computeBattingLines } from "@/lib/stats";
+import { computeBattingLines, type BattingLine } from "@/lib/stats";
 import type { Database } from "@/lib/supabase/types";
 
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type Lineup = Database["public"]["Tables"]["lineup"]["Row"];
+type Substitution = Pick<Database["public"]["Tables"]["substitutions"]["Row"], "game_id" | "player_in_id" | "player_out_id">;
 type Game = Pick<Database["public"]["Tables"]["games"]["Row"], "id" | "game_date">;
 type Player = Pick<Database["public"]["Tables"]["players"]["Row"], "id" | "name" | "jersey_number">;
 
 export type Rating = "green" | "amber" | "red" | "none";
 
-export interface LineupSlotStat {
-  slot: number;
+interface PlayerPerformanceStat {
   playerId: string;
   playerName: string;
   playerJersey: number | null;
@@ -23,6 +23,19 @@ export interface LineupSlotStat {
   // not a zero average -- rendered as "--" per the request.
   rispAvg: number | null;
   rispAb: number;
+}
+
+export interface LineupSlotStat extends PlayerPerformanceStat {
+  slot: number;
+}
+
+// Update 3: a player who appeared in the current game but wasn't one of
+// its starters. subbedIntoSlot is the starting slot they actually
+// replaced, resolved from `substitutions` -- null when no substitution
+// row explains their appearance (a bench player who just isn't tied to
+// a formal sub record).
+export interface SubstituteStat extends PlayerPerformanceStat {
+  subbedIntoSlot: number | null;
 }
 
 export const RATING_BG: Record<Rating, string | undefined> = {
@@ -87,6 +100,34 @@ export function findCurrentLineup(games: Game[], lineupRows: Lineup[]): { gameId
   };
 }
 
+// Shared by both the starting-lineup grid and the substitutes/reserves
+// section -- the only difference between a slot row and a substitute
+// row is what's attached beyond these core performance fields (a slot
+// number vs. the slot they subbed into).
+function performanceStatFor(player: Player, atBats: AtBat[], battingLines: Map<string, BattingLine>): PlayerPerformanceStat {
+  const line = battingLines.get(player.id);
+
+  // RISP: only non-null risp_before rows count, per that column's own
+  // documented nullability (null = logged before this was tracked).
+  const rispAtBats = atBats.filter((ab) => ab.player_id === player.id && ab.risp_before === true);
+  const rispLine = computeBattingLines(rispAtBats, []).get(player.id);
+  const rispAb = rispLine?.ab ?? 0;
+
+  return {
+    playerId: player.id,
+    playerName: player.name,
+    playerJersey: player.jersey_number,
+    pa: line?.pa ?? 0,
+    avg: line?.avg ?? 0,
+    obp: line?.obp ?? 0,
+    slg: line?.slg ?? 0,
+    kPct: line && line.pa > 0 ? line.k / line.pa : 0,
+    bbPct: line && line.pa > 0 ? line.bb / line.pa : 0,
+    rispAvg: rispAb >= MIN_RISP_AB ? rispLine!.avg : null,
+    rispAb,
+  };
+}
+
 export function computeLineupMatrix(lineupRows: Lineup[], players: Player[], atBats: AtBat[]): LineupSlotStat[] {
   const playerById = new Map(players.map((p) => [p.id, p]));
   const battingLines = computeBattingLines(atBats, []);
@@ -98,30 +139,52 @@ export function computeLineupMatrix(lineupRows: Lineup[], players: Player[], atB
     if (slot.batting_order === null) continue;
     const player = playerById.get(slot.player_id);
     if (!player) continue;
-    const line = battingLines.get(slot.player_id);
-
-    // RISP: only non-null risp_before rows count, per that column's own
-    // documented nullability (null = logged before this was tracked).
-    const rispAtBats = atBats.filter((ab) => ab.player_id === slot.player_id && ab.risp_before === true);
-    const rispLine = computeBattingLines(rispAtBats, []).get(slot.player_id);
-    const rispAb = rispLine?.ab ?? 0;
-
-    rows.push({
-      slot: slot.batting_order,
-      playerId: slot.player_id,
-      playerName: player.name,
-      playerJersey: player.jersey_number,
-      pa: line?.pa ?? 0,
-      avg: line?.avg ?? 0,
-      obp: line?.obp ?? 0,
-      slg: line?.slg ?? 0,
-      kPct: line && line.pa > 0 ? line.k / line.pa : 0,
-      bbPct: line && line.pa > 0 ? line.bb / line.pa : 0,
-      rispAvg: rispAb >= MIN_RISP_AB ? rispLine!.avg : null,
-      rispAb,
-    });
+    rows.push({ slot: slot.batting_order, ...performanceStatFor(player, atBats, battingLines) });
   }
   return rows;
+}
+
+// Update 3: every player who batted in the current game (gameId) but
+// wasn't one of its starters -- scoped to that one game, same as the
+// starting grid above, not the whole season's bench. `seasonAtBats` is
+// still used for each substitute's displayed stats (same convention the
+// starters already use: the grid shows filtered season performance, not
+// just this one game's single at-bat or two). `startingLineup` is
+// computeLineupMatrix's own output for this same game -- it already
+// pairs every starter's playerId with their slot, which is exactly
+// what's needed both to know who ISN'T a starter and, via
+// `substitutions`, which slot an incoming player actually replaced.
+export function findSubstitutesAndReserves(
+  gameId: string,
+  startingLineup: LineupSlotStat[],
+  players: Player[],
+  gameAtBats: AtBat[],
+  seasonAtBats: AtBat[],
+  substitutions: Substitution[]
+): SubstituteStat[] {
+  const startingPlayerIds = new Set(startingLineup.map((r) => r.playerId));
+  const startingSlotByPlayerId = new Map(startingLineup.map((r) => [r.playerId, r.slot]));
+
+  const playerById = new Map(players.map((p) => [p.id, p]));
+  const subbedPlayerIds = new Set(
+    gameAtBats.filter((ab) => ab.player_id && !startingPlayerIds.has(ab.player_id)).map((ab) => ab.player_id!)
+  );
+  if (subbedPlayerIds.size === 0) return [];
+
+  const battingLines = computeBattingLines(seasonAtBats, []);
+  const gameSubstitutions = substitutions.filter((s) => s.game_id === gameId);
+
+  return Array.from(subbedPlayerIds).map((playerId) => {
+    const player = playerById.get(playerId);
+    // A substitution names who came OUT -- that player's starting slot
+    // is the one the incoming player effectively occupies.
+    const sub = gameSubstitutions.find((s) => s.player_in_id === playerId);
+    const subbedIntoSlot = sub ? startingSlotByPlayerId.get(sub.player_out_id) ?? null : null;
+    return {
+      ...performanceStatFor(player ?? { id: playerId, name: "Unknown", jersey_number: null }, seasonAtBats, battingLines),
+      subbedIntoSlot,
+    };
+  });
 }
 
 // "2 or more consecutive slots are red in OBP" -- returns the set of

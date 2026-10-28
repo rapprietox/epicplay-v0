@@ -3,7 +3,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { unstable_cache } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { computeLineupMatrix, findCurrentLineup } from "@/lib/lineup-analysis";
+import { computeBattingLines } from "@/lib/stats";
+import { computeLineupMatrix, findCurrentLineup, findSubstitutesAndReserves } from "@/lib/lineup-analysis";
 import { matchingGameIds, type DayType, type GameFacetFilter, type TimeOfDay } from "@/lib/game-time-filters";
 
 // Feature 2 (Lineup Intelligence). Model: the request specified
@@ -52,10 +53,13 @@ export async function getLineupInsights(filter: FilterInput): Promise<LineupInsi
     ]);
 
     const gameIds = (games ?? []).map((g) => g.id);
-    const [{ data: lineupRows }, { data: atBats }] = await Promise.all([
+    const [{ data: lineupRows }, { data: atBats }, { data: substitutions }] = await Promise.all([
       gameIds.length ? supabase.from("lineup").select("*").in("game_id", gameIds).eq("status", "starting") : Promise.resolve({ data: [] }),
       gameIds.length
         ? supabase.from("at_bats").select("*").in("game_id", gameIds).eq("mode", "hitting").not("confirmed_at", "is", null)
+        : Promise.resolve({ data: [] }),
+      gameIds.length
+        ? supabase.from("substitutions").select("game_id, player_in_id, player_out_id").in("game_id", gameIds)
         : Promise.resolve({ data: [] }),
     ]);
 
@@ -67,13 +71,31 @@ export async function getLineupInsights(filter: FilterInput): Promise<LineupInsi
     const filteredAtBats = noFilter ? (atBats ?? []) : (atBats ?? []).filter((ab) => matchingIds.has(ab.game_id));
 
     const matrix = computeLineupMatrix(current.rows, players ?? [], filteredAtBats);
-    if (matrix.every((row) => row.pa === 0)) return { ok: true, insights: [] };
+    const gameAtBats = (atBats ?? []).filter((ab) => ab.game_id === current.gameId);
+    const substitutesAndReserves = findSubstitutesAndReserves(
+      current.gameId,
+      matrix,
+      players ?? [],
+      gameAtBats,
+      filteredAtBats,
+      substitutions ?? []
+    );
+    const fullRoster = [...matrix, ...substitutesAndReserves];
+
+    // Update 3: lowered from "at least some data exists" to an explicit
+    // count -- generate once at least 5 players (starters or bench, not
+    // just the 9-10 starting slots) have 2+ PA, checked across the whole
+    // roster since a thin starting lineup can still clear this bar once
+    // substitutes are counted too.
+    const rosterLines = computeBattingLines(filteredAtBats, []);
+    const playersWithTwoPlusPa = Array.from(rosterLines.values()).filter((l) => l.pa >= 2).length;
+    if (playersWithTwoPlusPa < 5) return { ok: true, insights: [] };
 
     // Team-wide confirmed at-bat count -- the fingerprint described above.
     const fingerprint = (atBats ?? []).length;
 
     const cached = unstable_cache(
-      async () => generateInsights(team?.name ?? "the team", matrix),
+      async () => generateInsights(team?.name ?? "the team", fullRoster),
       ["lineup-insights", teamId, filter.gameType, filter.timeOfDay, filter.dayType, String(fingerprint)],
       { revalidate: 3600 }
     );
@@ -84,11 +106,12 @@ export async function getLineupInsights(filter: FilterInput): Promise<LineupInsi
   }
 }
 
-async function generateInsights(teamName: string, matrix: ReturnType<typeof computeLineupMatrix>): Promise<string[]> {
+async function generateInsights(teamName: string, roster: unknown[]): Promise<string[]> {
   const system = `You are KAIROS, an elite baseball analytics AI. You are analyzing a lineup for the coach of ${teamName}.
 
-You have the following lineup performance data:
-${JSON.stringify(matrix, null, 2)}
+You have the following lineup performance data (starters have a "slot"
+number; substitutes/reserves have a "subbedIntoSlot" instead):
+${JSON.stringify(roster, null, 2)}
 
 Generate exactly 4-5 coaching insights. Each must be:
 1. SPECIFIC -- use real player names, real numbers, real slot positions

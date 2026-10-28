@@ -46,7 +46,7 @@ export default async function CoachPage() {
 
   const allGames = games ?? [];
   const gameIds = allGames.map((g) => g.id);
-  const [{ data: atBats }, { data: stolenBases }, { data: lineupRows }, { data: gameEvents }] = gameIds.length
+  const [{ data: atBats }, { data: stolenBases }, { data: lineupRows }, { data: gameEvents }, { data: substitutions }] = gameIds.length
     ? await Promise.all([
         supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null),
         supabase.from("stolen_bases").select("*").in("game_id", gameIds),
@@ -54,8 +54,10 @@ export default async function CoachPage() {
         // EPS batch: SB_success_rate needs caught-stealing counts, which
         // only live in game_events, not stolen_bases.
         supabase.from("game_events").select("event_type, player_id, game_id").in("game_id", gameIds).eq("event_type", "caught_stealing"),
+        // Update 3 (Substitutes & Reserves): resolves "subbed in for slot X".
+        supabase.from("substitutions").select("game_id, player_in_id, player_out_id").in("game_id", gameIds),
       ])
-    : [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }];
+    : [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }];
   const activeGame = allGames.find((g) => g.status === "active") ?? null;
   const today = new Date().toISOString().slice(0, 10);
   const nextGame =
@@ -183,8 +185,10 @@ export default async function CoachPage() {
 
         <LineupAnalysisSection
           lineupRows={currentLineup?.rows ?? []}
+          currentGameId={currentLineup?.gameId ?? null}
           players={players ?? []}
           atBats={hittingAtBatsForLineup}
+          substitutions={substitutions ?? []}
           games={allGames}
           teamName={team?.name ?? "the team"}
         />

@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   computeLineupMatrix,
   detectLineupHoles,
+  findSubstitutesAndReserves,
   rateAvg,
   rateObp,
   rateSlg,
@@ -13,6 +14,7 @@ import {
   rateRisp,
   RATING_BG,
   type Rating,
+  type SubstituteStat,
 } from "@/lib/lineup-analysis";
 import { formatAvg } from "@/lib/stats";
 import {
@@ -30,6 +32,7 @@ type Lineup = Database["public"]["Tables"]["lineup"]["Row"];
 type Player = Database["public"]["Tables"]["players"]["Row"];
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
+type Substitution = Pick<Database["public"]["Tables"]["substitutions"]["Row"], "game_id" | "player_in_id" | "player_out_id">;
 
 // Feature 1/2 batch: "Lineup Analysis" -- a grid of each current batting
 // slot's performance plus an AI-generated coaching panel underneath.
@@ -42,14 +45,21 @@ type Game = Database["public"]["Tables"]["games"]["Row"];
 // redundant role check or changing middleware to let operators in.
 export function LineupAnalysisSection({
   lineupRows,
+  currentGameId,
   players,
   atBats,
+  substitutions,
   games,
   teamName,
 }: {
   lineupRows: Lineup[];
+  // Update 3: the one game the starting lineup above is drawn from --
+  // substitutes/reserves are "who else batted in THIS game", not the
+  // whole season's bench.
+  currentGameId: string | null;
   players: Player[];
   atBats: AtBat[];
+  substitutions: Substitution[];
   games: Game[];
   teamName: string;
 }) {
@@ -65,6 +75,16 @@ export function LineupAnalysisSection({
 
   const matrix = useMemo(() => computeLineupMatrix(lineupRows, players, filteredAtBats), [lineupRows, players, filteredAtBats]);
   const holes = useMemo(() => detectLineupHoles(matrix), [matrix]);
+
+  // Update 3: "who played in the current game" is fixed to that one
+  // game regardless of the facet filter above (same treatment as
+  // lineupRows itself, which isn't filtered either) -- only each
+  // substitute's DISPLAYED stats react to the filter, via filteredAtBats.
+  const substitutesAndReserves: SubstituteStat[] = useMemo(() => {
+    if (!currentGameId) return [];
+    const gameAtBats = atBats.filter((ab) => ab.game_id === currentGameId);
+    return findSubstitutesAndReserves(currentGameId, matrix, players, gameAtBats, filteredAtBats, substitutions);
+  }, [currentGameId, atBats, matrix, players, filteredAtBats, substitutions]);
 
   if (lineupRows.length === 0) {
     return (
@@ -165,6 +185,45 @@ export function LineupAnalysisSection({
           Colored cells need at least 3 plate appearances (2 for RISP AVG) -- otherwise shown as &ldquo;&mdash;&rdquo;.
         </p>
       </div>
+
+      {substitutesAndReserves.length > 0 && (
+        <div className="mt-6 overflow-x-auto border-t border-border pt-5">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-foreground/50">Substitutes &amp; Reserves</h3>
+          <table className="mt-3 w-full min-w-[700px] border-collapse text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wide text-foreground/40">
+                <th className="pb-2 pr-3">Player</th>
+                <th className="pb-2 pr-3 text-center">AVG</th>
+                <th className="pb-2 pr-3 text-center">OBP</th>
+                <th className="pb-2 pr-3 text-center">SLG</th>
+                <th className="pb-2 pr-3 text-center">K%</th>
+                <th className="pb-2 pr-3 text-center">BB%</th>
+                <th className="pb-2 text-center">RISP AVG</th>
+              </tr>
+            </thead>
+            <tbody>
+              {substitutesAndReserves.map((row) => (
+                <tr key={row.playerId} className="border-t border-border">
+                  <td className="py-2 pr-3">
+                    <Link href={`/coach/players/${row.playerId}`} className="text-white hover:text-accent-primary">
+                      <span className="text-accent-gold">#{row.playerJersey ?? "—"}</span> {row.playerName}
+                    </Link>
+                    <span className="ml-2 text-xs text-foreground/40">
+                      {row.subbedIntoSlot !== null ? `Subbed in for slot ${row.subbedIntoSlot}` : "Reserve"}
+                    </span>
+                  </td>
+                  <Cell value={formatAvg(row.avg)} rating={rateAvg(row.avg, row.pa)} />
+                  <Cell value={formatAvg(row.obp)} rating={rateObp(row.obp, row.pa)} />
+                  <Cell value={formatAvg(row.slg)} rating={rateSlg(row.slg, row.pa)} />
+                  <Cell value={`${Math.round(row.kPct * 100)}%`} rating={rateKPct(row.kPct, row.pa)} />
+                  <Cell value={`${Math.round(row.bbPct * 100)}%`} rating={rateBbPct(row.bbPct, row.pa)} />
+                  <Cell value={row.rispAvg !== null ? formatAvg(row.rispAvg) : "—"} rating={rateRisp(row.rispAvg, row.rispAb)} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <LineupInsightsPanel teamName={teamName} gameType={gameType} timeOfDay={timeOfDay} dayType={dayType} />
     </section>

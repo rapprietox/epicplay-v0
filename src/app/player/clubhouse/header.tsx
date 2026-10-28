@@ -1,4 +1,5 @@
 import { formatAvg, type BattingLine } from "@/lib/stats";
+import { epsTier, EPS_TIER_LABEL } from "@/lib/eps";
 import type { Database } from "@/lib/supabase/types";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
@@ -37,17 +38,20 @@ export function ClubhouseHeader({
         <SnapshotStat label="HR" value={line ? String(line.hr) : "—"} />
         <SnapshotStat label="RBI" value={line ? String(line.rbi) : "—"} />
         <SnapshotStat label="OPS" value={line ? line.ops.toFixed(3) : "—"} />
-        {player.clubhouse_unlocked && <SnapshotStat label="EPS" value={eps !== null ? eps.toFixed(1) : "—"} />}
+        {player.clubhouse_unlocked && (
+          <SnapshotStat label="EPS" value={eps !== null ? eps.toFixed(1) : "—"} badge={eps !== null ? EPS_TIER_LABEL[epsTier(eps)] : undefined} />
+        )}
       </div>
     </header>
   );
 }
 
-function SnapshotStat({ label, value }: { label: string; value: string }) {
+function SnapshotStat({ label, value, badge }: { label: string; value: string; badge?: string }) {
   return (
     <div className="text-center">
       <p className="font-heading text-xl font-bold text-accent-gold">{value}</p>
       <p className="text-[10px] uppercase tracking-wide text-foreground/40">{label}</p>
+      {badge && <p className="mt-0.5 whitespace-nowrap text-[10px] text-accent-gold/80">{badge}</p>}
     </div>
   );
 }
