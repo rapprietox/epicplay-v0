@@ -25,6 +25,8 @@ import {
   type GameFacetFilter,
   type TimeOfDay,
 } from "@/lib/game-time-filters";
+import { ReliabilityBadge } from "@/components/reliability-badge";
+import type { ReliabilityInput } from "@/lib/reliability";
 import { getLineupInsights } from "./lineup-insights-actions";
 import type { Database } from "@/lib/supabase/types";
 
@@ -254,6 +256,7 @@ function LineupInsightsPanel({
   dayType: DayType | "all";
 }) {
   const [insights, setInsights] = useState<string[] | null>(null);
+  const [reliability, setReliability] = useState<ReliabilityInput | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -264,8 +267,12 @@ function LineupInsightsPanel({
     getLineupInsights({ gameType, timeOfDay, dayType }).then((result) => {
       if (cancelled) return;
       setLoading(false);
-      if (result.ok) setInsights(result.insights);
-      else setError(result.error);
+      if (result.ok) {
+        setInsights(result.insights);
+        setReliability(result.reliability);
+      } else {
+        setError(result.error);
+      }
     });
     return () => {
       cancelled = true;
@@ -282,13 +289,24 @@ function LineupInsightsPanel({
       </h3>
       <p className="mt-1 text-xs text-foreground/40">AI coaching analysis for {teamName}&apos;s current lineup.</p>
 
+      {/* Fix 2: the reliability badge was never missing as a component --
+          getLineupInsights simply never returned the inputs it needs. */}
+      {reliability && (
+        <div className="mt-2">
+          <ReliabilityBadge stats={reliability} />
+        </div>
+      )}
+
       {loading && <p className="mt-3 text-sm text-foreground/50">Analyzing the lineup…</p>}
       {error && <p className="mt-3 text-sm text-accent-red">{error}</p>}
       {!loading && !error && insights && insights.length === 0 && (
         <p className="mt-3 text-sm text-foreground/50">Not enough logged at-bats yet for a real analysis.</p>
       )}
       {!loading && !error && insights && insights.length > 0 && (
-        <ul className="mt-3 flex flex-col gap-2">
+        // Fix 1: scrollable with a generous cap, not clipped -- the real
+        // truncation bug was the AI response hitting max_tokens before
+        // finishing, fixed at the source in lineup-insights-actions.ts.
+        <ul className="mt-3 flex max-h-[600px] flex-col gap-2 overflow-y-auto pr-1">
           {insights.map((line, i) => (
             <li key={i} className="rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-white">
               {line}

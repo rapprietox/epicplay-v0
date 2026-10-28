@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { computeBattingLines } from "@/lib/stats";
 import { computeLineupMatrix, findCurrentLineup, findSubstitutesAndReserves } from "@/lib/lineup-analysis";
 import { matchingGameIds, type DayType, type GameFacetFilter, type TimeOfDay } from "@/lib/game-time-filters";
+import type { ReliabilityInput } from "@/lib/reliability";
 
 // Feature 2 (Lineup Intelligence). Model: the request specified
 // "claude-sonnet-4-6", which isn't a real model id -- same exact mistake
@@ -26,7 +27,11 @@ async function requireCoachTeam() {
   return { supabase, teamId: profile.team_id };
 }
 
-export type LineupInsightsResult = { ok: true; insights: string[] } | { ok: false; error: string };
+// Fix 2: carries what the request's own <ReliabilityBadge/> needs --
+// the panel never showed one because the result object never returned
+// reliability inputs in the first place, not because the component was
+// missing or broken.
+export type LineupInsightsResult = { ok: true; insights: string[]; reliability: ReliabilityInput } | { ok: false; error: string };
 
 interface FilterInput {
   gameType: GameFacetFilter["gameType"];
@@ -64,7 +69,7 @@ export async function getLineupInsights(filter: FilterInput): Promise<LineupInsi
     ]);
 
     const current = findCurrentLineup(games ?? [], lineupRows ?? []);
-    if (!current) return { ok: true, insights: [] };
+    if (!current) return { ok: true, insights: [], reliability: { totalAB: 0, gamesPlayed: 0, opponentsCount: 0 } };
 
     const matchingIds = matchingGameIds(games ?? [], { gameType: filter.gameType, timeOfDay: filter.timeOfDay, dayType: filter.dayType });
     const noFilter = filter.gameType === "all" && filter.timeOfDay === "all" && filter.dayType === "all";
@@ -82,14 +87,26 @@ export async function getLineupInsights(filter: FilterInput): Promise<LineupInsi
     );
     const fullRoster = [...matrix, ...substitutesAndReserves];
 
+    // Fix 2: the reliability inputs the panel's <ReliabilityBadge/> needs
+    // -- scoped to the same filtered games/at-bats actually feeding the
+    // AI, not the whole season regardless of filter.
+    const rosterLines = computeBattingLines(filteredAtBats, []);
+    const totalAB = Array.from(rosterLines.values()).reduce((sum, l) => sum + l.ab, 0);
+    const relevantGameIds = new Set(filteredAtBats.map((ab) => ab.game_id));
+    const relevantGames = (games ?? []).filter((g) => relevantGameIds.has(g.id));
+    const reliability: ReliabilityInput = {
+      totalAB,
+      gamesPlayed: relevantGameIds.size,
+      opponentsCount: new Set(relevantGames.map((g) => g.opponent_name)).size,
+    };
+
     // Update 3: lowered from "at least some data exists" to an explicit
     // count -- generate once at least 5 players (starters or bench, not
     // just the 9-10 starting slots) have 2+ PA, checked across the whole
     // roster since a thin starting lineup can still clear this bar once
     // substitutes are counted too.
-    const rosterLines = computeBattingLines(filteredAtBats, []);
     const playersWithTwoPlusPa = Array.from(rosterLines.values()).filter((l) => l.pa >= 2).length;
-    if (playersWithTwoPlusPa < 5) return { ok: true, insights: [] };
+    if (playersWithTwoPlusPa < 5) return { ok: true, insights: [], reliability };
 
     // Team-wide confirmed at-bat count -- the fingerprint described above.
     const fingerprint = (atBats ?? []).length;
@@ -100,7 +117,7 @@ export async function getLineupInsights(filter: FilterInput): Promise<LineupInsi
       { revalidate: 3600 }
     );
     const insights = await cached();
-    return { ok: true, insights };
+    return { ok: true, insights, reliability };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Failed to generate lineup insights" };
   }
@@ -129,9 +146,14 @@ Never mention a player without their actual stats.
 
 Return ONLY the insights, one per line, no numbering, no preamble.`;
 
+  // Fix 1: 1024 was cutting responses off mid-sentence once the prompt
+  // grew to cover the full roster (starters + substitutes, Update 3) --
+  // not a CSS/overflow bug, the model's own output was genuinely
+  // truncated before it finished. Matches the token budget Parts 3/4's
+  // similarly-scoped Opus/Sonnet calls already use.
   const message = await client.messages.create({
     model: MODEL,
-    max_tokens: 1024,
+    max_tokens: 2048,
     system,
     messages: [{ role: "user", content: "Generate the lineup insights now." }],
   });
