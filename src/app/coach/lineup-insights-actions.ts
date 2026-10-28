@@ -158,8 +158,24 @@ Return ONLY the insights, one per line, no numbering, no preamble.`;
     messages: [{ role: "user", content: "Generate the lineup insights now." }],
   });
   const text = message.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
+  return splitInsights(text);
+}
+
+// Splitting on "\n" assumed Claude would always put exactly one insight
+// per physical line, per the prompt's own instruction -- but a model
+// doesn't reliably honor "one per line" formatting, and when it
+// doesn't, a newline-only split collapses every insight into a single
+// array entry (symptom: one card showing one block of run-together
+// text, which is what was actually reported, not a CSS/overflow bug).
+// Splitting on the emoji markers the prompt already requires every
+// insight to start with is robust regardless of whether Claude
+// separates them with one newline, a blank line, or no line break at
+// all.
+const INSIGHT_EMOJI = ["⚠️", "✅", "🎯", "📊"];
+function splitInsights(text: string): string[] {
+  const pattern = new RegExp(`(?=${INSIGHT_EMOJI.map((e) => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
   return text
-    .split("\n")
-    .map((line) => line.trim())
+    .split(pattern)
+    .map((s) => s.trim())
     .filter(Boolean);
 }

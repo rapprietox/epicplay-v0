@@ -303,12 +303,26 @@ function LineupInsightsPanel({
         <p className="mt-3 text-sm text-foreground/50">Not enough logged at-bats yet for a real analysis.</p>
       )}
       {!loading && !error && insights && insights.length > 0 && (
-        // Fix 1: scrollable with a generous cap, not clipped -- the real
-        // truncation bug was the AI response hitting max_tokens before
-        // finishing, fixed at the source in lineup-insights-actions.ts.
-        <ul className="mt-3 flex max-h-[600px] flex-col gap-2 overflow-y-auto pr-1">
+        // Literal values as given, applied inline so there's no
+        // ambiguity about whether a Tailwind utility actually won out
+        // over something else: min-height so the card never looks like
+        // a 1-line sliver even with short content, max-height + auto
+        // scroll so it never grows unbounded, pre-wrap so a bullet with
+        // its own embedded line break still displays it. The real
+        // "only 1 line" cause was splitInsights collapsing every bullet
+        // into one array entry (see lineup-insights-actions.ts) -- this
+        // is the container fix on top of that content fix, not instead
+        // of it.
+        <ul
+          className="mt-3 flex flex-col gap-3 overflow-y-auto pr-1"
+          style={{ minHeight: 200, maxHeight: 500, padding: 16 }}
+        >
           {insights.map((line, i) => (
-            <li key={i} className="rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-white">
+            <li
+              key={i}
+              className="rounded-md border border-border bg-background/40 text-sm text-white"
+              style={{ whiteSpace: "pre-wrap", padding: 16 }}
+            >
               {line}
             </li>
           ))}
