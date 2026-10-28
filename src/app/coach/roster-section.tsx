@@ -2,8 +2,9 @@
 
 import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { addPlayer, generateInviteLink } from "./actions";
+import { addPlayer, generateInviteLink, updatePlayerAttributes } from "./actions";
 import { POSITIONS } from "@/lib/baseball-positions";
+import type { PlayerType } from "@/lib/supabase/types";
 
 interface Player {
   id: string;
@@ -14,7 +15,27 @@ interface Player {
   throwing_hand?: string | null;
   // Clubhouse batch: set once the invite is claimed (see src/lib/invites.ts).
   user_id?: string | null;
+  // Lineup Intelligence 2.0, Part 1.
+  speed_rating?: number | null;
+  player_type?: PlayerType | null;
 }
+
+const SPEED_LABELS: Record<number, string> = {
+  1: "🐢 Very slow",
+  2: "Slow",
+  3: "Average",
+  4: "Fast",
+  5: "⚡ Blazing",
+};
+
+const PLAYER_TYPE_LABELS: Record<PlayerType, string> = {
+  power: "Power Hitter 💪",
+  contact: "Contact Hitter 🎯",
+  table_setter: "Table Setter 📋",
+  speedster: "Speedster ⚡",
+  all_rounder: "All-Rounder ⚾",
+  pitcher_only: "Pitcher Only ⚾",
+};
 
 export function RosterSection({ players, className }: { players: Player[]; className?: string }) {
   const formRef = useRef<HTMLFormElement>(null);
@@ -130,20 +151,24 @@ export function RosterSection({ players, className }: { players: Player[]; class
         {players.map((p) => (
           <div
             key={p.id}
-            className="flex items-start justify-between gap-3 rounded-md border border-border bg-background/40 px-3 py-2 text-sm transition hover:border-accent-primary hover:bg-background/70"
+            className="rounded-md border border-border bg-background/40 px-3 py-2 text-sm transition hover:border-accent-primary hover:bg-background/70"
           >
-            {/* Player info -- left, full width, never overlapped. */}
-            <Link href={`/coach/players/${p.id}`} className="flex min-w-0 flex-1 items-center gap-2 py-1">
-              <span className="shrink-0 text-foreground/50">#{p.jersey_number ?? "—"}</span>
-              <span className="min-w-0 truncate text-white">{p.name}</span>
-              <span className="shrink-0 text-foreground/50">{p.position ?? ""}</span>
-              <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-foreground/50">
-                {p.batting_hand ?? "R"}/{p.throwing_hand ?? "R"}
-              </span>
-            </Link>
+            <div className="flex items-start justify-between gap-3">
+              {/* Player info -- left, full width, never overlapped. */}
+              <Link href={`/coach/players/${p.id}`} className="flex min-w-0 flex-1 items-center gap-2 py-1">
+                <span className="shrink-0 text-foreground/50">#{p.jersey_number ?? "—"}</span>
+                <span className="min-w-0 truncate text-white">{p.name}</span>
+                <span className="shrink-0 text-foreground/50">{p.position ?? ""}</span>
+                <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-foreground/50">
+                  {p.batting_hand ?? "R"}/{p.throwing_hand ?? "R"}
+                </span>
+              </Link>
 
-            {/* Link status -- right, badge on top, action below it. */}
-            <LinkAccountBadge player={p} />
+              {/* Link status -- right, badge on top, action below it. */}
+              <LinkAccountBadge player={p} />
+            </div>
+
+            <PlayerAttributesRow player={p} />
           </div>
         ))}
       </div>
@@ -241,6 +266,73 @@ function LinkAccountBadge({ player }: { player: Player }) {
         {isPending ? "…" : "Link Account"}
       </button>
       {error && <span className="text-right text-[10px] text-accent-red">{error}</span>}
+    </div>
+  );
+}
+
+// Lineup Intelligence 2.0, Part 1: speed circles + player-type dropdown,
+// each saving immediately on change via updatePlayerAttributes. Kept as
+// its own local-state component (not lifted into the parent roster
+// list) so one card's in-flight save/error never re-renders every
+// other card.
+function PlayerAttributesRow({ player }: { player: Player }) {
+  const [speedRating, setSpeedRating] = useState(player.speed_rating ?? 3);
+  const [playerType, setPlayerType] = useState<PlayerType>(player.player_type ?? "all_rounder");
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  function save(nextSpeed: number, nextType: PlayerType) {
+    setError(null);
+    startTransition(async () => {
+      const result = await updatePlayerAttributes(player.id, nextSpeed, nextType);
+      if (!result.ok) setError(result.error);
+    });
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-border/50 pt-2" onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] uppercase tracking-wide text-foreground/40">Speed:</span>
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button
+            key={n}
+            type="button"
+            title={SPEED_LABELS[n]}
+            disabled={isPending}
+            onClick={() => {
+              setSpeedRating(n);
+              save(n, playerType);
+            }}
+            className="flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold leading-none transition disabled:opacity-50"
+            style={{
+              backgroundColor: n === speedRating ? "#F0C060" : "#1A3D28",
+              color: n === speedRating ? "#030A06" : "#8AABCC",
+            }}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+
+      <select
+        value={playerType}
+        disabled={isPending}
+        onChange={(e) => {
+          const next = e.target.value as PlayerType;
+          setPlayerType(next);
+          save(speedRating, next);
+        }}
+        title="Player type"
+        className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-white outline-none focus:border-accent-primary disabled:opacity-50"
+      >
+        {(Object.keys(PLAYER_TYPE_LABELS) as PlayerType[]).map((t) => (
+          <option key={t} value={t}>
+            {PLAYER_TYPE_LABELS[t]}
+          </option>
+        ))}
+      </select>
+
+      {error && <span className="text-[10px] text-accent-red">{error}</span>}
     </div>
   );
 }

@@ -143,6 +143,19 @@ export function PlayerBreakdownClient({
     player.id,
   ]);
 
+  // Lineup Intelligence 2.0, Part 6: "use this everywhere AI analysis is
+  // shown" named this page's Key Insights explicitly.
+  const battingReliability = useMemo(() => {
+    const gameIds = new Set(filteredBattingAtBats.map((ab) => ab.game_id));
+    const opponents = new Set(Array.from(gameIds).map((id) => opponentNameById.get(id)).filter(Boolean));
+    return { totalAB: battingLine?.ab ?? 0, gamesPlayed: gameIds.size, opponentsCount: opponents.size };
+  }, [filteredBattingAtBats, opponentNameById, battingLine]);
+  const pitchingReliability = useMemo(() => {
+    const gameIds = new Set(filteredPitchingAtBats.map((ab) => ab.game_id));
+    const opponents = new Set(Array.from(gameIds).map((id) => opponentNameById.get(id)).filter(Boolean));
+    return { totalAB: filteredPitchingAtBats.length, gamesPlayed: gameIds.size, opponentsCount: opponents.size };
+  }, [filteredPitchingAtBats, opponentNameById]);
+
   const battingZoneAtBats: (AtBatWithZone & { gameType: GameType })[] = useMemo(
     () =>
       filteredBattingAtBats
@@ -361,7 +374,7 @@ export function PlayerBreakdownClient({
       {batterPitches.length > 0 && (
         <>
           <ZoneAnalyticsRow battingAvgLines={battingAvgZoneLines} whiffPitches={batterPitches} locationPitches={batterPitches} />
-          <KeyInsights insights={insights} />
+          <KeyInsights insights={insights} reliability={battingReliability} />
         </>
       )}
 
@@ -377,7 +390,7 @@ export function PlayerBreakdownClient({
             locationPitches={pitcherPitchesWithDamage}
             perspective="pitcher"
           />
-          <KeyInsights insights={pitcherInsights} title="Pitching Key Insights" />
+          <KeyInsights insights={pitcherInsights} title="Pitching Key Insights" reliability={pitchingReliability} />
         </>
       )}
 

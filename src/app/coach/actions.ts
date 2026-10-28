@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { extractSeasonSchedule, type ExtractedGame } from "@/lib/anthropic";
-import type { BattingHand, GameType, ThrowingHand } from "@/lib/supabase/types";
+import type { BattingHand, GameType, PlayerType, ThrowingHand } from "@/lib/supabase/types";
 
 async function requireCoachTeam() {
   const supabase = createClient();
@@ -285,5 +285,27 @@ export async function setSprayChartLocked(locked: boolean): Promise<SprayDotMuta
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Failed to update lock state" };
+  }
+}
+
+// Lineup Intelligence 2.0, Part 1. Saves immediately on change (per the
+// request), so this is a result object rather than throwing -- a failed
+// save here shouldn't take out the whole roster card the way an
+// uncaught Server Action exception would.
+export type UpdatePlayerAttributesResult = { ok: true } | { ok: false; error: string };
+
+export async function updatePlayerAttributes(playerId: string, speedRating: number, playerType: PlayerType): Promise<UpdatePlayerAttributesResult> {
+  try {
+    const { supabase, teamId } = await requireCoachTeam();
+    const { error } = await supabase
+      .from("players")
+      .update({ speed_rating: speedRating, player_type: playerType })
+      .eq("id", playerId)
+      .eq("team_id", teamId);
+    if (error) return { ok: false, error: error.message };
+    revalidatePath("/coach");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to save player attributes" };
   }
 }

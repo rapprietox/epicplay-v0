@@ -8,6 +8,8 @@ import { saveLineupAndUmpire, startGame, checkOtherActiveGame, type LineupSlot, 
 import { endGame } from "@/app/operator/actions";
 import { LoggingModeSelector } from "./logging-mode-selector";
 import { FallbackPositionList } from "./fallback-position-list";
+import { getLiveLineupFeedback, logLineupOverride, type LiveLineupFeedback } from "./live-feedback-actions";
+import { FullLineupAnalysisPanel } from "./full-lineup-analysis-panel";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
 
@@ -103,6 +105,12 @@ export function LineupBuilder({
   const [activeConflict, setActiveConflict] = useState<ActiveGameConflict | null>(null);
   const [isResolvingConflict, startResolveConflict] = useTransition();
   const [dragOver, setDragOver] = useState<"field" | "dh" | "eh" | null>(null);
+  // Part 2 (live lineup feedback): keyed by playerId, not slot number --
+  // a slot can get renumbered by a batting-order-card reorder, which
+  // would silently misattach stale feedback if keyed by slot instead.
+  const [feedbackByPlayerId, setFeedbackByPlayerId] = useState<Record<string, LiveLineupFeedback | "loading">>({});
+  const [overrideOpenFor, setOverrideOpenFor] = useState<string | null>(null);
+  const [overrideLoggedFor, setOverrideLoggedFor] = useState<Set<string>>(new Set());
   // Batting-order-card batch: drag-reorder state for the card's own rows
   // -- separate from `dragOver` (roster -> field/DH/EH placement), since
   // this drag never touches the roster or the drop zones at all.
@@ -157,11 +165,44 @@ export function LineupBuilder({
     setError(null);
     setSaved(false);
     const assignedOrder = nextBattingOrder;
+    const lineupSoFar = placements
+      .filter((p) => p.playerId !== playerId && p.playerId !== conflict?.playerId)
+      .map((p) => ({ slot: p.battingOrder, playerId: p.playerId }));
     setPlacements((prev) => [
       ...prev.filter((p) => p.playerId !== playerId && p.playerId !== conflict?.playerId),
       { playerId, position, battingOrder: assignedOrder },
     ]);
     setNextBattingOrder((n) => n + 1);
+
+    // Part 2: a bumped occupant's old feedback no longer describes
+    // anything real -- cleared along with the fresh placement's own
+    // "loading" state.
+    setFeedbackByPlayerId((prev) => {
+      const next = { ...prev };
+      delete next[playerId];
+      if (conflict) delete next[conflict.playerId];
+      return { ...next, [playerId]: "loading" };
+    });
+    setOverrideOpenFor((cur) => (cur === conflict?.playerId ? null : cur));
+    getLiveLineupFeedback(gameId, playerId, assignedOrder, lineupSoFar).then((result) => {
+      if (!result.ok) {
+        setFeedbackByPlayerId((prev) => {
+          const next = { ...prev };
+          delete next[playerId];
+          return next;
+        });
+        return;
+      }
+      setFeedbackByPlayerId((prev) => ({ ...prev, [playerId]: result.feedback }));
+      // Part 2 (override tracking): prompts immediately when a bad
+      // rating comes back -- "why are you keeping this" is asked
+      // alongside the feedback itself, not gated behind a separate
+      // confirm step, since keeping the placement is already the
+      // default (nothing blocks the coach from just changing it instead).
+      if (result.feedback.rating === "MISTAKE" || result.feedback.rating === "BLUNDER") {
+        setOverrideOpenFor(playerId);
+      }
+    });
   }
 
   // Removing a placement just drops it from the array -- the
@@ -172,6 +213,18 @@ export function LineupBuilder({
     setError(null);
     setSaved(false);
     setPlacements((prev) => prev.filter((p) => p.playerId !== playerId));
+    setFeedbackByPlayerId((prev) => {
+      const next = { ...prev };
+      delete next[playerId];
+      return next;
+    });
+    setOverrideOpenFor((cur) => (cur === playerId ? null : cur));
+  }
+
+  function recordOverride(playerId: string, slot: number, rating: string, reason: string) {
+    setOverrideOpenFor(null);
+    setOverrideLoggedFor((prev) => new Set(prev).add(playerId));
+    void logLineupOverride(gameId, playerId, slot, rating, reason);
   }
 
   // Batting-order-card batch: placements, sorted for the card. Whatever
@@ -537,23 +590,35 @@ export function LineupBuilder({
                   setDragOverOrderIndex(null);
                 }}
                 style={{ touchAction: "none" }}
-                className={`flex cursor-grab items-center gap-2 rounded-md border px-2 py-1.5 text-sm transition active:cursor-grabbing ${
+                className={`cursor-grab rounded-md border px-2 py-1.5 text-sm transition active:cursor-grabbing ${
                   dragOverOrderIndex === i ? "border-accent-gold bg-accent-gold/10" : "border-transparent hover:border-border"
                 }`}
               >
-                <span className="font-heading w-5 shrink-0 text-right font-bold text-accent-gold">{p.battingOrder}</span>
-                <span className="min-w-0 flex-1 truncate font-sans text-white">
-                  {players.find((pl) => pl.id === p.playerId)?.name ?? "Player"}
-                </span>
-                <span className="shrink-0 text-xs font-medium text-accent-green/70">{p.position}</span>
-                <button
-                  type="button"
-                  onClick={() => removePlayer(p.playerId)}
-                  title="Remove from lineup"
-                  className="shrink-0 text-xs text-foreground/30 hover:text-accent-red"
-                >
-                  ✕
-                </button>
+                <div className="flex items-center gap-2">
+                  <span className="font-heading w-5 shrink-0 text-right font-bold text-accent-gold">{p.battingOrder}</span>
+                  <span className="min-w-0 flex-1 truncate font-sans text-white">
+                    {players.find((pl) => pl.id === p.playerId)?.name ?? "Player"}
+                  </span>
+                  <span className="shrink-0 text-xs font-medium text-accent-green/70">{p.position}</span>
+                  <button
+                    type="button"
+                    onClick={() => removePlayer(p.playerId)}
+                    title="Remove from lineup"
+                    className="shrink-0 text-xs text-foreground/30 hover:text-accent-red"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Part 2 (live lineup feedback) */}
+                <LiveFeedbackBadge
+                  feedback={feedbackByPlayerId[p.playerId]}
+                  showOverridePrompt={overrideOpenFor === p.playerId && !overrideLoggedFor.has(p.playerId)}
+                  onOverrideReason={(reason) => {
+                    const fb = feedbackByPlayerId[p.playerId];
+                    if (fb && fb !== "loading") recordOverride(p.playerId, p.battingOrder, fb.rating, reason);
+                  }}
+                />
               </li>
             ))}
             {orderedPlacements.length === 0 && (
@@ -562,6 +627,22 @@ export function LineupBuilder({
           </ul>
         </div>
       </div>
+
+      {/* Part 3 (pre-game deep analysis): only once all 9/10 slots are
+          filled, per the request -- analyzing a half-built lineup isn't
+          useful and would also feed Opus an incomplete picture. */}
+      {filledCount >= 9 && (
+        <FullLineupAnalysisPanel
+          gameId={gameId}
+          placements={placements}
+          onApplyOptimalLineup={(order) => {
+            setError(null);
+            setSaved(false);
+            const slotByPlayerId = new Map(order.map((o) => [o.playerId, o.slot]));
+            setPlacements((prev) => prev.map((p) => ({ ...p, battingOrder: slotByPlayerId.get(p.playerId) ?? p.battingOrder })));
+          }}
+        />
+      )}
 
       {/* Quick Mode batch: "on the pre-game setup screen, after lineup is
           set, show a mode selector" -- placed here, below the lineup/
@@ -771,6 +852,65 @@ function PositionedAvatar({
           remove
         </button>
       </div>
+    </div>
+  );
+}
+
+const RATING_STYLE: Record<LiveLineupFeedback["rating"], { emoji: string; color: string }> = {
+  EXCELLENT: { emoji: "🌟", color: "#2ECC71" },
+  GOOD: { emoji: "✅", color: "#2ECC71" },
+  CONSIDER: { emoji: "❓", color: "#EF9F27" },
+  MISTAKE: { emoji: "⚠️", color: "#E24B4A" },
+  BLUNDER: { emoji: "💀", color: "#E24B4A" },
+};
+
+const OVERRIDE_REASONS = ["Player preference", "Matchup reason", "Team chemistry", "Injury concern", "Other"];
+
+// Part 2 (live lineup feedback): one badge per batting-order row,
+// showing the AI's rating/message/alternative plus a compact
+// reliability line, and -- only for MISTAKE/BLUNDER, until a reason is
+// picked -- the override-reason prompt.
+function LiveFeedbackBadge({
+  feedback,
+  showOverridePrompt,
+  onOverrideReason,
+}: {
+  feedback: LiveLineupFeedback | "loading" | undefined;
+  showOverridePrompt: boolean;
+  onOverrideReason: (reason: string) => void;
+}) {
+  if (!feedback) return null;
+  if (feedback === "loading") {
+    return <p className="mt-1 pl-7 text-xs text-foreground/40">KAIROS is checking this placement…</p>;
+  }
+  const style = RATING_STYLE[feedback.rating];
+  return (
+    <div className="mt-1 pl-7">
+      <p className="text-xs font-semibold" style={{ color: style.color }}>
+        {style.emoji} {feedback.rating} — {feedback.message}
+      </p>
+      {feedback.alternative && <p className="text-xs text-foreground/60">{feedback.alternative}</p>}
+      <p className="text-[10px] text-foreground/40">
+        {feedback.reliabilityScore < 30 ? "🔴" : feedback.reliabilityScore < 60 ? "🟡" : feedback.reliabilityScore < 86 ? "🟢" : "💎"}{" "}
+        {feedback.reliabilityScore}% reliable — {feedback.reliabilityGames} game{feedback.reliabilityGames === 1 ? "" : "s"} only
+      </p>
+      {showOverridePrompt && (
+        <div className="mt-1 rounded-md border border-accent-amber/40 bg-accent-amber/10 p-2">
+          <p className="text-xs text-accent-amber">Why are you keeping this placement?</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {OVERRIDE_REASONS.map((reason) => (
+              <button
+                key={reason}
+                type="button"
+                onClick={() => onOverrideReason(reason)}
+                className="rounded border border-accent-amber/50 px-2 py-0.5 text-[10px] text-accent-amber hover:bg-accent-amber/20"
+              >
+                {reason}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

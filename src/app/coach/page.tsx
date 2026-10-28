@@ -65,6 +65,22 @@ export default async function CoachPage() {
       .filter((g) => g.status === "setup" && g.game_date >= today)
       .sort((a, b) => a.game_date.localeCompare(b.game_date))[0] ?? null;
 
+  // Part 4: "KAIROS has analyzed your loss -- tap to review" -- scoped
+  // to the single most recently completed game. game_analyses has no
+  // read/dismissed column at all (not something the request's own
+  // schema added), so this isn't persistently dismissible -- it simply
+  // stops showing once a newer game is completed. Flagged rather than
+  // silently adding a column beyond what was asked for.
+  const mostRecentCompleted = [...allGames]
+    .filter((g) => g.status === "completed")
+    .sort((a, b) => b.game_date.localeCompare(a.game_date))[0] ?? null;
+  const lossNotification =
+    mostRecentCompleted && mostRecentCompleted.our_score < mostRecentCompleted.opponent_score
+      ? (await supabase.from("game_analyses").select("id").eq("game_id", mostRecentCompleted.id).maybeSingle()).data
+        ? mostRecentCompleted
+        : null
+      : null;
+
   const confirmedAtBats = atBats ?? [];
   // Whiff-rate/pitch-location maps batch: pitch_type/outcome/swing added
   // to the select -- needed for the team-wide whiff-rate and
@@ -157,8 +173,19 @@ export default async function CoachPage() {
 
       <div className="mx-auto mt-6 flex max-w-6xl flex-col gap-6">
         {/* KAIROS batch: "the FIRST element on the /coach dashboard --
-            above everything else including the Next Game panel." */}
+            above everything else including the Next Game panel." --
+            kept first; the Part 4 loss notification goes right after it,
+            not before. */}
         <KairosWidget teamId={teamId} />
+
+        {lossNotification && (
+          <Link
+            href={`/coach/games/${lossNotification.id}/scorebook`}
+            className="glossy flex items-center gap-2 rounded-lg border border-accent-gold/40 bg-accent-gold/10 px-4 py-3 text-sm text-accent-gold transition hover:bg-accent-gold/20"
+          >
+            🧠 KAIROS has analyzed your loss vs {lossNotification.opponent_name} — tap to review
+          </Link>
+        )}
 
         <NextGamePanel
           nextGame={nextGame}

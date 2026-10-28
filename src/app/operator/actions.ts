@@ -18,6 +18,7 @@ import type {
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 import { RESULT_IS_OUT } from "@/lib/operator/types";
 import { parseVoiceCommand, type VoiceCommand } from "@/lib/anthropic";
+import { generatePostGameAnalysis } from "@/lib/post-game-analysis";
 
 async function requireOperatorGame(gameId: string) {
   const supabase = createClient();
@@ -918,6 +919,26 @@ export async function endGame(gameId: string, notes: string) {
     .update({ status: "completed", notes, logging_accuracy_score: accuracyScore })
     .eq("id", gameId);
   if (error) throw new Error(error.message);
+
+  // Part 4 (post-game loss analysis): awaited, not fire-and-forget --
+  // an unawaited promise started here has no guarantee of finishing on
+  // Vercel's serverless functions, which can tear down once this
+  // action's own response is sent. That would mean "the coach is told
+  // an analysis exists" with a real risk it silently never gets written.
+  // The cost is a slower End Game submission specifically after a loss
+  // (Opus, not instant) -- accepted deliberately over a fire-and-forget
+  // that might just never complete. A failed analysis call is caught and
+  // swallowed here rather than failing the whole End Game submission --
+  // the score/accuracy data above is already saved by this point, and a
+  // missing AI analysis is recoverable (the coach can still see it's
+  // absent), unlike losing the game record itself.
+  if (game.our_score < game.opponent_score) {
+    try {
+      await generatePostGameAnalysis(supabase, gameId, game.team_id, "post_game_loss");
+    } catch {
+      // Swallowed deliberately -- see comment above.
+    }
+  }
 
   revalidatePath("/operator");
   revalidatePath("/coach");

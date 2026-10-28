@@ -77,6 +77,9 @@ export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";
 export type ThrowingHand = "L" | "R";
+// Lineup Intelligence 2.0, Part 1.
+export type PlayerType = "power" | "contact" | "table_setter" | "speedster" | "all_rounder" | "pitcher_only";
+export type GameAnalysisType = "post_game_loss" | "post_game_win" | "pre_game";
 // Feature 1 (lineup-status batch): a player's role in THIS game, distinct
 // from their team-wide players row -- "starting" is derived (whoever has
 // a position + batting order), "reserve"/"absent" are the coach's own
@@ -221,6 +224,9 @@ export interface Database {
           kairos_messages_used: number;
           kairos_messages_reset_date: string;
           kairos_initial_assessment: string | null;
+          // Lineup Intelligence 2.0, Part 1.
+          speed_rating: number;
+          player_type: PlayerType;
           created_at: string;
         };
         Insert: {
@@ -237,6 +243,8 @@ export interface Database {
           kairos_messages_used?: number;
           kairos_messages_reset_date?: string;
           kairos_initial_assessment?: string | null;
+          speed_rating?: number;
+          player_type?: PlayerType;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["players"]["Insert"]>;
@@ -667,6 +675,55 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["field_calibration"]["Insert"]>;
+        Relationships: [];
+      };
+      // Lineup Intelligence 2.0, Part 2: logs why a coach kept a
+      // placement the live AI feedback rated MISTAKE/BLUNDER.
+      lineup_overrides: {
+        Row: {
+          id: string;
+          team_id: string | null;
+          game_id: string | null;
+          player_id: string | null;
+          slot: number | null;
+          ai_rating: string | null;
+          override_reason: string | null;
+          created_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          team_id?: string | null;
+          game_id?: string | null;
+          player_id?: string | null;
+          slot?: number | null;
+          ai_rating?: string | null;
+          override_reason?: string | null;
+          created_at?: string | null;
+        };
+        Update: Partial<Database["public"]["Tables"]["lineup_overrides"]["Insert"]>;
+        Relationships: [];
+      };
+      // Lineup Intelligence 2.0, Part 4: cached AI pre/post-game analysis.
+      game_analyses: {
+        Row: {
+          id: string;
+          game_id: string;
+          team_id: string;
+          analysis_type: GameAnalysisType;
+          content: string;
+          reliability_pct: number | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          team_id: string;
+          analysis_type: GameAnalysisType;
+          content: string;
+          reliability_pct?: number | null;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["game_analyses"]["Insert"]>;
         Relationships: [];
       };
     };
