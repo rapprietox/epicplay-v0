@@ -1,18 +1,62 @@
+import fs from "node:fs";
+import path from "node:path";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
-// Anonymous visitors never actually render this component -- middleware
-// rewrites "/" straight to public/marketing.html for them (see
-// src/lib/supabase/middleware.ts). This only runs for signed-in users,
-// and mirrors ROLE_HOME there, including the team_id gate (a
-// role-matching profile with no team yet still goes to /pending, same
-// as every other route).
+// Marketing-homepage fix, take 2: the previous version had middleware
+// NextResponse.rewrite "/" to public/marketing.html -- that didn't
+// reliably work on Vercel's Edge middleware runtime. Reading the file
+// directly in this Server Component (plain Node.js runtime, no rewrite
+// involved at all) is the replacement.
+//
+// marketing.html is a full standalone document (doctype/html/head/body),
+// built to also be servable as its own static file. It can't be dropped
+// in whole here: this component's return value renders *inside* the
+// shared <body> from src/app/layout.tsx, so a second nested <html>/<head>
+// would be invalid HTML. Instead, strip the outer wrapper tags and inline
+// everything between them -- the <style> block, the Google Fonts <link>
+// tags, <nav>, <main>, and the trailing <script> -- as one block.
+// <link rel="stylesheet">, <style>, and <script> all work the same
+// whether they sit in <head> or <body>; that's standard browser
+// behavior, not a hack. And because this is read and rendered by a
+// Server Component (not injected into a live DOM via client-side
+// innerHTML after the page has already loaded), the browser parses the
+// <script> tag as part of the real initial HTML response and executes
+// it normally, same as any other page's inline script.
+const marketingHtml = fs
+  .readFileSync(path.join(process.cwd(), "public", "marketing.html"), "utf-8")
+  .replace(/^<!doctype html>\s*/i, "")
+  .replace(/<html[^>]*>\s*/i, "")
+  .replace(/\s*<\/html>\s*$/i, "")
+  .replace(/<head>\s*/i, "")
+  .replace(/\s*<\/head>\s*/i, "")
+  .replace(/<body>\s*/i, "")
+  .replace(/\s*<\/body>\s*$/i, "")
+  // Next's own <head> already provides a correct charset/viewport meta;
+  // these two (left over from marketing.html's own head section) would
+  // just be redundant, inert duplicates sitting inside <body>.
+  .replace(/<meta charset="utf-8">\s*/i, "")
+  .replace(/<meta name="viewport"[^>]*>\s*/i, "");
+
+// Anonymous visitors render the marketing site inline, below. Signed-in
+// users fall through to the role-based redirect (mirrors ROLE_HOME in
+// src/lib/supabase/middleware.ts), including the team_id gate -- a
+// role-matching profile with no team yet still goes to /pending, same as
+// every other route.
 export default async function HomePage() {
   const supabase = createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+
+  if (!user) {
+    return (
+      <>
+        <title>EpicPlay AI War Room</title>
+        <div id="marketing-page" dangerouslySetInnerHTML={{ __html: marketingHtml }} />
+      </>
+    );
+  }
 
   const { data: profile } = await supabase
     .from("profiles")

@@ -23,9 +23,13 @@ const EXTRA_ALLOWED_SECTIONS: Record<string, string[]> = {
 // bounce them to /pending before the claim ever runs.
 const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/auth-code-error", "/invite"];
 
-// Marketing-homepage fix: "/" is public too (src/app/page.tsx now renders
-// the marketing page for anonymous visitors and redirects signed-in users
-// to their own dashboard itself -- see that file). Deliberately NOT folded
+// Marketing-homepage fix: "/" is public too (src/app/page.tsx renders the
+// full marketing site inline for anonymous visitors -- via
+// dangerouslySetInnerHTML of public/marketing.html's contents, not a
+// rewrite; an earlier version of this routed through a middleware
+// NextResponse.rewrite to that static file, which didn't reliably work
+// on Vercel's Edge middleware runtime -- and redirects signed-in users
+// to their own dashboard itself, see that file). Deliberately NOT folded
 // into PUBLIC_PATHS above: every one of those is matched with
 // `pathname.startsWith(path)`, and "/" is a prefix of every path on the
 // site -- adding it there would mark /coach, /operator, /player, etc. as
@@ -60,17 +64,6 @@ export async function updateSession(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   const isPublicPath = pathname === "/" || PUBLIC_PATHS.some((path) => pathname.startsWith(path));
-
-  // Marketing homepage: an anonymous visitor hitting "/" gets the real
-  // marketing site (public/marketing.html, the full "War Room" build)
-  // rewritten in -- the URL stays "/", the response is that static
-  // file's content instead of src/app/page.tsx's React tree. A signed-in
-  // user skips this and falls through to page.tsx's own redirect logic.
-  if (!user && pathname === "/") {
-    const url = request.nextUrl.clone();
-    url.pathname = "/marketing.html";
-    return NextResponse.rewrite(url);
-  }
 
   if (!user && !isPublicPath) {
     const url = request.nextUrl.clone();
