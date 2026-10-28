@@ -18,6 +18,16 @@ export interface BattingLine {
   hr: number;
   bb: number;
   hbp: number;
+  // Bug fix: strikeouts were never tracked on the batting line at all
+  // (only the separate pitching line's own `k`, for strikeouts a
+  // player's pitching recorded against opponents) -- a batter's own
+  // strikeout count had nowhere to live, so any UI trying to show it
+  // was reading undefined. `pa` (plate appearances, ab + bb + hbp) is
+  // the same denominator OBP already computes inline -- exposed here
+  // too since K%/BB% (lineup-grid and EPS batches) need it directly
+  // rather than re-deriving it at every call site.
+  k: number;
+  pa: number;
   rbi: number;
   runsScored: number;
   sb: number;
@@ -37,6 +47,8 @@ function emptyBattingLine(playerId: string): BattingLine {
     hr: 0,
     bb: 0,
     hbp: 0,
+    k: 0,
+    pa: 0,
     rbi: 0,
     runsScored: 0,
     sb: 0,
@@ -91,6 +103,10 @@ export function computeBattingLines(
     if (ab.result === "double" || ab.result === "ground_rule_double") line.doubles += 1;
     if (ab.result === "triple") line.triples += 1;
     if (ab.result === "hr") line.hr += 1;
+    // Matches computePitchingLines' own strikeout check -- a dropped
+    // third strike the batter reaches base safely on still counts as a
+    // strikeout under standard scoring, even though it isn't an out.
+    if (ab.result === "strikeout" || ab.result === "dropped_third_strike_safe") line.k += 1;
   }
 
   for (const sb of stolenBases) {
@@ -100,6 +116,7 @@ export function computeBattingLines(
   for (const line of Array.from(lines.values())) {
     const totalBases = line.h - line.doubles - line.triples - line.hr + line.doubles * 2 + line.triples * 3 + line.hr * 4;
     const obpDenominator = line.ab + line.bb + line.hbp;
+    line.pa = obpDenominator;
     line.avg = line.ab > 0 ? line.h / line.ab : 0;
     line.obp = obpDenominator > 0 ? (line.h + line.bb + line.hbp) / obpDenominator : 0;
     line.slg = line.ab > 0 ? totalBases / line.ab : 0;

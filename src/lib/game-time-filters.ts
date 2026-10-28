@@ -66,3 +66,32 @@ export function dayTypeBucket(gameDate: string): DayType {
   const day = new Date(`${gameDate}T00:00:00`).getDay();
   return day === 0 || day === 6 ? "weekend" : "weekday";
 }
+
+export interface GameFacetFilter {
+  gameType: "all" | "season" | "playoff";
+  timeOfDay: TimeOfDay | "all";
+  dayType: DayType | "all";
+}
+
+export const ALL_GAME_FACETS: GameFacetFilter = { gameType: "all", timeOfDay: "all", dayType: "all" };
+
+// Lineup Analysis batch: the same three-facet narrowing the Team Leaders
+// Board already applies inline -- factored out here so a second caller
+// (the lineup grid, and the AI insights action that mirrors its filter
+// server-side) doesn't duplicate this logic a third time. LeadersBoard's
+// own inline version is left as-is rather than migrated to this, since
+// it already works and touching it risks regressing something that
+// isn't broken.
+export function matchingGameIds(
+  games: { id: string; game_type: string; start_time: string | null; game_time: string | null; game_date: string }[],
+  filter: GameFacetFilter
+): Set<string> {
+  const ids = new Set<string>();
+  for (const g of games) {
+    if (filter.gameType !== "all" && g.game_type !== filter.gameType) continue;
+    if (filter.timeOfDay !== "all" && timeOfDayBucket(resolveStartMinutes(g)) !== filter.timeOfDay) continue;
+    if (filter.dayType !== "all" && dayTypeBucket(g.game_date) !== filter.dayType) continue;
+    ids.add(g.id);
+  }
+  return ids;
+}

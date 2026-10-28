@@ -5,7 +5,19 @@ type Player = Database["public"]["Tables"]["players"]["Row"];
 
 // Clubhouse batch: jersey-number gold circle is a deliberate placeholder
 // -- "later replaced with photo" per spec, no upload flow this sprint.
-export function ClubhouseHeader({ player, teamName, line }: { player: Player; teamName: string; line: BattingLine | undefined }) {
+export function ClubhouseHeader({
+  player,
+  teamName,
+  line,
+  eps,
+}: {
+  player: Player;
+  teamName: string;
+  line: BattingLine | undefined;
+  // Feature 3 (EPS): Clubhouse Pro only -- null here means either not
+  // unlocked or under the 5-PA minimum, both rendered as "--".
+  eps: number | null;
+}) {
   return (
     <header className="glossy flex flex-col items-center gap-4 rounded-lg border border-border bg-surface p-6 text-center sm:flex-row sm:text-left">
       <div
@@ -20,11 +32,12 @@ export function ClubhouseHeader({ player, teamName, line }: { player: Player; te
           #{player.jersey_number ?? "—"} · {player.position ?? "—"} · {teamName}
         </p>
       </div>
-      <div className="grid shrink-0 grid-cols-4 gap-4 sm:gap-6">
+      <div className={`grid shrink-0 gap-4 sm:gap-6 ${player.clubhouse_unlocked ? "grid-cols-5" : "grid-cols-4"}`}>
         <SnapshotStat label="AVG" value={line ? formatAvg(line.avg) : "—"} />
         <SnapshotStat label="HR" value={line ? String(line.hr) : "—"} />
         <SnapshotStat label="RBI" value={line ? String(line.rbi) : "—"} />
         <SnapshotStat label="OPS" value={line ? line.ops.toFixed(3) : "—"} />
+        {player.clubhouse_unlocked && <SnapshotStat label="EPS" value={eps !== null ? eps.toFixed(1) : "—"} />}
       </div>
     </header>
   );

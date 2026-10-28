@@ -178,6 +178,17 @@ function StrikeoutIcon() {
   );
 }
 
+// Performance Score (EPS) -- a trophy.
+function TrophyIcon() {
+  return (
+    <IconBase>
+      <path d="M8 3h8v6a4 4 0 01-8 0z" />
+      <path d="M8 4H5a1 1 0 00-1 1v1a4 4 0 004 4M16 4h3a1 1 0 011 1v1a4 4 0 01-4 4" />
+      <path d="M12 13v3M9 20h6M9 20l.5-3h5l.5 3" />
+    </IconBase>
+  );
+}
+
 // Innings Pitched -- a clock.
 function ClockIcon() {
   return (
@@ -214,6 +225,7 @@ const STAT_ICONS: Record<string, () => React.ReactElement> = {
   Wins: StarIcon,
   "Strikeouts (P)": StrikeoutIcon,
   "Innings Pitched": ClockIcon,
+  "Performance Score": TrophyIcon,
 };
 
 export function StatIcon({ label }: { label: string }) {

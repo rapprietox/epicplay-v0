@@ -21,6 +21,7 @@ import { HitterExtendedStats } from "./hitter-extended-stats";
 import { PitcherExtendedStats } from "./pitcher-extended-stats";
 import { ZoneAnalyticsRow } from "./zone-analytics-row";
 import { KeyInsights } from "./key-insights";
+import { computeEpsForPlayer, epsTier, EPS_TIER_LABEL } from "@/lib/eps";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
@@ -30,6 +31,7 @@ type Pitch = Pick<
   Database["public"]["Tables"]["pitches"]["Row"],
   "at_bat_id" | "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome" | "swing"
 >;
+type GameEvent = Pick<Database["public"]["Tables"]["game_events"]["Row"], "event_type" | "player_id" | "game_id">;
 
 // Time-of-day/day-of-week filters batch: everything below (batting/
 // pitching lines, zone at-bats, spray dots, pitch-type/count breakdowns)
@@ -51,6 +53,7 @@ export function PlayerBreakdownClient({
   fieldCalibration,
   insights,
   pitcherInsights,
+  caughtStealingEvents,
 }: {
   player: Player;
   games: Game[];
@@ -61,6 +64,8 @@ export function PlayerBreakdownClient({
   fieldCalibration: FieldCalibrationPoints | null;
   insights: string[];
   pitcherInsights: string[];
+  // EPS batch: this player's own caught-stealing events (SB_success_rate).
+  caughtStealingEvents: GameEvent[];
 }) {
   const [timeOfDayFilter, setTimeOfDayFilter] = useState<TimeOfDay | "all">("all");
   const [dayTypeFilter, setDayTypeFilter] = useState<DayType | "all">("all");
@@ -123,6 +128,15 @@ export function PlayerBreakdownClient({
     filteredStolenBases,
     player.id,
   ]);
+
+  const filteredCaughtStealingEvents = useMemo(
+    () => (noFilterActive ? caughtStealingEvents : caughtStealingEvents.filter((e) => matchingGameIds.has(e.game_id))),
+    [caughtStealingEvents, matchingGameIds, noFilterActive]
+  );
+  const eps = useMemo(
+    () => computeEpsForPlayer(player.id, filteredBattingAtBats, filteredCaughtStealingEvents),
+    [player.id, filteredBattingAtBats, filteredCaughtStealingEvents]
+  );
   const pitchingLine = useMemo(() => computePitchingLines(filteredPitchingAtBats, filteredGames).get(player.id), [
     filteredPitchingAtBats,
     filteredGames,
@@ -272,6 +286,32 @@ export function PlayerBreakdownClient({
         </select>
       </div>
 
+      {/* Feature 3 (EPS): "--" when under the 5-PA minimum, same
+          honest-gap treatment as every other under-sample stat on this
+          page rather than a misleading 0.0. */}
+      <section className="glossy flex items-center gap-4 rounded-lg border border-accent-gold/30 bg-surface p-5">
+        <div>
+          <p
+            className="font-heading text-5xl font-black leading-none text-accent-gold"
+            style={{ textShadow: "0 0 10px #F0C060, 0 0 20px rgba(240,192,96,0.4)" }}
+          >
+            {eps !== null ? eps.toFixed(1) : "—"}
+          </p>
+          <p className="mt-1 text-xs uppercase tracking-wide text-foreground/50">EPS</p>
+        </div>
+        {eps !== null && (
+          <span className="rounded-full border border-accent-gold/40 bg-accent-gold/10 px-3 py-1 text-sm font-semibold text-accent-gold">
+            {EPS_TIER_LABEL[epsTier(eps)]}
+          </span>
+        )}
+        <span
+          className="ml-auto cursor-help text-xs text-foreground/40"
+          title="EpicPlay Performance Score -- a weighted composite of your offensive contributions"
+        >
+          ⓘ
+        </span>
+      </section>
+
       <section className="glossy rounded-lg border border-border bg-surface p-5">
         <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">Batting</h2>
         {battingLine && battingLine.ab > 0 ? (
@@ -288,6 +328,7 @@ export function PlayerBreakdownClient({
               ["HR", battingLine.hr],
               ["RBI", battingLine.rbi],
               ["BB", battingLine.bb],
+              ["K", battingLine.k],
               ["SB", battingLine.sb],
             ]}
           />

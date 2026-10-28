@@ -12,7 +12,9 @@ import { ScheduleTable } from "./schedule-table";
 import { RealtimeRefresh } from "./realtime-refresh";
 import { TeamAnalytics } from "./team-analytics";
 import { OpponentScoutingSection } from "./opponent-scouting-section";
+import { LineupAnalysisSection } from "./lineup-analysis-section";
 import { KairosWidget } from "./kairos-widget";
+import { findCurrentLineup } from "@/lib/lineup-analysis";
 import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import type { AtBatResult } from "@/lib/supabase/types";
 
@@ -44,12 +46,16 @@ export default async function CoachPage() {
 
   const allGames = games ?? [];
   const gameIds = allGames.map((g) => g.id);
-  const [{ data: atBats }, { data: stolenBases }] = gameIds.length
+  const [{ data: atBats }, { data: stolenBases }, { data: lineupRows }, { data: gameEvents }] = gameIds.length
     ? await Promise.all([
         supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null),
         supabase.from("stolen_bases").select("*").in("game_id", gameIds),
+        supabase.from("lineup").select("*").in("game_id", gameIds).eq("status", "starting"),
+        // EPS batch: SB_success_rate needs caught-stealing counts, which
+        // only live in game_events, not stolen_bases.
+        supabase.from("game_events").select("event_type, player_id, game_id").in("game_id", gameIds).eq("event_type", "caught_stealing"),
       ])
-    : [{ data: [] as never[] }, { data: [] as never[] }];
+    : [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }];
   const activeGame = allGames.find((g) => g.status === "active") ?? null;
   const today = new Date().toISOString().slice(0, 10);
   const nextGame =
@@ -123,6 +129,13 @@ export default async function CoachPage() {
       };
     });
 
+  // Feature 1 (Lineup Analysis): a season can easily span more than one
+  // batting order (confirmed true for this team's own Game 1 vs Game 2),
+  // so "slot -> player" is defined by whichever game's starting lineup
+  // is most recent, not merged across every lineup the team has ever used.
+  const currentLineup = findCurrentLineup(allGames, lineupRows ?? []);
+  const hittingAtBatsForLineup = confirmedAtBats.filter((ab) => ab.mode === "hitting");
+
   return (
     <main className="min-h-screen px-6 py-8">
       <StadiumBackground />
@@ -155,7 +168,7 @@ export default async function CoachPage() {
 
         <LastGameCard games={allGames} />
 
-        <LeadersBoard players={players ?? []} atBats={atBats ?? []} stolenBases={stolenBases ?? []} games={allGames} />
+        <LeadersBoard players={players ?? []} atBats={atBats ?? []} stolenBases={stolenBases ?? []} games={allGames} gameEvents={gameEvents ?? []} />
 
         <ScheduleTable games={allGames} opponentNames={(opponents ?? []).map((o) => o.name)} />
 
@@ -166,6 +179,14 @@ export default async function CoachPage() {
           nextOpponentName={nextGame?.opponent_name ?? null}
           hitterPitches={teamHitterPitches}
           sprayChartLocked={team?.spray_chart_locked ?? false}
+        />
+
+        <LineupAnalysisSection
+          lineupRows={currentLineup?.rows ?? []}
+          players={players ?? []}
+          atBats={hittingAtBatsForLineup}
+          games={allGames}
+          teamName={team?.name ?? "the team"}
         />
 
         <OpponentScoutingSection opponents={opponents ?? []} games={allGames} />

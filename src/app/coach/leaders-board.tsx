@@ -14,11 +14,13 @@ import {
   type TimeOfDay,
 } from "@/lib/game-time-filters";
 import { StatIcon } from "./stat-icons";
+import { computeEpsForRoster } from "@/lib/eps";
 
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
 type Player = Database["public"]["Tables"]["players"]["Row"];
+type GameEvent = Pick<Database["public"]["Tables"]["game_events"]["Row"], "event_type" | "player_id" | "game_id">;
 
 type Filter = "all" | "season" | "playoff";
 
@@ -27,6 +29,8 @@ interface Props {
   atBats: AtBat[];
   stolenBases: StolenBase[];
   games: Game[];
+  // EPS batch: caught-stealing only lives in game_events, not stolen_bases.
+  gameEvents: GameEvent[];
 }
 
 interface Leader {
@@ -90,7 +94,12 @@ function leadersFromRanking(ranking: RankedPlayer[], lowerIsBetter: boolean): { 
   return { value: topValue, leaders: ranking.filter((r) => r.value === topValue) };
 }
 
-function buildRows(players: Player[], battingLines: Map<string, BattingLine>, pitchingLines: Map<string, PitchingLine>): LeaderRow[] {
+function buildRows(
+  players: Player[],
+  battingLines: Map<string, BattingLine>,
+  pitchingLines: Map<string, PitchingLine>,
+  epsLines: Map<string, { eps: number }>
+): LeaderRow[] {
   const battingHasAb = (l: BattingLine) => l.ab > 0;
   const battingHasPa = (l: BattingLine) => l.ab + l.bb + l.hbp > 0;
   const pitchingHasIp = (l: PitchingLine) => l.ip > 0;
@@ -140,10 +149,16 @@ function buildRows(players: Player[], battingLines: Map<string, BattingLine>, pi
     rows.push({ label: spec.label, value, leaders, ranking, format: spec.format, lowerIsBetter });
   }
 
+  // EPS batch: qualification (min 5 PA) already happened in computeEps
+  // itself -- any entry present in epsLines has already cleared that bar.
+  const epsRanking = buildRanking(players, epsLines, (l) => l.eps, () => true, false);
+  const { value: epsValue, leaders: epsLeaders } = leadersFromRanking(epsRanking, false);
+  rows.push({ label: "Performance Score", value: epsValue, leaders: epsLeaders, ranking: epsRanking, format: (v) => v.toFixed(1), lowerIsBetter: false });
+
   return rows;
 }
 
-export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
+export function LeadersBoard({ players, atBats, stolenBases, games, gameEvents }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
   // Time-of-day/day-of-week filters batch: "all" (no restriction) for
   // both, same shape as the existing game-type filter above -- three
@@ -186,11 +201,22 @@ export function LeadersBoard({ players, atBats, stolenBases, games }: Props) {
     return games.filter((g) => matchingGameIds.has(g.id));
   }, [games, matchingGameIds, noFilterActive]);
 
+  const filteredGameEvents = useMemo(() => {
+    if (noFilterActive) return gameEvents;
+    return gameEvents.filter((e) => matchingGameIds.has(e.game_id));
+  }, [gameEvents, matchingGameIds, noFilterActive]);
+
   const rows = useMemo(() => {
     const battingLines = computeBattingLines(filteredAtBats, filteredStolenBases);
     const pitchingLines = computePitchingLines(filteredAtBats, filteredGames);
-    return buildRows(players, battingLines, pitchingLines);
-  }, [players, filteredAtBats, filteredStolenBases, filteredGames]);
+    const epsLines = computeEpsForRoster(players.map((p) => p.id), filteredAtBats, filteredGameEvents);
+    const epsLinesPresent = new Map(
+      Array.from(epsLines.entries())
+        .filter(([, eps]) => eps !== null)
+        .map(([id, eps]) => [id, { eps: eps as number }])
+    );
+    return buildRows(players, battingLines, pitchingLines, epsLinesPresent);
+  }, [players, filteredAtBats, filteredStolenBases, filteredGames, filteredGameEvents]);
 
   // Launch-audit Fix 8: a brand-new team's first look at this card was
   // 15 "No data yet" tiles at once -- not broken, just a noisier first

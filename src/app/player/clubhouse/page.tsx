@@ -12,6 +12,7 @@ import { computeSituationalStats } from "@/lib/situational-stats";
 import { recentGamesAvg, currentHitStreak, streakStatus } from "@/lib/streaks";
 import { computeHeadToHead } from "@/lib/head-to-head";
 import { computeMilestones } from "@/lib/milestones";
+import { computeEpsForPlayer } from "@/lib/eps";
 import { ClubhouseHeader } from "./header";
 import { ClubhouseNavBar } from "./clubhouse-nav-bar";
 import { PregameCard } from "./pregame-card";
@@ -53,6 +54,13 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
     ? await supabase.from("stolen_bases").select("*").eq("player_id", player.id).in("game_id", gameIds)
     : { data: [] };
 
+  // EPS batch: SB_success_rate needs caught-stealing counts, only in
+  // game_events -- Clubhouse Pro only (gated below), so skip the query
+  // entirely for a free-tier player.
+  const { data: caughtStealingEvents } = player.clubhouse_unlocked && gameIds.length
+    ? await supabase.from("game_events").select("event_type, player_id, game_id").eq("player_id", player.id).in("game_id", gameIds).eq("event_type", "caught_stealing")
+    : { data: [] };
+
   const { data: pitches } = atBatIds.length
     ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", atBatIds)
     : { data: [] };
@@ -67,6 +75,8 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   const fieldCalibration = (fieldCalibrationRow?.calibration_points as FieldCalibrationPoints | undefined) ?? null;
 
   const seasonLine = computeBattingLines(confirmedAtBats, stolenBases ?? []).get(player.id);
+  // Feature 3 (EPS): Clubhouse Pro only, per the request's own scoping.
+  const eps = player.clubhouse_unlocked ? computeEpsForPlayer(player.id, confirmedAtBats, caughtStealingEvents ?? []) : null;
 
   // Zone data for the mini Map 1 panel + ZoneAnalyticsRow, mirroring the
   // same "last pitch of the at-bat is the zone" derivation the coach's
@@ -205,7 +215,7 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
     <main className="min-h-screen bg-background">
       <ClubhouseNavBar />
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6">
-        <ClubhouseHeader player={player} teamName={team?.name ?? "Team"} line={seasonLine} />
+        <ClubhouseHeader player={player} teamName={team?.name ?? "Team"} line={seasonLine} eps={eps} />
 
         <PregameCard todaysGame={todaysGame} message={pregameMessage} lastGame={gameHistoryRows[0] ?? null} />
 

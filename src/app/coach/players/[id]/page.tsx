@@ -50,7 +50,7 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
   // re-run that derivation on demand as the coach changes it, which a
   // server component can't do without a full page reload. This page now
   // just fetches the raw rows and hands them over unfiltered.
-  const [{ data: battingAtBats }, { data: pitchingAtBats }, { data: stolenBases }] = gameIds.length
+  const [{ data: battingAtBats }, { data: pitchingAtBats }, { data: stolenBases }, { data: caughtStealingEvents }] = gameIds.length
     ? await Promise.all([
         supabase
           .from("at_bats")
@@ -64,8 +64,10 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
         // keyed by pitcher_id instead.
         supabase.from("at_bats").select("*").eq("pitcher_id", player.id).in("game_id", gameIds).not("confirmed_at", "is", null),
         supabase.from("stolen_bases").select("*").eq("player_id", player.id).in("game_id", gameIds),
+        // EPS batch: SB_success_rate needs caught-stealing counts, only in game_events.
+        supabase.from("game_events").select("event_type, player_id, game_id").eq("player_id", player.id).in("game_id", gameIds).eq("event_type", "caught_stealing"),
       ])
-    : [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }];
+    : [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }];
 
   const allAtBatIds = [...(battingAtBats ?? []), ...(pitchingAtBats ?? [])].map((ab) => ab.id);
   // Whiff-rate/pitch-location maps batch: "swing" added to the select --
@@ -120,6 +122,7 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
           fieldCalibration={fieldCalibration}
           insights={insights}
           pitcherInsights={pitcherInsights}
+          caughtStealingEvents={caughtStealingEvents ?? []}
         />
       </div>
     </main>
