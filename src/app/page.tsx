@@ -23,20 +23,36 @@ import { createClient } from "@/lib/supabase/server";
 // innerHTML after the page has already loaded), the browser parses the
 // <script> tag as part of the real initial HTML response and executes
 // it normally, same as any other page's inline script.
-const marketingHtml = fs
-  .readFileSync(path.join(process.cwd(), "public", "marketing.html"), "utf-8")
-  .replace(/^<!doctype html>\s*/i, "")
-  .replace(/<html[^>]*>\s*/i, "")
-  .replace(/\s*<\/html>\s*$/i, "")
-  .replace(/<head>\s*/i, "")
-  .replace(/\s*<\/head>\s*/i, "")
-  .replace(/<body>\s*/i, "")
-  .replace(/\s*<\/body>\s*$/i, "")
-  // Next's own <head> already provides a correct charset/viewport meta;
-  // these two (left over from marketing.html's own head section) would
-  // just be redundant, inert duplicates sitting inside <body>.
-  .replace(/<meta charset="utf-8">\s*/i, "")
-  .replace(/<meta name="viewport"[^>]*>\s*/i, "");
+const marketingHtmlPath = path.join(process.cwd(), "public", "marketing.html");
+
+// Diagnostic logs -- confirming whether this file is actually present
+// in the deployed Vercel function bundle (public/ assets aren't
+// guaranteed to be included in the serverless function's own file set
+// the way they're served as static assets). Remove once confirmed.
+console.log("marketing.html exists:", fs.existsSync(marketingHtmlPath));
+
+let marketingHtml = "";
+try {
+  marketingHtml = fs
+    .readFileSync(marketingHtmlPath, "utf-8")
+    .replace(/^<!doctype html>\s*/i, "")
+    .replace(/<html[^>]*>\s*/i, "")
+    .replace(/\s*<\/html>\s*$/i, "")
+    .replace(/<head>\s*/i, "")
+    .replace(/\s*<\/head>\s*/i, "")
+    .replace(/<body>\s*/i, "")
+    .replace(/\s*<\/body>\s*$/i, "")
+    // Next's own <head> already provides a correct charset/viewport meta;
+    // these two (left over from marketing.html's own head section) would
+    // just be redundant, inert duplicates sitting inside <body>.
+    .replace(/<meta charset="utf-8">\s*/i, "")
+    .replace(/<meta name="viewport"[^>]*>\s*/i, "");
+} catch (e) {
+  console.error("marketing.html not found:", e);
+  marketingHtml =
+    '<h1 style="color:gold;font-family:sans-serif;text-align:center;padding:100px">EPICPLAY AI - Coming Soon</h1>';
+}
+console.log("marketing.html size:", marketingHtml.length);
 
 // Anonymous visitors render the marketing site inline, below. Signed-in
 // users fall through to the role-based redirect (mirrors ROLE_HOME in
@@ -50,16 +66,9 @@ export default async function HomePage() {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    console.log("Marketing page served - anonymous user");
     return (
       <>
         <title>EpicPlay AI War Room</title>
-        {/* Temporary test - remove after confirming this branch is reached on Vercel */}
-        <div
-          style={{ position: "fixed", top: 0, left: 0, zIndex: 9999, background: "red", color: "white", padding: "8px" }}
-        >
-          MARKETING PAGE LOADED v2
-        </div>
         <div id="marketing-page" dangerouslySetInnerHTML={{ __html: marketingHtml }} />
       </>
     );
