@@ -61,6 +61,17 @@ export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const isPublicPath = pathname === "/" || PUBLIC_PATHS.some((path) => pathname.startsWith(path));
 
+  // Marketing homepage: an anonymous visitor hitting "/" gets the real
+  // marketing site (public/marketing.html, the full "War Room" build)
+  // rewritten in -- the URL stays "/", the response is that static
+  // file's content instead of src/app/page.tsx's React tree. A signed-in
+  // user skips this and falls through to page.tsx's own redirect logic.
+  if (!user && pathname === "/") {
+    const url = request.nextUrl.clone();
+    url.pathname = "/marketing.html";
+    return NextResponse.rewrite(url);
+  }
+
   if (!user && !isPublicPath) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
