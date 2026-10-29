@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { SectionVideo } from "./SectionVideo";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -45,6 +46,7 @@ export function DataAwakens() {
 
   return (
     <section className="section-full data-section" id="platform-data" ref={sectionRef}>
+      <SectionVideo src="/hero-video2.mp4" loop={false} opacity={0.5} />
       <div className="section" style={{ paddingBottom: 0 }}>
         <div className="data-head">
           <h2 className="section-headline headline-white">Every game tells a story.</h2>
