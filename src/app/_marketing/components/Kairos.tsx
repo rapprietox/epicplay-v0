@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { SectionVideo } from "./SectionVideo";
 
 interface Conversation {
   role: string;
@@ -114,7 +113,6 @@ export function Kairos() {
   return (
     <section className="kairos-section" id="kairos">
       <div className="kairos-visual">
-        <SectionVideo src="/hero-video3.mp4" opacity={0.5} />
         <div className="kairos-visual-content">
           <div className="kairos-orb" />
           <div className="kairos-name">KAIROS</div>

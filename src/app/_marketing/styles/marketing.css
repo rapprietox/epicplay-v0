@@ -48,18 +48,6 @@
   z-index: 2;
 }
 
-/* Reusable per-section accent video (SectionVideo.tsx) -- plays only
-   while scrolled into view. Opacity is set per-instance via inline
-   style, so none is declared here. */
-.section-video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  z-index: 0;
-}
-
 .hero-content {
   position: relative;
   z-index: 10;
@@ -286,7 +274,6 @@
   border-top: 1px solid #1a3d28;
   border-bottom: 1px solid #1a3d28;
 }
-/* Content sits above the full-width accent video added via SectionVideo. */
 .data-section > .section {
   position: relative;
   z-index: 1;
@@ -484,8 +471,6 @@
   border-right: 1px solid #1a3d28;
 }
 
-/* Wraps the orb/name/subtitle so they stack above the accent video
-   (SectionVideo, inset:0 z-index:0) filling this left half behind them. */
 .kairos-visual-content {
   position: relative;
   z-index: 1;
@@ -814,9 +799,6 @@
   position: relative;
 }
 
-/* The full-screen accent video (SectionVideo) sits at z-index 0, behind
-   this field diagram -- bumped from 0 to 1 so it still reads as a
-   decorative overlay on top of the video rather than being covered. */
 .cta-field {
   position: absolute;
   inset: 0;

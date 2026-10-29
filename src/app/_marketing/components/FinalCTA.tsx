@@ -3,7 +3,6 @@
 import { useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { SectionVideo } from "./SectionVideo";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -29,8 +28,6 @@ export function FinalCTA() {
 
   return (
     <section className="cta-section" ref={sectionRef}>
-      <SectionVideo src="/hero-video4.mp4" opacity={0.5} />
-
       {/* Populated field diagram, dimmed to 15% as a background accent --
           literal hex colors, not CSS vars, matching this app's established
           practice for raw SVG presentation attributes. */}
