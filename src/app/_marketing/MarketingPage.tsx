@@ -1,9 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import Lenis from "lenis";
 import { Hero } from "./components/Hero";
 import { DataAwakens } from "./components/DataAwakens";
 import { Platform } from "./components/Platform";
@@ -16,36 +14,18 @@ import { TheSignal } from "./components/TheSignal";
 import { FinalCTA } from "./components/FinalCTA";
 import { Footer } from "./components/Footer";
 import { Nav } from "./components/Nav";
-import "lenis/dist/lenis.css";
 import "./styles/marketing.css";
 
+// Lenis smooth-scroll was removed here -- it was fighting GSAP's own
+// ScrollTrigger (each driving scroll math off a different clock), making
+// the page feel slow and uncontrollable. Native scroll works fine with
+// ScrollTrigger out of the box (it's GSAP's own default scroller), and
+// every section's scroll-reveal/scrub animation is unaffected -- each
+// registers its own ScrollTrigger instance and cleans itself up on
+// unmount, independent of this top-level component.
 gsap.registerPlugin(ScrollTrigger);
 
 export function MarketingPage() {
-  useEffect(() => {
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reducedMotion) return;
-
-    const lenis = new Lenis({
-      duration: 0.8,
-      easing: (t: number) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
-    });
-
-    lenis.on("scroll", ScrollTrigger.update);
-
-    function raf(time: number) {
-      lenis.raf(time);
-    }
-    gsap.ticker.add(raf);
-    gsap.ticker.lagSmoothing(0);
-
-    return () => {
-      gsap.ticker.remove(raf);
-      lenis.destroy();
-      ScrollTrigger.getAll().forEach((t) => t.kill());
-    };
-  }, []);
-
   return (
     <div className="marketing-page" id="top">
       <Nav />

@@ -43,9 +43,9 @@ export function Hero() {
     const advanceTo = (from: HTMLVideoElement, to: HTMLVideoElement, n: number) => {
       setActiveVideo(n);
       from.style.opacity = "0";
-      to.style.opacity = "0.75";
+      to.style.opacity = "1";
       to.currentTime = 0;
-      void to.play();
+      to.play().catch((e) => console.error(`Video ${n} play failed:`, e));
     };
 
     const onV1Ended = () => advanceTo(v1, v2, 2);
@@ -58,9 +58,15 @@ export function Hero() {
     v3.addEventListener("ended", onV3Ended);
     v4.addEventListener("ended", onV4Ended);
 
-    [v1, v2, v3, v4].forEach((v) => v.load());
-    v1.style.opacity = "0.75";
-    void v1.play();
+    // Force video 1 visible immediately -- it was never getting an
+    // opacity above the CSS default of 0 (every video started at 0 and
+    // only the *next* one in the chain was ever explicitly raised).
+    // Deliberately no .load() call here: calling it right before .play()
+    // aborts the pending play request on some browsers, which is why
+    // nothing was rendering even though the file itself loaded fine
+    // (preload="auto" already starts buffering without it).
+    v1.style.opacity = "1";
+    v1.play().catch((e) => console.error("Video 1 play failed:", e));
 
     return () => {
       v1.removeEventListener("ended", onV1Ended);
@@ -357,7 +363,14 @@ export function Hero() {
           ended-event cross-fade chain. Stacked at inset:0; only the
           active one is opaque. */}
       <div className="video-stack">
-        <video ref={video1Ref} className="hero-video" muted playsInline preload="auto">
+        <video
+          ref={video1Ref}
+          className="hero-video"
+          style={{ opacity: 1 }}
+          muted
+          playsInline
+          preload="auto"
+        >
           <source src="/hero-video.mp4" type="video/mp4" />
         </video>
         <video ref={video2Ref} className="hero-video" muted playsInline preload="auto">
