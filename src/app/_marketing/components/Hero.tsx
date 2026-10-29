@@ -7,6 +7,14 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 
 gsap.registerPlugin(ScrollTrigger);
 
+// Absolute URL rather than a relative path, per request -- built from
+// this project's own existing NEXT_PUBLIC_SITE_URL convention (already
+// used the same way in src/app/login/page.tsx and
+// src/app/coach/actions.ts) rather than a hardcoded "epicplayai.com",
+// so this still resolves correctly on localhost and on every Vercel
+// preview deployment, not just the production domain.
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+
 export function Hero() {
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -308,7 +316,7 @@ export function Hero() {
           a subtle 25%-opacity accent (z-index 1, .hero-canvas) -> dark
           overlay (z-index 2) -> content (z-index 10). */}
       <video autoPlay muted loop playsInline className="hero-video">
-        <source src="/hero-video.mp4" type="video/mp4" />
+        <source src={`${SITE_URL}/hero-video.mp4`} type="video/mp4" />
       </video>
 
       <div ref={canvasRef} className="hero-canvas" />

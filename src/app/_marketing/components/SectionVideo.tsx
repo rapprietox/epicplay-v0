@@ -9,6 +9,19 @@ interface SectionVideoProps {
   className?: string;
 }
 
+// Absolute URL rather than a relative path, per request -- built from
+// this project's own existing NEXT_PUBLIC_SITE_URL convention (already
+// used the same way in src/app/login/page.tsx and
+// src/app/coach/actions.ts) rather than a hardcoded "epicplayai.com",
+// so this still resolves correctly on localhost and on every Vercel
+// preview deployment, not just the production domain.
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+
+function resolveAbsoluteSrc(src: string): string {
+  if (src.startsWith("http")) return src;
+  return `${SITE_URL}${src.startsWith("/") ? src : `/${src}`}`;
+}
+
 // A per-section accent video -- unlike the hero's always-on background
 // loop, this only plays while scrolled into view (and pauses once it
 // leaves), so it reads as a moment the section reveals rather than
@@ -52,7 +65,7 @@ export function SectionVideo({ src, opacity = 0.6, loop = true, className }: Sec
       style={{ opacity }}
       aria-hidden="true"
     >
-      <source src={src} type="video/mp4" />
+      <source src={resolveAbsoluteSrc(src)} type="video/mp4" />
     </video>
   );
 }
