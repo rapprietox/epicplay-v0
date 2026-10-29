@@ -38,6 +38,22 @@ const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/auth-code-error", "/inv
 // instead, exactly because of that footgun.
 
 export async function updateSession(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Skip entirely for static files and API routes -- these should never
+  // run the Supabase auth check or get caught by the role-routing
+  // redirect below. This is what was actually breaking the marketing
+  // page's hero/section videos: the config.matcher in src/middleware.ts
+  // excludes a handful of image extensions but never listed .mp4, so a
+  // video request for an anonymous visitor (no user, and the path isn't
+  // in PUBLIC_PATHS) was hitting the "!user && !isPublicPath" branch
+  // below and getting redirected to /login instead of ever reaching the
+  // file. Also covers /api/* -- the Stripe webhook route has no
+  // Supabase session either, so it had the same latent bug.
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/api/") || pathname.includes(".")) {
+    return NextResponse.next({ request });
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient<Database>(
@@ -63,7 +79,6 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const { pathname } = request.nextUrl;
   const isPublicPath = pathname === "/" || PUBLIC_PATHS.some((path) => pathname.startsWith(path));
 
   if (!user && !isPublicPath) {
