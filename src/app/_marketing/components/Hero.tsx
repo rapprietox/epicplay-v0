@@ -3,11 +3,13 @@
 import { useEffect } from "react";
 import { gsap } from "gsap";
 
-// Nuclear option: Three.js entirely removed to isolate the hero video
-// from the field-overlay rendering question. If the video shows with
-// nothing but this, the issue was always the canvas layer above it,
-// not the video/markup itself -- Three.js can then be reintroduced
-// carefully on top rather than debugged blind.
+// Three.js was removed entirely to isolate the hero video from the
+// field-overlay question -- turned out neither the canvas nor this
+// markup was the actual bug: middleware was redirecting the video
+// request itself for anonymous visitors (see src/lib/supabase/
+// middleware.ts). Confirmed fixed with this simplified version, so the
+// 3D field stays out for now; reintroduce it deliberately, not blind,
+// if/when it's wanted back.
 export function Hero() {
   useEffect(() => {
     gsap.fromTo(
@@ -44,15 +46,14 @@ export function Hero() {
           width: "100%",
           height: "100%",
           objectFit: "cover",
-          opacity: 1,
+          opacity: 0.75,
           zIndex: 0,
         }}
       >
         <source src="/hero-video.mp4" type="video/mp4" />
       </video>
 
-      {/* Dark overlay -- temporarily disabled to confirm the video itself
-          is loading/rendering
+      {/* Dark overlay */}
       <div
         style={{
           position: "absolute",
@@ -60,7 +61,7 @@ export function Hero() {
           background: "rgba(3,10,6,0.4)",
           zIndex: 1,
         }}
-      /> */}
+      />
 
       {/* Content */}
       <div
