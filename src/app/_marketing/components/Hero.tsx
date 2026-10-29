@@ -44,14 +44,15 @@ export function Hero() {
           width: "100%",
           height: "100%",
           objectFit: "cover",
-          opacity: 0.75,
+          opacity: 1,
           zIndex: 0,
         }}
       >
         <source src="/hero-video.mp4" type="video/mp4" />
       </video>
 
-      {/* Dark overlay */}
+      {/* Dark overlay -- temporarily disabled to confirm the video itself
+          is loading/rendering
       <div
         style={{
           position: "absolute",
@@ -59,7 +60,7 @@ export function Hero() {
           background: "rgba(3,10,6,0.4)",
           zIndex: 1,
         }}
-      />
+      /> */}
 
       {/* Content */}
       <div
