@@ -24,13 +24,14 @@ const EXTRA_ALLOWED_SECTIONS: Record<string, string[]> = {
 const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/auth-code-error", "/invite"];
 
 // Marketing-homepage fix: "/" is public too (src/app/page.tsx renders the
-// full marketing site inline for anonymous visitors -- via
-// dangerouslySetInnerHTML of public/marketing.html's contents, not a
-// rewrite; an earlier version of this routed through a middleware
-// NextResponse.rewrite to that static file, which didn't reliably work
-// on Vercel's Edge middleware runtime -- and redirects signed-in users
-// to their own dashboard itself, see that file). Deliberately NOT folded
-// into PUBLIC_PATHS above: every one of those is matched with
+// full marketing site -- a native React/Three.js/GSAP build at
+// src/app/_marketing -- for anonymous visitors, and redirects signed-in
+// users to their own dashboard itself, see that file). Earlier versions
+// of this routed through a static public/marketing.html file read via
+// fs.readFileSync + dangerouslySetInnerHTML, and before that a
+// middleware NextResponse.rewrite, neither of which is used any more.
+// Deliberately NOT folded into PUBLIC_PATHS above: every one of those is
+// matched with
 // `pathname.startsWith(path)`, and "/" is a prefix of every path on the
 // site -- adding it there would mark /coach, /operator, /player, etc. as
 // public too and disable auth entirely. It's matched with a plain `===`
