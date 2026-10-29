@@ -27,7 +27,7 @@ export function MarketingPage() {
     if (reducedMotion) return;
 
     const lenis = new Lenis({
-      duration: 1.4,
+      duration: 0.8,
       easing: (t: number) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
     });
 

@@ -234,7 +234,7 @@ export function Hero() {
           trigger: heroSection,
           start: "top top",
           end: "bottom top",
-          scrub: 1.5,
+          scrub: 0.5,
         },
       });
 
