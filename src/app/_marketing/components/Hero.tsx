@@ -15,7 +15,14 @@ gsap.registerPlugin(ScrollTrigger);
 // preview deployment, not just the production domain.
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 
-export function Hero() {
+interface HeroProps {
+  // Debug escape hatch: false skips the Three.js scene entirely (no
+  // effect runs, no canvas renders) to A/B the video against the field
+  // overlay. Defaults to on -- the field is meant to render normally.
+  showThreeJS?: boolean;
+}
+
+export function Hero({ showThreeJS = true }: HeroProps = {}) {
   const canvasRef = useRef<HTMLDivElement>(null);
 
   // Hero copy reveal -- unconditional, independent of whether the 3D
@@ -30,6 +37,7 @@ export function Hero() {
   }, []);
 
   useEffect(() => {
+    if (!showThreeJS) return;
     const container = canvasRef.current;
     if (!container) return;
 
@@ -46,9 +54,14 @@ export function Hero() {
     let handleResize: (() => void) | null = null;
 
     try {
-      // Scene
+      // Scene -- background deliberately left unset (not a Color) so the
+      // renderer's own alpha:true clear (set explicitly below) actually
+      // produces a transparent canvas. A Color background paints opaque
+      // everywhere there's no geometry, which the renderer draws
+      // regardless of alpha:true -- that opaque fill, not z-index
+      // ordering, is what was reading as "the canvas is covering the
+      // video" even with the CSS opacity/z-index stack already correct.
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x030a06);
       scene.fog = new THREE.FogExp2(0x030a06, 0.008);
 
       // Camera -- starts high above field looking down at angle
@@ -61,8 +74,10 @@ export function Hero() {
       camera.position.set(0, 45, 70);
       camera.lookAt(0, 0, 0);
 
-      // Renderer
+      // Renderer -- explicit transparent clear (alpha 0) so empty space
+      // between the field lines/particles is genuinely see-through.
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setClearColor(0x000000, 0);
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -71,17 +86,27 @@ export function Hero() {
 
       // FIELD GEOMETRY
 
+      // Grass/dirt are the largest solid-fill meshes in the scene --
+      // made semi-transparent (not just relying on the container's own
+      // CSS opacity) so they read as a dim field outline over the video
+      // rather than an opaque plane competing with it.
       const grassGeo = new THREE.PlaneGeometry(300, 300);
       const grassMat = new THREE.MeshBasicMaterial({
         color: 0x071a0e,
         side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.5,
       });
       const grass = new THREE.Mesh(grassGeo, grassMat);
       grass.rotation.x = -Math.PI / 2;
       scene.add(grass);
 
       const dirtGeo = new THREE.CircleGeometry(20, 64);
-      const dirtMat = new THREE.MeshBasicMaterial({ color: 0x2d1e0f });
+      const dirtMat = new THREE.MeshBasicMaterial({
+        color: 0x2d1e0f,
+        transparent: true,
+        opacity: 0.5,
+      });
       const dirt = new THREE.Mesh(dirtGeo, dirtMat);
       dirt.rotation.x = -Math.PI / 2;
       dirt.position.y = 0.01;
@@ -148,7 +173,11 @@ export function Hero() {
       scene.add(home);
 
       const moundGeo = new THREE.CylinderGeometry(3, 4, 0.8, 32);
-      const moundMat = new THREE.MeshBasicMaterial({ color: 0x3d2b1a });
+      const moundMat = new THREE.MeshBasicMaterial({
+        color: 0x3d2b1a,
+        transparent: true,
+        opacity: 0.5,
+      });
       const mound = new THREE.Mesh(moundGeo, moundMat);
       mound.position.set(0, 0.4, 0);
       scene.add(mound);
@@ -308,7 +337,7 @@ export function Hero() {
       }
       ScrollTrigger.getAll().forEach((t) => t.kill());
     };
-  }, []);
+  }, [showThreeJS]);
 
   return (
     <section className="hero-section">
@@ -319,7 +348,7 @@ export function Hero() {
         <source src={`${SITE_URL}/hero-video.mp4`} type="video/mp4" />
       </video>
 
-      <div ref={canvasRef} className="hero-canvas" />
+      {showThreeJS && <div ref={canvasRef} className="hero-canvas" />}
 
       {/* Dark overlay */}
       <div className="hero-overlay" />
