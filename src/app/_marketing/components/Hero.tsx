@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -9,6 +9,11 @@ gsap.registerPlugin(ScrollTrigger);
 
 export function Hero() {
   const canvasRef = useRef<HTMLDivElement>(null);
+  const video1Ref = useRef<HTMLVideoElement>(null);
+  const video2Ref = useRef<HTMLVideoElement>(null);
+  const video3Ref = useRef<HTMLVideoElement>(null);
+  const video4Ref = useRef<HTMLVideoElement>(null);
+  const [activeVideo, setActiveVideo] = useState(1);
 
   // Hero copy reveal -- unconditional, independent of whether the 3D
   // scene below succeeds. A 3D-scene failure should never also hide
@@ -17,8 +22,52 @@ export function Hero() {
     gsap.fromTo(
       ".gsap-hero-content",
       { opacity: 0, y: 30 },
-      { opacity: 1, y: 0, duration: 1.2, ease: "power2.out", delay: 4 }
+      { opacity: 1, y: 0, duration: 1.2, ease: "power2.out", delay: 3 }
     );
+  }, []);
+
+  // 4-video scroll-driven story: field awakens -> stat cards rush in ->
+  // KAIROS materializes -> championship. Each video plays through once
+  // (no loop attribute -- looping individually would never advance the
+  // story) and its own "ended" event cross-fades into the next, with
+  // video 4 looping back to video 1. Driven by direct opacity writes on
+  // the <video> elements themselves, not React state, so a fade never
+  // waits on a render; `activeVideo` state only drives the progress dots.
+  useEffect(() => {
+    const v1 = video1Ref.current;
+    const v2 = video2Ref.current;
+    const v3 = video3Ref.current;
+    const v4 = video4Ref.current;
+    if (!v1 || !v2 || !v3 || !v4) return;
+
+    const advanceTo = (from: HTMLVideoElement, to: HTMLVideoElement, n: number) => {
+      setActiveVideo(n);
+      from.style.opacity = "0";
+      to.style.opacity = "0.75";
+      to.currentTime = 0;
+      void to.play();
+    };
+
+    const onV1Ended = () => advanceTo(v1, v2, 2);
+    const onV2Ended = () => advanceTo(v2, v3, 3);
+    const onV3Ended = () => advanceTo(v3, v4, 4);
+    const onV4Ended = () => advanceTo(v4, v1, 1);
+
+    v1.addEventListener("ended", onV1Ended);
+    v2.addEventListener("ended", onV2Ended);
+    v3.addEventListener("ended", onV3Ended);
+    v4.addEventListener("ended", onV4Ended);
+
+    [v1, v2, v3, v4].forEach((v) => v.load());
+    v1.style.opacity = "0.75";
+    void v1.play();
+
+    return () => {
+      v1.removeEventListener("ended", onV1Ended);
+      v2.removeEventListener("ended", onV2Ended);
+      v3.removeEventListener("ended", onV3Ended);
+      v4.removeEventListener("ended", onV4Ended);
+    };
   }, []);
 
   useEffect(() => {
@@ -304,13 +353,27 @@ export function Hero() {
 
   return (
     <section className="hero-section">
-      {/* Three.js canvas */}
-      <div ref={canvasRef} className="hero-canvas" />
+      {/* 4-video scroll-driven story -- see the effect above for the
+          ended-event cross-fade chain. Stacked at inset:0; only the
+          active one is opaque. */}
+      <div className="video-stack">
+        <video ref={video1Ref} className="hero-video" muted playsInline preload="auto">
+          <source src="/hero-video.mp4" type="video/mp4" />
+        </video>
+        <video ref={video2Ref} className="hero-video" muted playsInline preload="auto">
+          <source src="/hero-video2.mp4" type="video/mp4" />
+        </video>
+        <video ref={video3Ref} className="hero-video" muted playsInline preload="auto">
+          <source src="/hero-video3.mp4" type="video/mp4" />
+        </video>
+        <video ref={video4Ref} className="hero-video" muted playsInline preload="auto">
+          <source src="/hero-video4.mp4" type="video/mp4" />
+        </video>
+      </div>
 
-      {/* Video overlay behind canvas */}
-      <video autoPlay muted loop playsInline className="hero-video" style={{ opacity: 0.15 }}>
-        <source src="/hero-video.mp4" type="video/mp4" />
-      </video>
+      {/* Three.js field -- a subtle 25%-opacity accent floating over the
+          video story, not competing with it (see .hero-canvas). */}
+      <div ref={canvasRef} className="hero-canvas" />
 
       {/* Dark overlay */}
       <div className="hero-overlay" />
@@ -331,6 +394,13 @@ export function Hero() {
             See How It Works ↓
           </a>
         </div>
+      </div>
+
+      {/* 4 dots -- which of the 4 hero videos is currently playing */}
+      <div className="video-progress">
+        {[1, 2, 3, 4].map((n) => (
+          <div key={n} className={`progress-dot ${activeVideo === n ? "active" : ""}`} />
+        ))}
       </div>
 
       {/* Skip button */}

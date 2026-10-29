@@ -15,14 +15,28 @@
   justify-content: center;
 }
 
+/* The 3D field is now a subtle accent layered on top of the video story
+   below it, not the hero's own background -- see .video-stack. */
 .hero-canvas {
   position: absolute;
   inset: 0;
   z-index: 1;
+  opacity: 0.25;
+  pointer-events: none;
 }
 
 .hero-canvas canvas {
   display: block;
+}
+
+/* 4-video scroll-driven story (see Hero.tsx): all 4 stacked at inset:0,
+   opacity toggled via inline style as each one's "ended" event fires --
+   no CSS .active/attribute-selector hack needed since the opacity is
+   set directly, this just supplies the cross-fade transition. */
+.video-stack {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
 }
 
 .hero-video {
@@ -31,14 +45,41 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.8s ease;
 }
 
 .hero-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(3, 10, 6, 0.3);
+  background: rgba(3, 10, 6, 0.25);
   z-index: 2;
+}
+
+/* 4 dots, bottom center, showing which hero video is currently playing */
+.video-progress {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 8px;
+}
+
+.progress-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(240, 192, 96, 0.3);
+  transition: all 0.3s ease;
+}
+
+.progress-dot.active {
+  background: #f0c060;
+  box-shadow: 0 0 8px #f0c060;
+  width: 24px;
+  border-radius: 3px;
 }
 
 .hero-content {
