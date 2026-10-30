@@ -36,6 +36,12 @@ const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/auth-code-error", "/inv
 // site -- adding it there would mark /coach, /operator, /player, etc. as
 // public too and disable auth entirely. It's matched with a plain `===`
 // instead, exactly because of that footgun.
+//
+// /privacy and /terms (src/app/privacy, src/app/terms) are public for the
+// same reason and matched the same exact way -- Google's OAuth consent
+// screen needs both URLs to resolve for an anonymous visitor, and neither
+// name is a meaningful prefix of anything else, but `===` is used anyway
+// to stay consistent with "/" above rather than mixing matching styles.
 
 export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -79,7 +85,11 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const isPublicPath = pathname === "/" || PUBLIC_PATHS.some((path) => pathname.startsWith(path));
+  const isPublicPath =
+    pathname === "/" ||
+    pathname === "/privacy" ||
+    pathname === "/terms" ||
+    PUBLIC_PATHS.some((path) => pathname.startsWith(path));
 
   if (!user && !isPublicPath) {
     const url = request.nextUrl.clone();

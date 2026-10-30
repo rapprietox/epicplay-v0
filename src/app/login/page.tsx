@@ -75,6 +75,18 @@ export default function LoginPage() {
         {error && (
           <p className="mt-4 text-center text-sm text-accent-red">{error}</p>
         )}
+
+        <p className="mt-4 text-center text-xs text-foreground/50">
+          By signing in you agree to our{" "}
+          <a href="/terms" className="text-accent-gold hover:text-accent-green">
+            Terms
+          </a>{" "}
+          and{" "}
+          <a href="/privacy" className="text-accent-gold hover:text-accent-green">
+            Privacy Policy
+          </a>
+          .
+        </p>
       </div>
     </main>
   );

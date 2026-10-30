@@ -11,7 +11,8 @@ export function Footer() {
         <a href="mailto:hello@epicplayai.com">Contact</a>
       </div>
       <p className="footer-copy">
-        © 2026 EpicPlay AI · A MRB Company · <a href="#">Privacy</a> · <a href="#">Terms</a>
+        © 2026 EpicPlay AI · A MRB Company · <a href="/privacy">Privacy</a> ·{" "}
+        <a href="/terms">Terms</a>
       </p>
     </footer>
   );
