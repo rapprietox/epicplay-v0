@@ -33,21 +33,32 @@ export const TRACKED_FEATURES = [
   "Live pitch counts",
 ] as const;
 
-// Confirmed facts only -- the Lions are a real team whose 2026 DLL
-// season is logged in this codebase's own supabase/data-ops/*.sql
-// scripts (2026_lions_season_setup.sql and its follow-up corrections).
-// No player names, scores, or win/loss records from those scripts are
-// reproduced here -- that's real youth players' game data, not
-// marketing copy, and the user hasn't confirmed any specific number for
-// public use. Only the team name, league label, and season year are
-// taken as given; everything else stays generic until confirmed.
-export const CASE_STUDY = {
-  teamName: "Lions",
-  league: "DLL",
-  season: "2026",
+// Founding Season section: deliberately no team name and no league
+// name -- generic, true facts only. This platform really was built
+// around one real team's first logged season and a real operator at
+// the field, but naming that team/league here isn't this component's
+// call to make, so the copy in CaseStudy.tsx stays generic on purpose.
+export const FOUNDING_SEASON = {
   // Left empty on purpose -- QuoteCard only renders when this is
   // non-empty, so a real quote can be dropped in later without any
   // other code change.
   quote: "",
   quoteAttribution: "",
 };
+
+// KAIROS section: falls back to the CSS orb if this file doesn't
+// exist yet (it doesn't) -- see Kairos.tsx's onError handler. Kept as
+// one constant so a real/AI-generated image can be swapped in later
+// without touching the component.
+export const KAIROS_IMAGE_SRC = "/kairos.png";
+
+// Interactive Demo's spray chart: the exact same field background
+// images the real app's PlayerSprayChart already uses
+// (src/app/player/clubhouse/pro/player-spray-chart.tsx), so the demo
+// matches the product instead of inventing its own art. Kept as one
+// constant so an AI-generated replacement can be swapped in later
+// without touching the component.
+export const SPRAY_FIELD_IMAGES = {
+  "2d": "/field-2d.png",
+  "3d": "/field-3d.png",
+} as const;

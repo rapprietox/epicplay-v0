@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { Wordmark } from "./Wordmark";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -119,7 +120,10 @@ export function FinalCTA() {
         </svg>
       </div>
 
+      <div className="cta-overlay" aria-hidden="true" />
+
       <div className="cta-content">
+        <Wordmark size={32} className="cta-wordmark" />
         <h2>Your War Room Is Ready.</h2>
         <p>Join the teams already using EpicPlay AI to gain the competitive edge.</p>
         <a href="/login" className="btn-primary">

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { KAIROS_IMAGE_SRC } from "../constants";
 
 interface Conversation {
   role: string;
@@ -43,6 +44,10 @@ export function Kairos() {
   const [promptText, setPromptText] = useState("");
   const [responseText, setResponseText] = useState("");
   const startedRef = useRef(false);
+  // Falls back to the orb if /kairos.png doesn't exist (it doesn't
+  // yet) -- onError fires on the 404 and this just never renders the
+  // <img> again, so nothing breaks.
+  const [imageFailed, setImageFailed] = useState(false);
 
   useEffect(() => {
     const el = terminalRef.current;
@@ -121,9 +126,24 @@ export function Kairos() {
     <section className="kairos-section" id="kairos">
       <div className="kairos-visual">
         <div className="kairos-visual-content">
-          <div className="kairos-orb" />
+          {imageFailed ? (
+            <div className="kairos-orb" />
+          ) : (
+            // A plain <img> so onError's fallback-to-orb is trivial;
+            // this isn't a Core Web Vitals-critical image.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={KAIROS_IMAGE_SRC}
+              alt="KAIROS"
+              className="kairos-image"
+              onError={() => setImageFailed(true)}
+            />
+          )}
           <div className="kairos-name">KAIROS</div>
-          <div className="kairos-subtitle">Greek · god of the perfect moment</div>
+          <p className="kairos-description">
+            KAIROS is your team&apos;s AI baseball analyst. It reads your real logged games and answers in plain
+            language: lineups, weak spots, practice plans.
+          </p>
         </div>
       </div>
       <div className="kairos-terminal" ref={terminalRef}>

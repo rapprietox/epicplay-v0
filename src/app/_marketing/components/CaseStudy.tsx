@@ -3,27 +3,25 @@
 import { useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { CASE_STUDY } from "../constants";
+import { FOUNDING_SEASON } from "../constants";
 
 gsap.registerPlugin(ScrollTrigger);
 
-// Only facts confirmed against this codebase's own
-// supabase/data-ops/*.sql scripts -- team name, league label, and
-// season year. No scores, records, or player names (those scripts
-// contain real youth players' game data, not marketing copy).
+// Deliberately no team name and no league name -- generic, true facts
+// only (see FOUNDING_SEASON's own comment in constants.ts for why).
 const TIMELINE = [
   {
-    year: CASE_STUDY.season,
-    title: `The ${CASE_STUDY.teamName} founding season`,
-    text: `EpicPlay AI was built around a real team and a real operator -- the ${CASE_STUDY.teamName}, playing their ${CASE_STUDY.season} ${CASE_STUDY.league} season.`,
+    year: "Season 1",
+    title: "Built around a real team",
+    text: "EpicPlay AI wasn't designed in a vacuum -- it was built around a real youth team and a real operator logging games at the field, from day one.",
   },
   {
-    year: CASE_STUDY.season,
+    year: "Season 1",
     title: "First games logged",
-    text: "The first live games went through the operator screen exactly the way any team's games do now -- pitch by pitch, at-bat by at-bat.",
+    text: "The first live games went through the exact same operator screen every team uses today -- pitch by pitch, at-bat by at-bat, no special treatment.",
   },
   {
-    year: CASE_STUDY.season,
+    year: "Season 1",
     title: "Built from what a real season needed",
     text: "Every feature on this page exists because a real coach, running a real season, needed it -- not because it looked good on a roadmap.",
   },
@@ -53,11 +51,11 @@ export function CaseStudy() {
   }, []);
 
   return (
-    <section className="case-study-section section-full" id="case-study" ref={sectionRef}>
+    <section className="case-study-section section-full" id="founding-season" ref={sectionRef}>
       <div className="section">
         <div className="future-head">
-          <h2 className="section-headline headline-white">A real team.</h2>
-          <h2 className="section-headline headline-gold">A real founding season.</h2>
+          <h2 className="section-headline headline-white">Built with a real team,</h2>
+          <h2 className="section-headline headline-gold">in a real founding season.</h2>
         </div>
         <div className="timeline">
           {TIMELINE.map((item, i) => (
@@ -81,16 +79,16 @@ export function CaseStudy() {
   );
 }
 
-// Hidden entirely unless CASE_STUDY.quote is a real, confirmed quote --
-// currently empty on purpose. Set CASE_STUDY.quote (and
-// quoteAttribution) in src/app/_marketing/constants.ts once there's a
-// real one to show; no other code change needed.
+// Hidden entirely unless FOUNDING_SEASON.quote is a real, confirmed
+// quote -- currently empty on purpose. Set it (and quoteAttribution)
+// in src/app/_marketing/constants.ts once there's a real one to show;
+// no other code change needed.
 function QuoteCard() {
-  if (!CASE_STUDY.quote) return null;
+  if (!FOUNDING_SEASON.quote) return null;
   return (
     <div className="card quote-card">
-      <p className="quote-text">&ldquo;{CASE_STUDY.quote}&rdquo;</p>
-      {CASE_STUDY.quoteAttribution && <p className="quote-attribution">&mdash; {CASE_STUDY.quoteAttribution}</p>}
+      <p className="quote-text">&ldquo;{FOUNDING_SEASON.quote}&rdquo;</p>
+      {FOUNDING_SEASON.quoteAttribution && <p className="quote-attribution">&mdash; {FOUNDING_SEASON.quoteAttribution}</p>}
     </div>
   );
 }

@@ -1,11 +1,11 @@
 "use client";
 
+import { useEffect } from "react";
 import dynamic from "next/dynamic";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Hero } from "./components/Hero";
 import { Nav } from "./components/Nav";
-import { Kairos } from "./components/Kairos";
 import { Pricing } from "./components/Pricing";
 import { FinalCTA } from "./components/FinalCTA";
 import { Footer } from "./components/Footer";
@@ -24,13 +24,15 @@ gsap.registerPlugin(ScrollTrigger);
 
 // Everything below the hero is code-split via next/dynamic (ssr:false
 // isn't needed since the whole page is already "use client" -- dynamic
-// import alone is what gives each of these its own lazily-loaded chunk,
-// which is the actual bundle-size win per the request). Hero, Nav,
-// Kairos, Pricing, FinalCTA, and Footer stay static imports -- Hero/Nav
-// are above the fold, and Kairos/Pricing/FinalCTA/Footer were already
-// part of the shipped page before this batch.
+// import alone is what gives each of these its own lazily-loaded chunk).
+// Hero, Nav, Pricing, FinalCTA, and Footer stay static imports -- Hero/Nav
+// are above the fold, and Pricing/FinalCTA/Footer were already part of
+// the shipped page before the first dynamic-import batch. Kairos moved
+// into this list in the section-reorder batch (it's no longer
+// above-the-fold content once Problem/Trust Strip come first).
 const TrustStrip = dynamic(() => import("./components/TrustStrip").then((m) => m.TrustStrip));
 const Problem = dynamic(() => import("./components/Problem").then((m) => m.Problem));
+const Kairos = dynamic(() => import("./components/Kairos").then((m) => m.Kairos));
 const HowItWorks = dynamic(() => import("./components/HowItWorks").then((m) => m.HowItWorks));
 const InteractiveDemo = dynamic(() => import("./components/InteractiveDemo").then((m) => m.InteractiveDemo));
 const ByRole = dynamic(() => import("./components/ByRole").then((m) => m.ByRole));
@@ -42,6 +44,26 @@ const Roadmap = dynamic(() => import("./components/Roadmap").then((m) => m.Roadm
 const LeadCapture = dynamic(() => import("./components/LeadCapture").then((m) => m.LeadCapture));
 
 export function MarketingPage() {
+  // next/dynamic sections mount after the initial render, each on its
+  // own chunk-load timer -- any ScrollTrigger created *before* a later
+  // section exists measures the page's total height wrong (its spacer
+  // for a pin, in particular, gets sized off a DOM that's still missing
+  // content below it). Refreshing once shortly after mount (letting the
+  // dynamic chunks settle) and again on window 'load' (fonts/images
+  // finished, layout fully settled) re-measures everything against the
+  // DOM as it actually ends up.
+  useEffect(() => {
+    const t = setTimeout(() => ScrollTrigger.refresh(), 300);
+    function onLoad() {
+      ScrollTrigger.refresh();
+    }
+    window.addEventListener("load", onLoad);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("load", onLoad);
+    };
+  }, []);
+
   return (
     <div className="marketing-page" id="top">
       <CursorGlow />
@@ -50,10 +72,10 @@ export function MarketingPage() {
       <StickyMobileCta />
       <TrustStrip />
       <Problem />
+      <Kairos />
       <HowItWorks />
       <InteractiveDemo />
       <ByRole />
-      <Kairos />
       <ReliabilitySection />
       <ComparisonTable />
       <CaseStudy />

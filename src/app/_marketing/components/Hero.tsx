@@ -159,26 +159,6 @@ export function Hero() {
         </div>
       </div>
 
-      {/* Skip button */}
-      <button
-        type="button"
-        className="hero-skip"
-        onClick={() => {
-          const content = document.querySelector(".hero-content") as HTMLElement | null;
-          if (content) {
-            content.style.opacity = "1";
-            content.style.transform = "translateY(0)";
-          }
-        }}
-      >
-        Skip →
-      </button>
-
-      {/* Scroll indicator */}
-      <div className="scroll-indicator">
-        <div className="scroll-line" />
-        <span>Scroll</span>
-      </div>
     </section>
   );
 }

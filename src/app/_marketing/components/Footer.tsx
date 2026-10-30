@@ -1,11 +1,12 @@
 import { CONTACT_EMAIL } from "@/lib/legal";
+import { Wordmark } from "./Wordmark";
 
 export function Footer() {
   return (
     <footer className="marketing-footer">
       <div className="footer-col">
         <div className="footer-brand">
-          <span style={{ color: "#2ecc71" }}>⚾</span> EPICPLAY AI
+          <Wordmark size={18} />
         </div>
         <p className="footer-tagline">Baseball intelligence for every team, not just the pros.</p>
       </div>

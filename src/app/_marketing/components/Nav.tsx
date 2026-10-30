@@ -2,12 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { ScrollProgressBar } from "./ScrollProgressBar";
+import { Wordmark } from "./Wordmark";
 
+// Order matches the page's own section order (Kairos now sits right
+// after Problem, so visitors learn what KAIROS is before it's
+// mentioned anywhere else).
 const NAV_LINKS = [
   { href: "#problem", label: "Problem" },
+  { href: "#kairos", label: "KAIROS" },
   { href: "#how-it-works", label: "How it works" },
   { href: "#demo", label: "Demo" },
-  { href: "#kairos", label: "KAIROS" },
   { href: "#pricing", label: "Pricing" },
   { href: "#faq", label: "FAQ" },
 ];
@@ -29,7 +33,7 @@ export function Nav() {
     <nav className={`marketing-nav ${scrolled ? "scrolled" : ""}`}>
       <div className="nav-inner">
         <a href="#top" className="nav-brand">
-          <span>⚾</span>EPICPLAY AI
+          <Wordmark size={20} />
         </a>
         <div className="nav-links">
           {NAV_LINKS.map((link) => (

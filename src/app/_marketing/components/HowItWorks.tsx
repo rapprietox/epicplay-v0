@@ -44,7 +44,11 @@ export function HowItWorks() {
         scrollTrigger: {
           trigger: section,
           start: "top top",
-          end: "+=300%",
+          // Scrub remaps the timeline's own progress (0-1) onto this
+          // scroll distance proportionally, so shortening it from 300%
+          // to 150% (about 1.5 screens, per the request) didn't need
+          // any of the timeline's internal time offsets below touched.
+          end: "+=150%",
           scrub: true,
           pin: true,
           anticipatePin: 1,
@@ -115,6 +119,12 @@ export function HowItWorks() {
       if (lineupFlip) {
         tl.to(lineupFlip, { rotateY: 180, duration: 0.25, ease: "power1.inOut" }, 2.7);
       }
+
+      // This section's own pin is the single biggest spacer on the
+      // page -- refresh right after it's created too, not just from
+      // MarketingPage's top-level orchestration, since this component
+      // itself can mount later than its siblings (next/dynamic).
+      ScrollTrigger.refresh();
 
       return () => {
         tl.kill();
