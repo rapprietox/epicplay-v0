@@ -179,6 +179,30 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["teams"]["Insert"]>;
         Relationships: [];
       };
+      leads: {
+        Row: {
+          id: string;
+          created_at: string;
+          name: string;
+          email: string;
+          role: "coach" | "operator" | "player" | "league_organizer";
+          team_size: number | null;
+          message: string | null;
+          source: string;
+        };
+        Insert: {
+          id?: string;
+          created_at?: string;
+          name: string;
+          email: string;
+          role: "coach" | "operator" | "player" | "league_organizer";
+          team_size?: number | null;
+          message?: string | null;
+          source?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["leads"]["Insert"]>;
+        Relationships: [];
+      };
       profiles: {
         Row: {
           id: string;

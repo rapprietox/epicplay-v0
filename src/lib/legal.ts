@@ -12,3 +12,9 @@ export const LAST_UPDATED = "October 29, 2026";
 // jurisdiction (state/country) before this goes in front of real users
 // and update LAST_UPDATED when it's set.
 export const GOVERNING_LAW = "[TODO: governing law jurisdiction not yet determined]";
+
+// TODO: no WhatsApp number/business link exists yet -- replace with the
+// real wa.me/<number> or business WhatsApp link once one is set up. Left
+// as an empty string (not a placeholder URL) so callers can check
+// `WHATSAPP_URL` truthiness and hide the button entirely until it's real.
+export const WHATSAPP_URL = "";

@@ -4,27 +4,34 @@ import { useEffect, useRef, useState } from "react";
 
 interface Conversation {
   role: string;
+  chip: string;
   prompt: string;
   response: string;
 }
 
-// Ported verbatim from the prior artifact build's KAIROS terminal content.
+// Sample data -- illustrative only. See the chip row's own "Sample
+// data" label below. Clicking a chip jumps straight to its
+// conversation; the three also auto-cycle once the section scrolls
+// into view, matching the original ambient-terminal feel.
 const CONVERSATIONS: Conversation[] = [
   {
     role: "COACH",
+    chip: "Who should bat leadoff?",
     prompt: "Who bats leadoff tonight?",
     response:
       "Marcus Johnson. .500 OBP, Speed 4/5,\n3 stolen bases this season. He reaches base\nevery other at-bat and creates chaos on the\nbases for your power hitters.\n\nDiego Reyes has better AVG but Speed 1/5 —\nhis power belongs in slot 3 or 4.\n\n📊 31% reliable · 3 games · building...",
   },
   {
     role: "COACH",
+    chip: "Why did we lose?",
     prompt: "We lost last night. What went wrong?",
     response:
-      "Three things cost you the game.\n\n1. Ryan Williams (slot 8) struck out all\n   3 at-bats — predictable from his data.\n\n2. Your 5-6-7 slots: 0 RBI with 4 runners\n   in scoring position.\n\n3. Andrés Herrera's ERA vs lefties: 9.00.\n   They started 4 lefties against you.\n\nNext game: Move James Park to slot 6.",
+      "Three things cost you the game.\n\n1. Tyler Chen (slot 8) struck out all\n   3 at-bats — predictable from his data.\n\n2. Your 5-6-7 slots: 0 RBI with 4 runners\n   in scoring position.\n\n3. Kenji Tanaka's ERA vs lefties: 9.00.\n   They started 4 lefties against you.\n\nNext game: Move Miguel Santos to slot 6.",
   },
   {
     role: "PLAYER",
-    prompt: "Why do I keep striking out?",
+    chip: "What should I practice?",
+    prompt: "What should I practice this week?",
     response:
       "Carlos, pitchers have found your\nweakness. 41% of all pitches go low-outside.\nYour whiff rate there: 67%.\n\nThat's not bad luck. That's a pattern.\n\nWeek 1: Stand in. Don't swing low-outside.\nTrack how many you correctly identify.\nTarget: 70% recognition rate by Friday.",
   },
@@ -120,6 +127,23 @@ export function Kairos() {
         </div>
       </div>
       <div className="kairos-terminal" ref={terminalRef}>
+        <p className="kairos-real-data-line">KAIROS answers from your team&apos;s real logged data.</p>
+        <div className="kairos-chip-row">
+          {CONVERSATIONS.map((convo, i) => (
+            <button
+              key={convo.chip}
+              type="button"
+              className="kairos-chip"
+              onClick={() => {
+                startedRef.current = true;
+                setConvoIndex(i);
+              }}
+            >
+              {convo.chip}
+            </button>
+          ))}
+        </div>
+        <p className="kairos-sample-label">Sample data</p>
         <div className="terminal-prompt">
           {promptText}
           <span className="terminal-cursor" />

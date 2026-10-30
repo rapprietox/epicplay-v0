@@ -3,49 +3,68 @@
 import { useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { CONTACT_EMAIL } from "@/lib/legal";
 
 gsap.registerPlugin(ScrollTrigger);
 
+// Purchasability, checked against the actual code before writing this:
+// - Free: everything a coach/operator needs to run a season is already
+//   live with no payment gate anywhere in the schema or RLS -- real,
+//   available today.
+// - Team Pro: no Stripe subscription product exists in this codebase
+//   (only a one-time Clubhouse Pro checkout does). Not purchasable
+//   today -- its button scrolls to the lead form instead of /login.
+// - Clubhouse Pro: a real Stripe Checkout session
+//   (src/app/player/clubhouse/actions.ts, one-time payment) exists and
+//   works today, but only from inside the app after a player signs in
+//   -- there's no public checkout entry point on the marketing site
+//   itself, so this card still links to /login, same as Free.
 const PLANS = [
   {
     name: "Free",
     price: "$0",
     period: "/month",
-    features: ["1 game/month", "Basic stats", "Team leaders", "Scorebook PDF"],
-    cta: "Get Started",
+    features: [
+      "Live game logging",
+      "Heat maps & spray charts",
+      "Lineup intelligence",
+      "Opponent scouting",
+      "KAIROS chat for coaches",
+      "Scorebook PDF",
+    ],
+    cta: "Start Your Season →",
+    href: "/login",
     ghost: true,
   },
   {
     name: "Team Pro ⭐",
     price: "$49.99",
     period: "/month",
+    note: "Founding-team pricing -- not billed yet",
     features: [
-      "Unlimited games",
-      "Full analytics",
-      "All 3 heat maps",
-      "Spray charts",
-      "Lineup AI",
-      "KAIROS chat",
-      "Opponent scouting",
-      "Post-game analysis",
+      "Everything in Free",
+      "Priority support",
+      "Early access to new features as we build them",
+      "A direct line to shape the roadmap",
     ],
-    cta: "Start Season →",
+    cta: "Join founding teams →",
+    href: "#lead-form",
     featured: true,
   },
   {
     name: "Clubhouse Pro",
     price: "$9.99",
     period: " one-time",
+    note: "Per player",
     features: [
-      "Per player",
-      "Personal page",
-      "All 3 heat maps",
-      "AI coaching",
-      "Drill plans",
+      "Personal Clubhouse page",
+      "All heat maps & spray charts",
+      "AI coaching notes",
       "EPS score",
-      "KAIROS (20/mo)",
+      "Personal KAIROS chat (20/mo)",
     ],
     cta: "Unlock Now →",
+    href: "/login",
     ghost: true,
   },
 ];
@@ -76,29 +95,24 @@ export function Pricing() {
       <div className="section">
         <div className="data-head" style={{ marginBottom: 0 }}>
           <h2 className="section-headline headline-white">Simpler Than You Think.</h2>
+          <p className="pricing-founding-line">Founding teams get early access and shape the product.</p>
         </div>
         <div className="pricing-grid">
           {PLANS.map((plan) => (
-            <div
-              className={`pricing-card ${plan.featured ? "featured" : ""}`}
-              key={plan.name}
-            >
+            <div className={`pricing-card cursor-glow ${plan.featured ? "featured" : ""}`} key={plan.name}>
               {plan.featured && <span className="pricing-badge">Most Popular</span>}
               <p className="pricing-plan-name">{plan.name}</p>
               <p className="pricing-price">
                 {plan.price}
                 <span style={{ fontSize: "0.8rem", color: "#5e8268" }}>{plan.period}</span>
               </p>
+              {plan.note && <p className="pricing-note">{plan.note}</p>}
               <ul className="pricing-features">
                 {plan.features.map((f) => (
                   <li key={f}>{f}</li>
                 ))}
               </ul>
-              <a
-                href="/login"
-                className={plan.featured ? "btn-primary" : "btn-ghost"}
-                style={{ textAlign: "center" }}
-              >
+              <a href={plan.href} className={plan.featured ? "btn-primary" : "btn-ghost"} style={{ textAlign: "center" }}>
                 {plan.cta}
               </a>
             </div>
@@ -106,7 +120,7 @@ export function Pricing() {
         </div>
         <p className="pricing-foot">
           Need a league plan? Multiple teams, one platform.{" "}
-          <a href="mailto:hello@epicplayai.com">Contact us →</a>
+          <a href={`mailto:${CONTACT_EMAIL}`}>Contact us →</a>
         </p>
       </div>
     </section>

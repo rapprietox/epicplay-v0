@@ -1,19 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Hero } from "./components/Hero";
-import { DataAwakens } from "./components/DataAwakens";
-import { Platform } from "./components/Platform";
-import { IntelligenceStack } from "./components/IntelligenceStack";
+import { Nav } from "./components/Nav";
 import { Kairos } from "./components/Kairos";
-import { Facts } from "./components/Facts";
-import { TheFuture } from "./components/TheFuture";
 import { Pricing } from "./components/Pricing";
-import { TheSignal } from "./components/TheSignal";
 import { FinalCTA } from "./components/FinalCTA";
 import { Footer } from "./components/Footer";
-import { Nav } from "./components/Nav";
+import { CursorGlow } from "./components/CursorGlow";
+import { StickyMobileCta } from "./components/StickyMobileCta";
 import "./styles/marketing.css";
 
 // Lenis smooth-scroll was removed here -- it was fighting GSAP's own
@@ -25,19 +22,45 @@ import "./styles/marketing.css";
 // unmount, independent of this top-level component.
 gsap.registerPlugin(ScrollTrigger);
 
+// Everything below the hero is code-split via next/dynamic (ssr:false
+// isn't needed since the whole page is already "use client" -- dynamic
+// import alone is what gives each of these its own lazily-loaded chunk,
+// which is the actual bundle-size win per the request). Hero, Nav,
+// Kairos, Pricing, FinalCTA, and Footer stay static imports -- Hero/Nav
+// are above the fold, and Kairos/Pricing/FinalCTA/Footer were already
+// part of the shipped page before this batch.
+const TrustStrip = dynamic(() => import("./components/TrustStrip").then((m) => m.TrustStrip));
+const Problem = dynamic(() => import("./components/Problem").then((m) => m.Problem));
+const HowItWorks = dynamic(() => import("./components/HowItWorks").then((m) => m.HowItWorks));
+const InteractiveDemo = dynamic(() => import("./components/InteractiveDemo").then((m) => m.InteractiveDemo));
+const ByRole = dynamic(() => import("./components/ByRole").then((m) => m.ByRole));
+const ReliabilitySection = dynamic(() => import("./components/ReliabilitySection").then((m) => m.ReliabilitySection));
+const ComparisonTable = dynamic(() => import("./components/ComparisonTable").then((m) => m.ComparisonTable));
+const CaseStudy = dynamic(() => import("./components/CaseStudy").then((m) => m.CaseStudy));
+const Faq = dynamic(() => import("./components/Faq").then((m) => m.Faq));
+const Roadmap = dynamic(() => import("./components/Roadmap").then((m) => m.Roadmap));
+const LeadCapture = dynamic(() => import("./components/LeadCapture").then((m) => m.LeadCapture));
+
 export function MarketingPage() {
   return (
     <div className="marketing-page" id="top">
+      <CursorGlow />
       <Nav />
       <Hero />
-      <DataAwakens />
-      <Platform />
-      <IntelligenceStack />
+      <StickyMobileCta />
+      <TrustStrip />
+      <Problem />
+      <HowItWorks />
+      <InteractiveDemo />
+      <ByRole />
       <Kairos />
-      <Facts />
-      <TheFuture />
+      <ReliabilitySection />
+      <ComparisonTable />
+      <CaseStudy />
+      <Faq />
       <Pricing />
-      <TheSignal />
+      <Roadmap />
+      <LeadCapture />
       <FinalCTA />
       <Footer />
     </div>
