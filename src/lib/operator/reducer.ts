@@ -10,6 +10,7 @@ import type {
   Runners,
 } from "@/lib/supabase/types";
 import { RUNNING_ACCURACY_WARNING_THRESHOLD, runningAccuracy } from "@/lib/pitch-accuracy";
+import { nextBattingOrderPosition, previousBattingOrderPosition } from "./batting-order";
 import { advanceOneRunner } from "./runner-advance";
 import { SCORE_METHOD_AWARDS_RBI, type Base, type OperatorState, type RunnerQuickAction, type ScoreMethod, type ScoredRunner } from "./types";
 
@@ -31,6 +32,7 @@ export function initialOperatorState(gameId: string): OperatorState {
     ourScore: 0,
     opponentScore: 0,
     battingOrderPosition: 1,
+    battingOrderSlots: [],
     currentPitcherId: null,
     currentOpponentPitcherId: null,
     opponentBatterName: "",
@@ -146,7 +148,13 @@ export type OperatorAction =
 export function operatorReducer(state: OperatorState, action: OperatorAction): OperatorState {
   switch (action.type) {
     case "HYDRATE":
-      return { ...action.state, dirty: false };
+      // Fix (batting-order gap bug): a dirty localStorage snapshot saved
+      // before battingOrderSlots existed on OperatorState has no such
+      // field -- falling back to whatever the current (server-built)
+      // state already has keeps that real lineup data instead of
+      // silently losing it to `undefined` the moment an old snapshot
+      // gets restored.
+      return { ...action.state, battingOrderSlots: action.state.battingOrderSlots ?? state.battingOrderSlots, dirty: false };
 
     case "SET_MODE":
       return { ...state, mode: action.mode, dirty: true };
@@ -359,7 +367,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       const runsScored = action.voidRuns ? 0 : state.scoredThisAtBat.length;
       const result = state.suggestedResult;
       const nextBattingOrder =
-        state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+        state.mode === "hitting" ? nextBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition) : state.battingOrderPosition;
       const nextAccuracySum = state.accuracyRatioSum + action.accuracyRatio;
       const nextAccuracyCount = state.accuracyAtBatCount + 1;
 
@@ -435,7 +443,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
 
     case "CONFIRM_DOUBLE_PLAY": {
       const nextBattingOrder =
-        state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+        state.mode === "hitting" ? nextBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition) : state.battingOrderPosition;
       const nextAccuracySum = state.accuracyRatioSum + action.accuracyRatio;
       const nextAccuracyCount = state.accuracyAtBatCount + 1;
       const prevBoxScore = {
@@ -505,7 +513,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       // the running accuracy average would unfairly ding the operator for
       // something they were never supposed to log pitch-by-pitch.
       const nextBattingOrder =
-        state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+        state.mode === "hitting" ? nextBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition) : state.battingOrderPosition;
       const runsDelta = state.mode === "hitting" ? action.runsScored : 0;
       const prevBoxScore = {
         hitsThisInning: state.hitsThisInning,
@@ -553,7 +561,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
     case "QUICK_CONFIRM_LOCAL": {
       const runsScored = action.scored.length;
       const nextBattingOrder =
-        state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+        state.mode === "hitting" ? nextBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition) : state.battingOrderPosition;
       const isHit = HIT_RESULTS.has(action.result);
       const isError = action.result === "error";
       const isStrikeout = action.result === "strikeout";
@@ -608,7 +616,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
 
     case "QUICK_DOUBLE_PLAY_LOCAL": {
       const nextBattingOrder =
-        state.mode === "hitting" ? (state.battingOrderPosition % 9) + 1 : state.battingOrderPosition;
+        state.mode === "hitting" ? nextBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition) : state.battingOrderPosition;
       const prevBoxScore = {
         hitsThisInning: state.hitsThisInning,
         runsThisInning: state.runsThisInning,
@@ -661,7 +669,7 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       if (!state.lastConfirmed) return state;
       const prevBattingOrder =
         state.lastConfirmed.mode === "hitting"
-          ? ((state.battingOrderPosition - 2 + 9) % 9) + 1
+          ? previousBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition)
           : state.battingOrderPosition;
       return {
         ...state,
