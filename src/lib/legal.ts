@@ -4,7 +4,7 @@
 // jurisdiction never means hunting through two long pages of prose.
 
 export const COMPANY_NAME = "MRB (My Replay Builder), operating as EpicPlay AI";
-export const CONTACT_EMAIL = "rapprietox@gmail.com";
+export const CONTACT_EMAIL = "info@epicplayai.com";
 export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 export const LAST_UPDATED = "October 29, 2026";
 

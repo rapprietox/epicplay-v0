@@ -7,12 +7,14 @@ import { Wordmark } from "./Wordmark";
 // Order matches the page's own section order (Kairos now sits right
 // after Problem, so visitors learn what KAIROS is before it's
 // mentioned anywhere else).
+// TEMP: "Pricing" removed while the Pricing section is hidden (see
+// MarketingPage.tsx) -- restore the { href: "#pricing", label:
+// "Pricing" } entry here when it comes back.
 const NAV_LINKS = [
   { href: "#problem", label: "Problem" },
   { href: "#kairos", label: "KAIROS" },
   { href: "#how-it-works", label: "How it works" },
   { href: "#demo", label: "Demo" },
-  { href: "#pricing", label: "Pricing" },
   { href: "#faq", label: "FAQ" },
 ];
 

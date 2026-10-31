@@ -6,7 +6,9 @@ import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Hero } from "./components/Hero";
 import { Nav } from "./components/Nav";
-import { Pricing } from "./components/Pricing";
+// TEMP: pricing hidden until final pricing is decided -- uncomment
+// this import and the <Pricing /> render below to bring it back.
+// import { Pricing } from "./components/Pricing";
 import { FinalCTA } from "./components/FinalCTA";
 import { Footer } from "./components/Footer";
 import { CursorGlow } from "./components/CursorGlow";
@@ -25,11 +27,12 @@ gsap.registerPlugin(ScrollTrigger);
 // Everything below the hero is code-split via next/dynamic (ssr:false
 // isn't needed since the whole page is already "use client" -- dynamic
 // import alone is what gives each of these its own lazily-loaded chunk).
-// Hero, Nav, Pricing, FinalCTA, and Footer stay static imports -- Hero/Nav
-// are above the fold, and Pricing/FinalCTA/Footer were already part of
-// the shipped page before the first dynamic-import batch. Kairos moved
-// into this list in the section-reorder batch (it's no longer
-// above-the-fold content once Problem/Trust Strip come first).
+// Hero, Nav, FinalCTA, and Footer stay static imports -- Hero/Nav are
+// above the fold, and FinalCTA/Footer were already part of the shipped
+// page before the first dynamic-import batch. Kairos moved into this
+// list in the section-reorder batch (it's no longer above-the-fold
+// content once Problem/Trust Strip come first). Pricing is TEMP-removed
+// entirely (see above) rather than left in this list unused.
 const TrustStrip = dynamic(() => import("./components/TrustStrip").then((m) => m.TrustStrip));
 const Problem = dynamic(() => import("./components/Problem").then((m) => m.Problem));
 const Kairos = dynamic(() => import("./components/Kairos").then((m) => m.Kairos));
@@ -80,7 +83,7 @@ export function MarketingPage() {
       <ComparisonTable />
       <CaseStudy />
       <Faq />
-      <Pricing />
+      {/* TEMP: pricing hidden until final pricing is decided */}
       <Roadmap />
       <LeadCapture />
       <FinalCTA />

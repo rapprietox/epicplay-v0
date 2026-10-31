@@ -18,7 +18,9 @@ export function Footer() {
           <a href="#how-it-works">How It Works</a>
           <a href="#demo">Try It</a>
           <a href="#kairos">KAIROS</a>
-          <a href="#pricing">Pricing</a>
+          {/* TEMP: "Pricing" removed while the Pricing section is
+              hidden (see MarketingPage.tsx) -- restore
+              <a href="#pricing">Pricing</a> here when it comes back. */}
           <a href="#faq">FAQ</a>
         </div>
       </div>

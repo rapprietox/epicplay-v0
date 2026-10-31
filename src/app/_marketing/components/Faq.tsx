@@ -64,9 +64,9 @@ const FAQ: { q: string; a: React.ReactNode }[] = [
     q: "What does it cost, and what's free?",
     a: (
       <>
-        The core platform -- live logging, heat maps, spray charts, lineup intelligence, opponent scouting, and
-        KAIROS chat for coaches -- is free today. Clubhouse Pro is a one-time $9.99 unlock per player for their
-        personal analytics, AI coaching notes, and reliability-scored insights. See <a href="#pricing">Pricing</a>.
+        We&apos;re finalizing pricing for teams, individual players and leagues. Core coach and operator features
+        are free during our founding period. <a href="#lead-form">Join the founding list</a> and we&apos;ll tell
+        you first.
       </>
     ),
   },
