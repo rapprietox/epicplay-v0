@@ -1,7 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getFullLineupAnalysis, type FullLineupAnalysis } from "./full-lineup-analysis-actions";
+
+// Debounce for the auto-re-run-on-change behavior below -- long enough
+// that a coach actively dragging several players in a row doesn't fire
+// one AI call per drop, short enough that it still feels responsive
+// once they pause.
+const ANALYZE_DEBOUNCE_MS = 2500;
 
 const SLOT_RATING_STYLE: Record<string, { emoji: string; color: string }> = {
   optimal: { emoji: "✅", color: "#2ECC71" },
@@ -13,19 +19,35 @@ const SLOT_RATING_STYLE: Record<string, { emoji: string; color: string }> = {
 // LineupBuilder decides when to render this at all; this component just
 // owns the button/loading/expandable-panel lifecycle and the "apply
 // suggested lineup" callback.
+//
+// Feature B (lineup drafts): LineupBuilder keys this component by
+// activeDraftId, so switching drafts fully remounts it -- that's what
+// makes initialAnalysis/initialReliability show the right draft's
+// cached result on open with zero extra wiring here, and "reopening a
+// draft doesn't re-run the AI" is just "mount doesn't call analyze()",
+// enforced below by skipping the very first run of the change-watching
+// effect. Every edit *after* that first render schedules a debounced
+// auto re-analyze; onAnalysisSaved persists whatever comes back (manual
+// click or auto-run alike) onto the active draft.
 export function FullLineupAnalysisPanel({
   gameId,
   placements,
+  initialAnalysis,
   onApplyOptimalLineup,
+  onAnalysisSaved,
 }: {
   gameId: string;
   placements: { playerId: string; battingOrder: number }[];
+  initialAnalysis: FullLineupAnalysis | null;
   onApplyOptimalLineup: (order: { playerId: string; slot: number }[]) => void;
+  onAnalysisSaved: (analysis: FullLineupAnalysis) => void;
 }) {
-  const [analysis, setAnalysis] = useState<FullLineupAnalysis | null>(null);
+  const [analysis, setAnalysis] = useState<FullLineupAnalysis | null>(initialAnalysis);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(true);
+  const isFirstRender = useRef(true);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function analyze() {
     setLoading(true);
@@ -36,10 +58,28 @@ export function FullLineupAnalysisPanel({
     if (result.ok) {
       setAnalysis(result.analysis);
       setExpanded(true);
+      onAnalysisSaved(result.analysis);
     } else {
       setError(result.error);
     }
   }
+
+  // "Run the AI only when the lineup changes (debounced) or on the
+  // button" -- the mount itself never counts as a change.
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      void analyze();
+    }, ANALYZE_DEBOUNCE_MS);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(placements)]);
 
   const reliabilityEmoji = (pct: number) => (pct < 30 ? "🔴" : pct < 60 ? "🟡" : pct < 86 ? "🟢" : "💎");
 

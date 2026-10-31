@@ -89,6 +89,15 @@ export type GameAnalysisType = "post_game_loss" | "post_game_win" | "pre_game";
 // substitution -- late_arrival just keeps that history visible rather
 // than collapsing back into a plain "reserve").
 export type LineupStatus = "starting" | "reserve" | "absent" | "late_arrival";
+// feature/lineup-drafts: a draft's `slots` jsonb column holds exactly
+// this shape -- the same one LineupSlot (coach/games/[id]/setup/
+// actions.ts) already uses for saveLineupAndUmpire's payload.
+export interface LineupDraftSlot {
+  batting_order: number | null;
+  player_id: string;
+  position: string | null;
+  status: LineupStatus;
+}
 // "positions" (calibrate-field-tabs batch) shares the same
 // field_calibration table/unique(team_id, field_type) constraint as
 // "2d"/"3d" -- a third row per team, no schema change needed since the
@@ -335,6 +344,9 @@ export interface Database {
           // render and never changed after that -- see the migration.
           logging_mode: LoggingMode;
           created_at: string;
+          // feature/lineup-drafts: set once a coach locks a draft into
+          // this row's `lineup` rows -- see lockLineup (draft-actions.ts).
+          lineup_confirmed_at: string | null;
         };
         Insert: {
           id?: string;
@@ -360,6 +372,7 @@ export interface Database {
           time_limit_minutes?: number | null;
           new_inning_threshold_minutes?: number | null;
           created_at?: string;
+          lineup_confirmed_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["games"]["Insert"]>;
         Relationships: [];
@@ -748,6 +761,40 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["game_analyses"]["Insert"]>;
+        Relationships: [];
+      };
+      // feature/lineup-drafts: named lineup plans, locked into `lineup`
+      // via lockLineup (draft-actions.ts) rather than written to it
+      // directly. `slots` mirrors LineupSlot (actions.ts) field-for-
+      // field; `analysis` mirrors FullLineupAnalysis
+      // (full-lineup-analysis-actions.ts) but stays loosely typed here
+      // (this file describes DB row shapes, not that action's own
+      // return type) -- cast at the call site, same as
+      // `calibration_points` already is elsewhere in this file.
+      lineup_drafts: {
+        Row: {
+          id: string;
+          game_id: string;
+          team_id: string;
+          name: string;
+          slots: LineupDraftSlot[];
+          analysis: Record<string, unknown> | null;
+          reliability: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          team_id: string;
+          name: string;
+          slots?: LineupDraftSlot[];
+          analysis?: Record<string, unknown> | null;
+          reliability?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["lineup_drafts"]["Insert"]>;
         Relationships: [];
       };
     };
