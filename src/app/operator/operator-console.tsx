@@ -1641,6 +1641,20 @@ export function OperatorConsole({
       // fires when there's no upcoming Confirm At-Bat to carry the run.
       // RBI isn't attributed here -- there's no "current batter" in an
       // ad-hoc context to credit it to.
+      //
+      // Bug fix: this used to only call adjustScore (server), never
+      // bumping state.ourScore/opponentScore (what the screen actually
+      // renders) -- every Quick Mode sac fly/squeeze-play "Scored" tap,
+      // and this same ad-hoc path in Full Mode, credited the database
+      // but left the on-screen score exactly where it was. Dispatched
+      // once, synchronously, right here -- not from adjustScore's own
+      // (fire-and-forget, no success callback) completion -- so it can't
+      // double count.
+      dispatch({
+        type: "SET_SCORE",
+        ourScore: state.mode === "hitting" ? state.ourScore + 1 : state.ourScore,
+        opponentScore: state.mode === "pitching" ? state.opponentScore + 1 : state.opponentScore,
+      });
       void withOfflineRetry(`score-${game.id}-${Date.now()}`, () => adjustScore(game.id, state.mode, 1));
     }
   }
