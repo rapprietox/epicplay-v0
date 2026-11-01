@@ -17,6 +17,7 @@ import type {
 } from "@/lib/supabase/types";
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 import { RESULT_IS_OUT } from "@/lib/operator/types";
+import { nextBattingOrderPosition, previousBattingOrderPosition } from "@/lib/operator/batting-order";
 import { parseVoiceCommand, type VoiceCommand } from "@/lib/anthropic";
 import { generatePostGameAnalysis } from "@/lib/post-game-analysis";
 
@@ -45,6 +46,48 @@ async function requireOperatorGame(gameId: string) {
   if (!game) throw new Error("Game not found");
 
   return { supabase, teamId: profile.team_id, game };
+}
+
+// Bug fix: game_state.batting_order_position was only ever set once, at
+// game start -- no confirm path (Full or Quick Mode) wrote the advanced
+// position back to it, so it only ever moved in the client's own
+// in-memory reducer state. A reload that had no matching "dirty"
+// localStorage snapshot (a different device, cleared site data, or a
+// snapshot older than the last confirm) fell back to this stale server
+// value instead of the real current batter. Computed from the lineup's
+// own batting_order values server-side, with the same gap-aware helper
+// the reducer uses, rather than trusted from the client -- same reasoning
+// as lockLineup re-verifying density server-side instead of assuming it.
+// Lineup rows aren't filtered by status here -- matching
+// buildInitialStateFromServer's own battingOrderSlots derivation
+// (initial-state.ts), which takes every row's batting_order and drops
+// the nulls, since reserve/absent/late_arrival rows are always null
+// there anyway (see lineup-builder.tsx's buildLineupPayload). Keeping
+// both derivations identical is what makes "next" mean the same thing
+// whether the reducer computes it locally or this computes it server-side.
+async function occupiedBattingOrderSlots(supabase: ReturnType<typeof createClient>, gameId: string): Promise<number[]> {
+  const { data } = await supabase.from("lineup").select("batting_order").eq("game_id", gameId);
+  return (data ?? []).map((l) => l.batting_order).filter((n): n is number => n !== null);
+}
+
+async function advanceBattingOrder(supabase: ReturnType<typeof createClient>, gameId: string, mode: AtBatMode) {
+  if (mode !== "hitting") return;
+  const { data: gameState } = await supabase.from("game_state").select("batting_order_position").eq("game_id", gameId).single();
+  if (!gameState) return;
+  const slots = await occupiedBattingOrderSlots(supabase, gameId);
+  const nextPosition = nextBattingOrderPosition(slots, gameState.batting_order_position ?? 1);
+  await supabase.from("game_state").update({ batting_order_position: nextPosition }).eq("game_id", gameId);
+}
+
+// Mirrors advanceBattingOrder for Undo, so the persisted position doesn't
+// stay one batter ahead of reality after a confirm gets reversed.
+async function reverseBattingOrder(supabase: ReturnType<typeof createClient>, gameId: string, mode: AtBatMode) {
+  if (mode !== "hitting") return;
+  const { data: gameState } = await supabase.from("game_state").select("batting_order_position").eq("game_id", gameId).single();
+  if (!gameState) return;
+  const slots = await occupiedBattingOrderSlots(supabase, gameId);
+  const prevPosition = previousBattingOrderPosition(slots, gameState.batting_order_position ?? 1);
+  await supabase.from("game_state").update({ batting_order_position: prevPosition }).eq("game_id", gameId);
 }
 
 // KAIROS batch, Tool 6: gated behind the same operator/coach auth every
@@ -275,6 +318,8 @@ export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: 
     await supabase.from("games").update(update).eq("id", input.gameId);
   }
 
+  await advanceBattingOrder(supabase, input.gameId, input.mode);
+
   revalidatePath("/operator");
   return { atBatId: data.id };
 }
@@ -344,6 +389,8 @@ export async function logQuickDoublePlay(input: QuickDoublePlayInput): Promise<{
     .select("id")
     .single();
   if (secondError || !secondRow) throw new Error(secondError?.message ?? "Failed to log second out");
+
+  await advanceBattingOrder(supabase, input.gameId, input.mode);
 
   revalidatePath("/operator");
   return { atBatId: batterRow.id, secondAtBatId: secondRow.id };
@@ -442,6 +489,8 @@ export async function confirmAtBat(input: ConfirmAtBatInput) {
       })
       .eq("game_id", input.gameId);
   }
+
+  await advanceBattingOrder(supabase, input.gameId, input.mode);
 
   revalidatePath("/operator");
   return { accuracyRatio: ratio, runningAccuracy: nextCount > 0 ? nextSum / nextCount : 1 };
@@ -557,6 +606,7 @@ export async function confirmDoublePlay(
   }
 
   await supabase.from("game_state").update({ current_at_bat_id: null }).eq("game_id", input.gameId);
+  await advanceBattingOrder(supabase, input.gameId, input.mode);
 
   revalidatePath("/operator");
   return { secondAtBatId: secondRow.id, thirdAtBatId };
@@ -634,6 +684,8 @@ export async function confirmIntentionalWalk(input: ConfirmIntentionalWalkInput)
       .eq("game_id", input.gameId);
   }
 
+  await advanceBattingOrder(supabase, input.gameId, input.mode);
+
   revalidatePath("/operator");
   return { atBatId: data.id };
 }
@@ -669,6 +721,8 @@ export async function undoAtBat(input: {
         : { opponent_score: Math.max(0, game.opponent_score - input.runsScoredToReverse) };
     await supabase.from("games").update(update).eq("id", input.gameId);
   }
+
+  await reverseBattingOrder(supabase, input.gameId, input.mode);
 
   revalidatePath("/operator");
 }
