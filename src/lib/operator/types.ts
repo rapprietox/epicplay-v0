@@ -126,6 +126,13 @@ export interface OperatorState {
   ourScore: number;
   opponentScore: number;
   battingOrderPosition: number;
+  // Fix (batting-order gap bug): the lineup's own real, occupied
+  // batting_order values (not necessarily a dense 1-9 run -- see
+  // src/lib/operator/batting-order.ts). Set once at hydrate from the
+  // lineup the operator screen already loaded; substitutions swap who
+  // occupies a slot, never the set of slot numbers itself, so this
+  // never needs updating again for the rest of the game.
+  battingOrderSlots: number[];
   currentPitcherId: string | null;
   // Opponent pitcher intelligence batch: who's pitching for them right
   // now, while we're hitting -- mirrors currentPitcherId for the

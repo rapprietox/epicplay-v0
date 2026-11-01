@@ -8,6 +8,7 @@ type GameRow = Database["public"]["Tables"]["games"]["Row"];
 type GameStateRow = Database["public"]["Tables"]["game_state"]["Row"];
 type AtBatRow = Database["public"]["Tables"]["at_bats"]["Row"];
 type PitchRow = Database["public"]["Tables"]["pitches"]["Row"];
+type LineupRow = Database["public"]["Tables"]["lineup"]["Row"];
 
 export function buildInitialStateFromServer(
   game: GameRow,
@@ -19,7 +20,14 @@ export function buildInitialStateFromServer(
   // can't be read straight off `gs` -- the caller (page.tsx) computes it
   // with its own query (pitches joined through at_bats.mode = 'hitting')
   // and passes the result in here as a plain seed value.
-  opponentPitchCountSeed = 0
+  opponentPitchCountSeed = 0,
+  // Fix (batting-order gap bug): the real, occupied batting_order
+  // values from this game's lineup -- not necessarily a dense 1-9 run,
+  // see src/lib/operator/batting-order.ts. Defaults to [] so every
+  // existing call site (there's only the one, in operator-console.tsx,
+  // which does pass it) still type-checks if this is ever called
+  // without a lineup.
+  lineup: Pick<LineupRow, "batting_order">[] = []
 ): OperatorState {
   const base = initialOperatorState(game.id);
 
@@ -60,6 +68,7 @@ export function buildInitialStateFromServer(
     ourScore: game.our_score,
     opponentScore: game.opponent_score,
     battingOrderPosition: gs.batting_order_position ?? 1,
+    battingOrderSlots: lineup.map((l) => l.batting_order).filter((n): n is number => n !== null),
     currentPitcherId: gs.current_pitcher_id,
     currentOpponentPitcherId: gs.current_opponent_pitcher_id,
     opponentBatterName: gs.opponent_batter_name ?? "",

@@ -56,6 +56,7 @@ import { atBatAccuracyRatio, runningAccuracy } from "@/lib/pitch-accuracy";
 import { resolveGameRules, formatElapsed, checkInningEndBanner, type InningEndBanner } from "@/lib/game-rules";
 import { formatAvg, type BattingLine } from "@/lib/stats";
 import { loadOperatorStateLocal, saveOperatorStateLocal } from "@/lib/operator/local-storage";
+import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
 import { withOfflineRetry, onQueueChange, pendingCount } from "@/lib/operator/sync-queue";
 import { buildInitialStateFromServer } from "./initial-state";
 import {
@@ -253,7 +254,7 @@ export function OperatorConsole({
   // score text and React would throw a hydration mismatch the moment any
   // operator had an unsynced snapshot sitting in their browser.
   const [state, dispatch] = useReducer(operatorReducer, undefined, () =>
-    buildInitialStateFromServer(game, initialGameState, draftAtBat, allGamePitches, opponentPitchCountSeed)
+    buildInitialStateFromServer(game, initialGameState, draftAtBat, allGamePitches, opponentPitchCountSeed, lineup)
   );
 
   // Swapping in a recovered localStorage snapshot happens *after* mount
@@ -702,22 +703,21 @@ export function OperatorConsole({
 
   // Fix 7 (six-fixes batch, appended after): "on deck" is just the next
   // slot in the batting order, wrapping from the last position back to
-  // the first -- lineup.batting_order isn't guaranteed to already be
-  // sorted (it's fetched as a plain table scan), so the position list is
-  // sorted here before finding "current, then one after it." Recomputes
-  // automatically whenever state.battingOrderPosition changes (a new
-  // batter stepping up), same as battingPlayer above.
+  // the first. Fix (batting-order gap bug): now shares
+  // nextBattingOrderPosition with the reducer's own advancement instead
+  // of a second, hand-rolled copy of the same gap-aware logic -- the two
+  // disagreeing (this one silently fell back to the *first* real slot
+  // whenever state.battingOrderPosition itself wasn't a real slot, which
+  // used to happen whenever the reducer's old, gap-unaware arithmetic
+  // landed on a vacated batting_order number) was the exact bug where
+  // the on-deck panel kept showing the player who had just batted.
   const onDeckPlayerInfo = useMemo(() => {
     if (state.mode !== "hitting" || liveLineup.length === 0) return undefined;
     // Feature 1 (lineup-status batch): lineup now also holds reserve/
     // absent rows with no batting order at all -- only rows actually in
     // the batting order belong in this rotation.
-    const positions = liveLineup
-      .map((l) => l.batting_order)
-      .filter((n): n is number => n !== null)
-      .sort((a, b) => a - b);
-    const currentIdx = positions.indexOf(state.battingOrderPosition);
-    const nextPos = currentIdx === -1 ? positions[0] : positions[(currentIdx + 1) % positions.length];
+    const occupiedSlots = liveLineup.map((l) => l.batting_order).filter((n): n is number => n !== null);
+    const nextPos = nextBattingOrderPosition(occupiedSlots, state.battingOrderPosition);
     const onDeckSlot = liveLineup.find((l) => l.batting_order === nextPos);
     return onDeckSlot ? players.find((p) => p.id === onDeckSlot.player_id) : undefined;
   }, [liveLineup, players, state.mode, state.battingOrderPosition]);
@@ -3729,7 +3729,12 @@ function QuickModeLeftPanel({
   // batting_order is nullable (bench/reserve players aren't in it) -- the
   // lineup strip only ever shows the 9 real batting slots.
   const slots = lineup.filter((l): l is Lineup & { batting_order: number } => l.batting_order !== null).sort((a, b) => a.batting_order - b.batting_order);
-  const nextBattingOrder = (state.battingOrderPosition % 9) + 1;
+  // Fix (batting-order gap bug): shares nextBattingOrderPosition with
+  // the reducer and the on-deck panel instead of a third, hand-rolled
+  // `(position % 9) + 1` that assumed a dense 1-9 lineup -- this is
+  // what used to mark the wrong row "ON DECK" (or no row at all) once a
+  // lineup had a gap in its batting_order numbers.
+  const nextBattingOrder = nextBattingOrderPosition(slots.map((s) => s.batting_order), state.battingOrderPosition);
   // Launch-audit Fix 9: a one-tap glossary for the standard-scorekeeping
   // abbreviations (K/Kl/BB/HBP/FC/SAC) the Quick Mode buttons use with
   // no other in-product explanation. An inline expand block, not an
