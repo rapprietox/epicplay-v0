@@ -41,3 +41,22 @@ export function previousBattingOrderPosition(occupiedSlots: number[], current: n
   if (idx === -1) return sorted[sorted.length - 1];
   return sorted[(idx - 1 + sorted.length) % sorted.length];
 }
+
+// Lineup-builder batch: placePlayer/removePlayer now keep every NEW
+// draft's batting order dense (1..N, renumbered on every change that
+// actually frees a slot -- see lineup-builder.tsx), so a lineup locked
+// from here on should never have a gap in the first place. This exists
+// purely as a read-time safety net for a game whose official `lineup`
+// rows were already saved with gaps under the old behavior (like the
+// dummy test game, saved before this batch) -- called wherever the
+// operator screen loads a game's lineup, so it never has to reason
+// about gaps at all, regardless of how the data got that way. Pure and
+// read-only: never writes the renumbered values back to the database.
+export function normalizeLineupBattingOrder<T extends { batting_order: number | null }>(rows: T[]): T[] {
+  const withOrder = rows
+    .filter((r): r is T & { batting_order: number } => r.batting_order !== null)
+    .sort((a, b) => a.batting_order - b.batting_order);
+  const withoutOrder = rows.filter((r) => r.batting_order === null);
+  const renumbered = withOrder.map((r, i) => ({ ...r, batting_order: i + 1 }));
+  return [...renumbered, ...withoutOrder];
+}

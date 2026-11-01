@@ -5,6 +5,7 @@ import type { FieldCalibrationPoints, PlayerPositionCalibration } from "@/lib/su
 import { getOrCreateGameState } from "./actions";
 import { OperatorConsole } from "./operator-console";
 import { computeBattingLines } from "@/lib/stats";
+import { normalizeLineupBattingOrder } from "@/lib/operator/batting-order";
 
 export default async function OperatorPage({
   searchParams,
@@ -132,11 +133,19 @@ export default async function OperatorPage({
     : { data: [] };
   const seasonBattingLines = computeBattingLines(seasonAtBats ?? [], []);
 
+  // Lineup-builder batch: the official `lineup` rows should never have
+  // a batting-order gap going forward (placePlayer/removePlayer keep
+  // every new draft dense before Lock), but this normalizes any game
+  // whose rows were saved with gaps under the old behavior -- read-time
+  // only, never written back, so the operator screen never has to
+  // reason about gaps at all regardless of how a game's data got that way.
+  const normalizedLineup = normalizeLineupBattingOrder(lineup ?? []);
+
   return (
     <OperatorConsole
       game={game}
       players={players ?? []}
-      lineup={lineup ?? []}
+      lineup={normalizedLineup}
       initialGameState={gameState}
       draftAtBat={draftAtBat}
       opponentPlayers={opponentPlayers ?? []}

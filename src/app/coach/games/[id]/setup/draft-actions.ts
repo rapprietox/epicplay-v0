@@ -201,10 +201,25 @@ export type LockResult = { ok: true; lockedAt: string } | { ok: false; error: st
 // on every edit.
 export async function lockLineup(gameId: string, slots: LineupSlot[], umpireName: string): Promise<LockResult> {
   const { supabase } = await requireCoachGame(gameId);
-  const startingCount = slots.filter((s) => s.status === "starting").length;
-  if (startingCount < 9) return { ok: false, error: "Lineup needs at least 9 players before it can be locked" };
+  const starting = slots.filter((s) => s.status === "starting");
+  if (starting.length < 9) return { ok: false, error: "Lineup needs at least 9 players before it can be locked" };
 
-  await saveLineupAndUmpire(gameId, { lineup: slots, umpireName });
+  // "On Lock, verify the order is dense 1..N before writing the
+  // official lineup" -- the client-side builder keeps every draft
+  // dense by construction (placePlayer/removePlayer), so this should
+  // already be a no-op in practice, but Lock is the one place this
+  // gets written somewhere the operator screen trusts, so it's
+  // re-verified server-side rather than just assumed from the client.
+  const sortedStarting = [...starting].sort((a, b) => (a.batting_order ?? 0) - (b.batting_order ?? 0));
+  const isDense = sortedStarting.every((s, i) => s.batting_order === i + 1);
+  const normalizedSlots: LineupSlot[] = isDense
+    ? slots
+    : [
+        ...sortedStarting.map((s, i) => ({ ...s, batting_order: i + 1 })),
+        ...slots.filter((s) => s.status !== "starting"),
+      ];
+
+  await saveLineupAndUmpire(gameId, { lineup: normalizedSlots, umpireName });
 
   const lockedAt = new Date().toISOString();
   const { error } = await supabase.from("games").update({ lineup_confirmed_at: lockedAt }).eq("id", gameId);
