@@ -1,12 +1,10 @@
-"use client";
-
-import { useState } from "react";
-import Link from "next/link";
 import { formatGameDate } from "@/lib/dates";
 import { resultLetter } from "@/lib/opponent-history";
-import { computeBattingLines, computePitchingLines, formatAvg, type BattingLine, type PitchingLine } from "@/lib/stats";
+import { computeBattingLines, computePitchingLines } from "@/lib/stats";
 import { computeEpsForRoster } from "@/lib/eps";
-import { StatIcon } from "@/app/coach/stat-icons";
+import { buildLeaderRows } from "@/lib/leader-stats";
+import { countTeamGames } from "@/lib/leader-qualification";
+import { TeamLeadersBoard } from "@/components/team-leaders-board";
 import type { Database } from "@/lib/supabase/types";
 
 type Game = Database["public"]["Tables"]["games"]["Row"];
@@ -24,24 +22,28 @@ interface Props {
   viewerPlayerId: string;
 }
 
-// Player team-view batch: a read-only mirror of three pieces of the
-// coach dashboard (Team Leaders board, Last Game card, season
-// schedule + record) for the player's own Clubhouse. Deliberately a
-// fresh, self-contained component rather than importing/modifying
-// anything under src/app/coach -- the request was explicit that no
-// coach file gets touched, and the one coach-side behavior this
-// genuinely can't reuse unmodified is LeaderboardModal's per-row link
-// (every row links to /coach/players/[id] there; here only the
-// viewer's own row may link anywhere, everyone else is plain text).
-// Same underlying computations (computeBattingLines/computePitchingLines/
-// computeEpsForRoster) as the coach's own board, so the numbers agree --
-// not a second, separately-derived source of truth.
+// Player team-view batch + same-cards batch: a read-only mirror of
+// three pieces of the coach dashboard (Team Leaders board, Last Game
+// card, season schedule + record) for the player's own Clubhouse. The
+// Team Leaders board itself (stat list, qualification, card grid,
+// ranking modal) now comes entirely from src/lib/leader-stats.ts +
+// src/components/team-leaders-board.tsx, shared verbatim with
+// src/app/coach/leaders-board.tsx -- the two boards can no longer show
+// different cards or different leaders for the same data. This file
+// only owns the Last Game card and the schedule, which have no coach
+// equivalent worth sharing (the coach's own ScheduleTable has edit/
+// cancel/add-game actions a read-only player view has no business
+// linking to).
 export function TeamSection({ games, players, atBats, stolenBases, gameEvents, viewerPlayerId }: Props) {
   const hitting = atBats.filter((ab) => ab.mode === "hitting");
   const pitching = atBats.filter((ab) => ab.mode === "pitching");
   const battingLines = computeBattingLines(hitting, stolenBases);
   const pitchingLines = computePitchingLines(pitching, games);
   const epsLines = computeEpsForRoster(players.map((p) => p.id), hitting, gameEvents);
+  // No filters on this board (unlike the coach's), so "team games" is
+  // just every completed game in the full set passed in.
+  const teamGames = countTeamGames(games);
+  const rows = buildLeaderRows(players, battingLines, pitchingLines, epsLines, teamGames);
 
   const completed = games.filter((g) => g.status === "completed");
   const wins = completed.filter((g) => g.our_score > g.opponent_score).length;
@@ -51,8 +53,6 @@ export function TeamSection({ games, players, atBats, stolenBases, gameEvents, v
 
   const lastGame = [...completed].sort((a, b) => b.game_date.localeCompare(a.game_date))[0] ?? null;
   const upcomingAndPast = [...games].sort((a, b) => a.game_date.localeCompare(b.game_date));
-
-  const rows = buildLeaderRows(players, battingLines, pitchingLines, epsLines);
 
   return (
     <section className="flex flex-col gap-4">
@@ -110,201 +110,12 @@ export function TeamSection({ games, players, atBats, stolenBases, gameEvents, v
         </ul>
       </section>
 
-      <TeamLeaders rows={rows} viewerPlayerId={viewerPlayerId} />
-    </section>
-  );
-}
-
-// -- Team Leaders -----------------------------------------------------
-
-interface Leader {
-  playerId: string;
-  playerName: string;
-  playerJersey: number | null;
-}
-interface RankedPlayer extends Leader {
-  value: number;
-}
-interface LeaderRow {
-  label: string;
-  value: number | null;
-  leaders: Leader[];
-  ranking: RankedPlayer[];
-  format: (v: number) => string;
-  lowerIsBetter: boolean;
-}
-
-function buildRanking<T>(
-  players: Player[],
-  lines: Map<string, T>,
-  getValue: (line: T) => number,
-  hasQualified: (line: T) => boolean,
-  lowerIsBetter: boolean
-): RankedPlayer[] {
-  const entries: RankedPlayer[] = [];
-  for (const player of players) {
-    const line = lines.get(player.id);
-    if (!line || !hasQualified(line)) continue;
-    const value = getValue(line);
-    if (!Number.isFinite(value)) continue;
-    entries.push({ playerId: player.id, playerName: player.name, playerJersey: player.jersey_number, value });
-  }
-  entries.sort((a, b) => (lowerIsBetter ? a.value - b.value : b.value - a.value));
-  return entries;
-}
-
-function leadersFromRanking(ranking: RankedPlayer[], lowerIsBetter: boolean): { value: number | null; leaders: Leader[] } {
-  const topValue = ranking[0]?.value ?? null;
-  if (topValue === null || (topValue === 0 && !lowerIsBetter)) return { value: null, leaders: [] };
-  return { value: topValue, leaders: ranking.filter((r) => r.value === topValue) };
-}
-
-// Same stat set as the coach's Team Leaders board (src/app/coach/leaders-board.tsx)
-// -- kept in sync by hand since this is a deliberately separate,
-// read-only file (see this file's own top comment).
-function buildLeaderRows(
-  players: Player[],
-  battingLines: Map<string, BattingLine>,
-  pitchingLines: Map<string, PitchingLine>,
-  epsLines: Map<string, number | null>
-): LeaderRow[] {
-  const battingHasAb = (l: BattingLine) => l.ab > 0;
-  const battingHasPa = (l: BattingLine) => l.ab + l.bb + l.hbp > 0;
-  const pitchingHasIp = (l: PitchingLine) => l.ip > 0;
-
-  const battingSpecs: { label: string; get: (l: BattingLine) => number; qualifies: (l: BattingLine) => boolean; format: (v: number) => string }[] = [
-    { label: "Batting Average", get: (l) => l.avg, qualifies: battingHasAb, format: formatAvg },
-    { label: "Home Runs", get: (l) => l.hr, qualifies: battingHasAb, format: (v) => String(v) },
-    { label: "RBI", get: (l) => l.rbi, qualifies: () => true, format: (v) => String(v) },
-    { label: "OPS", get: (l) => l.ops, qualifies: battingHasPa, format: (v) => v.toFixed(3) },
-    { label: "Stolen Bases", get: (l) => l.sb, qualifies: (l) => l.sb > 0, format: (v) => String(v) },
-  ];
-  const pitchingSpecs: { label: string; get: (l: PitchingLine) => number; qualifies: (l: PitchingLine) => boolean; format: (v: number) => string; lowerIsBetter?: boolean }[] = [
-    { label: "ERA", get: (l) => l.era ?? Infinity, qualifies: pitchingHasIp, format: (v) => v.toFixed(2), lowerIsBetter: true },
-    { label: "Strikeouts (P)", get: (l) => l.k, qualifies: pitchingHasIp, format: (v) => String(v) },
-  ];
-
-  const rows: LeaderRow[] = battingSpecs.map((spec) => {
-    const ranking = buildRanking(players, battingLines, spec.get, spec.qualifies, false);
-    const { value, leaders } = leadersFromRanking(ranking, false);
-    return { label: spec.label, value, leaders, ranking, format: spec.format, lowerIsBetter: false };
-  });
-  for (const spec of pitchingSpecs) {
-    const lowerIsBetter = !!spec.lowerIsBetter;
-    const ranking = buildRanking(players, pitchingLines, spec.get, spec.qualifies, lowerIsBetter);
-    const { value, leaders } = leadersFromRanking(ranking, lowerIsBetter);
-    rows.push({ label: spec.label, value, leaders, ranking, format: spec.format, lowerIsBetter });
-  }
-  const epsPresent = new Map(Array.from(epsLines.entries()).filter(([, v]) => v !== null) as [string, number][]);
-  const epsRanking = buildRanking(players, epsPresent, (v) => v, () => true, false);
-  const { value: epsValue, leaders: epsLeaders } = leadersFromRanking(epsRanking, false);
-  rows.push({ label: "Performance Score", value: epsValue, leaders: epsLeaders, ranking: epsRanking, format: (v) => v.toFixed(1), lowerIsBetter: false });
-
-  return rows;
-}
-
-function TeamLeaders({ rows, viewerPlayerId }: { rows: LeaderRow[]; viewerPlayerId: string }) {
-  const [selected, setSelected] = useState<LeaderRow | null>(null);
-
-  return (
-    <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5">
-      <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-accent-gold">Team Leaders</h2>
-      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {rows.map((row) => {
-          const hasData = row.value !== null && row.leaders.length > 0;
-          const shown = row.leaders.length > 3 ? row.leaders.slice(0, 2) : row.leaders;
-          const extra = row.leaders.length > 3 ? row.leaders.length - 2 : 0;
-          return (
-            <button key={row.label} type="button" onClick={() => setSelected(row)} className="block w-full text-left transition hover:brightness-110">
-              <div className="min-h-[90px] rounded-md p-3" style={{ backgroundColor: "#080E08", border: "1px solid #1A3D28" }}>
-                <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.15em] text-accent-green">
-                  <StatIcon label={row.label} />
-                  {row.label}
-                </p>
-                <p className="mt-1 pl-4 text-[13px]" style={{ color: "#8AABCC" }}>
-                  {hasData ? (
-                    <>
-                      {shown.map((l, i) => (
-                        <span key={l.playerId}>
-                          {i > 0 && " · "}
-                          <span style={{ color: "#F0C060" }}>#{l.playerJersey ?? "—"}</span> {l.playerName}
-                        </span>
-                      ))}
-                      {extra > 0 && <span> and {extra} more</span>}
-                    </>
-                  ) : (
-                    "No data yet"
-                  )}
-                </p>
-                <p className="mt-1 text-center font-heading text-3xl font-black text-accent-gold" style={{ opacity: hasData ? 1 : 0.35 }}>
-                  {hasData ? row.format(row.value as number) : "—"}
-                </p>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {selected && <LeaderModal row={selected} viewerPlayerId={viewerPlayerId} onClose={() => setSelected(null)} />}
-    </section>
-  );
-}
-
-function barPct(value: number, leaderValue: number, lowerIsBetter: boolean): number {
-  if (leaderValue === 0) return lowerIsBetter ? (value === 0 ? 100 : 0) : 0;
-  const ratio = lowerIsBetter ? leaderValue / value : value / leaderValue;
-  return Math.max(0, Math.min(100, ratio * 100));
-}
-
-// Only the viewer's own row links anywhere (back to this same Clubhouse
-// page -- a player has no separate "/players/[id]" route, this page IS
-// their profile) -- every other row is plain text. This is the one
-// piece of the coach's own LeaderboardModal that genuinely can't be
-// reused unmodified: there, every row links to /coach/players/[id].
-function LeaderModal({ row, viewerPlayerId, onClose }: { row: LeaderRow; viewerPlayerId: string; onClose: () => void }) {
-  const leaderValue = row.ranking[0]?.value ?? 0;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
-      <div className="glossy max-h-[80vh] w-full max-w-md overflow-y-auto rounded-lg border-2 p-5" style={{ backgroundColor: "#080E08", borderColor: "#2ECC71" }} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between gap-3">
-          <h3 className="font-heading text-xl font-bold uppercase tracking-wide text-white">{row.label}</h3>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-md px-2 py-1 text-foreground/50 transition hover:text-white">
-            ✕
-          </button>
+      <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5">
+        <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-accent-gold">Team Leaders</h2>
+        <div className="mt-4">
+          <TeamLeadersBoard rows={rows} getPlayerHref={(id) => (id === viewerPlayerId ? "/player/clubhouse" : null)} />
         </div>
-        {row.ranking.length === 0 ? (
-          <p className="mt-4 text-sm text-foreground/50">No qualifying players yet.</p>
-        ) : (
-          <div className="mt-4 flex flex-col gap-2">
-            {row.ranking.map((r, i) => {
-              const isSelf = r.playerId === viewerPlayerId;
-              const content = (
-                <>
-                  <span className="w-5 shrink-0 text-right text-xs text-foreground/40">{i + 1}</span>
-                  <span className="w-24 shrink-0 truncate text-sm text-white">
-                    <span style={{ color: "#F0C060" }}>#{r.playerJersey ?? "—"}</span> {r.playerName}
-                    {isSelf && <span className="text-foreground/40"> (you)</span>}
-                  </span>
-                  <span className="relative h-2 flex-1 overflow-hidden rounded-full bg-white/10">
-                    <span className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${barPct(r.value, leaderValue, row.lowerIsBetter)}%`, backgroundColor: "#2ECC71" }} />
-                  </span>
-                  <span className="w-12 shrink-0 text-right font-mono text-sm text-accent-gold">{row.format(r.value)}</span>
-                </>
-              );
-              const rowClass = "flex items-center gap-3 rounded-md px-2 py-2";
-              return isSelf ? (
-                <Link key={r.playerId} href="/player/clubhouse" onClick={onClose} className={`${rowClass} transition hover:bg-white/5`}>
-                  {content}
-                </Link>
-              ) : (
-                <div key={r.playerId} className={rowClass}>
-                  {content}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
+      </section>
+    </section>
   );
 }

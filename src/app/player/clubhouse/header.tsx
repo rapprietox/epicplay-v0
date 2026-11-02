@@ -1,5 +1,6 @@
 import { formatAvg, type BattingLine } from "@/lib/stats";
 import { epsTier, EPS_TIER_LABEL } from "@/lib/eps";
+import { EpsInfoTrigger } from "@/components/eps-info-panel";
 import type { Database } from "@/lib/supabase/types";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
@@ -39,14 +40,23 @@ export function ClubhouseHeader({
         <SnapshotStat label="RBI" value={line ? String(line.rbi) : "—"} />
         <SnapshotStat label="OPS" value={line ? line.ops.toFixed(3) : "—"} />
         {player.clubhouse_unlocked && (
-          <SnapshotStat label="EPS" value={eps !== null ? eps.toFixed(1) : "—"} badge={eps !== null ? EPS_TIER_LABEL[epsTier(eps)] : undefined} />
+          <SnapshotStat
+            label={
+              <span className="inline-flex items-center gap-1">
+                EPS
+                <EpsInfoTrigger />
+              </span>
+            }
+            value={eps !== null ? eps.toFixed(1) : "—"}
+            badge={eps !== null ? EPS_TIER_LABEL[epsTier(eps)] : undefined}
+          />
         )}
       </div>
     </header>
   );
 }
 
-function SnapshotStat({ label, value, badge }: { label: string; value: string; badge?: string }) {
+function SnapshotStat({ label, value, badge }: { label: React.ReactNode; value: string; badge?: string }) {
   return (
     <div className="text-center">
       <p className="font-heading text-xl font-bold text-accent-gold">{value}</p>
