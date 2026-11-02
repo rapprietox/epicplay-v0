@@ -8,6 +8,7 @@ import { SeasonImportSection } from "./season-import-section";
 import { NextGamePanel } from "./next-game-panel";
 import { LastGameCard } from "./last-game-card";
 import { LeadersBoard } from "./leaders-board";
+import { TeamActivity } from "./team-activity";
 import { ScheduleTable } from "./schedule-table";
 import { RealtimeRefresh } from "./realtime-refresh";
 import { TeamAnalytics } from "./team-analytics";
@@ -245,6 +246,8 @@ export default async function CoachPage({ searchParams }: { searchParams: { view
         />
 
         <OpponentScoutingSection opponents={opponents ?? []} games={allGames} />
+
+        <TeamActivity teamId={teamId} players={players ?? []} />
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <RosterSection players={players ?? []} className={hasSeason ? "lg:col-span-2" : undefined} />

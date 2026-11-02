@@ -212,6 +212,10 @@ export interface Database {
           team_id: string | null;
           player_id: string | null;
           created_at: string;
+          // Team activity batch: 20261102130001_team_presence.sql. Only
+          // ever written via the touch_last_seen() RPC, never a direct
+          // update -- see src/lib/presence-actions.ts.
+          last_seen_at: string | null;
         };
         Insert: {
           id: string;
@@ -221,6 +225,7 @@ export interface Database {
           team_id?: string | null;
           player_id?: string | null;
           created_at?: string;
+          last_seen_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["profiles"]["Insert"]>;
         Relationships: [];
@@ -757,7 +762,13 @@ export interface Database {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      // Team activity batch: security-definer RPC, 20261102130001_team_presence.sql.
+      touch_last_seen: {
+        Args: Record<string, never>;
+        Returns: void;
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };
