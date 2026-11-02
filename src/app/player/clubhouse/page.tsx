@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { computeBattingLines } from "@/lib/stats";
+import { computeBattingLines, computePitchingLines } from "@/lib/stats";
 import { computeZoneBattingLines, zoneIndexFromCoords, resultCategory } from "@/lib/heat-map";
 import { finalCountForAtBat, computePressureSplits } from "@/lib/count-stats";
 import { daysUntil } from "@/lib/dates";
@@ -17,6 +17,8 @@ import { ClubhouseHeader } from "./header";
 import { ClubhouseNavBar } from "./clubhouse-nav-bar";
 import { PregameCard } from "./pregame-card";
 import { GameHistory } from "./game-history";
+import { SeasonStatsCard } from "./season-stats-card";
+import { TeamSection } from "./team-section";
 import { ProSection } from "./pro-section";
 import { UnlockingBanner } from "./pro/unlocking-banner";
 import type { GameHistoryRow } from "./types";
@@ -52,6 +54,28 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
   const { data: stolenBases } = gameIds.length
     ? await supabase.from("stolen_bases").select("*").eq("player_id", player.id).in("game_id", gameIds)
+    : { data: [] };
+
+  // Player team-view batch: this player's own pitching line (if they've
+  // pitched at all) for the season-stats card, plus the team-wide roster
+  // and team-wide at_bats/stolen_bases/caught-stealing for the new
+  // read-only Team section (Team Leaders board, same computations the
+  // coach dashboard uses). The team-wide fetches rely on the new
+  // "...: player selects team" RLS policies (see the migration this
+  // batch adds) -- until that migration is applied, RLS still narrows
+  // these to just this player's own rows, same as before.
+  const { data: pitchingAtBats } = gameIds.length
+    ? await supabase.from("at_bats").select("*").eq("pitcher_id", player.id).in("game_id", gameIds).not("confirmed_at", "is", null)
+    : { data: [] };
+  const pitchingLine = computePitchingLines(pitchingAtBats ?? [], allGames).get(player.id);
+
+  const { data: teamPlayers } = await supabase.from("players").select("*").eq("team_id", profile.team_id);
+  const { data: teamAtBats } = gameIds.length
+    ? await supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null)
+    : { data: [] };
+  const { data: teamStolenBases } = gameIds.length ? await supabase.from("stolen_bases").select("*").in("game_id", gameIds) : { data: [] };
+  const { data: teamCaughtStealing } = gameIds.length
+    ? await supabase.from("game_events").select("event_type, player_id, game_id").in("game_id", gameIds).eq("event_type", "caught_stealing")
     : { data: [] };
 
   // EPS batch: SB_success_rate needs caught-stealing counts, only in
@@ -217,9 +241,20 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6">
         <ClubhouseHeader player={player} teamName={team?.name ?? "Team"} line={seasonLine} eps={eps} />
 
+        <SeasonStatsCard battingLine={seasonLine} pitchingLine={pitchingLine} />
+
         <PregameCard todaysGame={todaysGame} message={pregameMessage} lastGame={gameHistoryRows[0] ?? null} />
 
         <GameHistory rows={gameHistoryRows} />
+
+        <TeamSection
+          games={allGames}
+          players={teamPlayers ?? []}
+          atBats={teamAtBats ?? []}
+          stolenBases={teamStolenBases ?? []}
+          gameEvents={teamCaughtStealing ?? []}
+          viewerPlayerId={player.id}
+        />
 
         {searchParams.unlocked === "1" && !player.clubhouse_unlocked && <UnlockingBanner />}
 

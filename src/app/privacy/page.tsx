@@ -96,7 +96,9 @@ export default function PrivacyPolicyPage() {
         <p>
           A coach can see all of their own team&apos;s data — roster, games, and stats for every
           player on the team. A player can see their own Clubhouse — their own stats and, if
-          unlocked, their own Clubhouse Pro content. We do not sell personal data to anyone.
+          unlocked, their own Clubhouse Pro content. A player can also see their team&apos;s
+          leaderboard, schedule, and results, but only their own detailed profile. We do not sell
+          personal data to anyone.
         </p>
       </LegalSection>
 
