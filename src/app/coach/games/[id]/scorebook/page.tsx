@@ -156,6 +156,16 @@ export default async function ScorebookPage({ params }: { params: { id: string }
     return { inning, r, h, e, lob };
   });
 
+  // Scorebook-fixes batch: a plain last-word-of-the-name split -- good
+  // enough to tell two chain members apart at a glance (the only job
+  // this label has; see diamond-cell.tsx's own comment), and falls back
+  // to the whole name for a single-word one (e.g. "Oswaldo") rather than
+  // producing an empty label.
+  function surnameOf(name: string): string {
+    const parts = name.trim().split(/\s+/);
+    return parts[parts.length - 1] || name;
+  }
+
   function notationFor(ab: AtBat): string {
     if (ab.scorebook_notation) return ab.scorebook_notation;
     const fielderNum = ab.fielded_by_position ? FIELDING_POSITION_TO_NUMBER[ab.fielded_by_position as FieldingPosition] : null;
@@ -271,10 +281,31 @@ export default async function ScorebookPage({ params }: { params: { id: string }
                   { ab: 0, runsScored: 0, h: 0, rbi: 0, bb: 0 }
                 );
                 const k = (hittingAtBats ?? []).filter((ab) => chain.includes(ab.player_id ?? "") && ab.result === "strikeout").length;
+                // Scorebook-fixes batch: only a slot with more than one
+                // player needs either the per-cell surname or this
+                // per-player breakdown -- a single-player slot's own
+                // combined line (below) already IS that one player's
+                // line, so repeating it would just be noise.
+                const multiplePlayers = chain.length > 1;
                 return (
                   <tr key={slot.id} className={`border-b border-black/30 ${i % 2 === 1 ? "bg-black/5" : ""}`}>
                     <td className="border-r border-black/30 py-1 text-center">{slot.batting_order}</td>
-                    <td className="border-r border-black/30 py-1 pl-1">{displayName}</td>
+                    <td className="border-r border-black/30 py-1 pl-1">
+                      {displayName}
+                      {multiplePlayers && (
+                        <div className="mt-0.5 flex flex-col gap-0.5">
+                          {chain.map((pid) => {
+                            const p = playerById.get(pid);
+                            const l = battingLines.get(pid);
+                            return (
+                              <span key={pid} className="whitespace-nowrap text-[8px] italic text-black/50">
+                                {p?.name ?? "Player"}: {l?.ab ?? 0} AB, {l?.h ?? 0} H, {l?.runsScored ?? 0} R, {l?.rbi ?? 0} RBI
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </td>
                     <td className="border-r border-black/30 py-1 text-center">{slot.position}</td>
                     {innings.map((inning) => {
                       const cellAtBats = chain.flatMap((pid) => cellsByPlayerInning.get(`${pid}-${inning}`) ?? []);
@@ -284,7 +315,12 @@ export default async function ScorebookPage({ params }: { params: { id: string }
                         <td key={inning} className="border-r border-black/30 p-0.5 align-top">
                           <div className="flex flex-col items-center gap-0.5">
                             {cellAtBats.map((ab) => (
-                              <DiamondCell key={ab.id} atBat={ab} notation={notationFor(ab)} />
+                              <DiamondCell
+                                key={ab.id}
+                                atBat={ab}
+                                notation={notationFor(ab)}
+                                batterLabel={multiplePlayers && ab.player_id ? surnameOf(playerById.get(ab.player_id)?.name ?? "") : undefined}
+                              />
                             ))}
                             {sb > 0 && <span className="font-mono text-[9px]">SB{sb > 1 ? `x${sb}` : ""}</span>}
                             {cs > 0 && <span className="font-mono text-[9px]">CS{cs > 1 ? `x${cs}` : ""}</span>}
@@ -333,6 +369,19 @@ export default async function ScorebookPage({ params }: { params: { id: string }
           outcome; a runner&apos;s eventual run on a later teammate&apos;s at-bat is not linked back to the original cell. A row shows every
           player who batted in that lineup spot (e.g. &quot;#2 Christian Cris &rarr; #43 Ruben Prieto&quot;) -- substitutions share the
           starter&apos;s row rather than getting a row of their own, matching how a paper scorebook tracks a batting slot.
+        </p>
+        {/* Scorebook-fixes batch: a wild pitch/steal/sac fly run is
+            credited to games.our_score (and, when attributed, to a
+            player's own R) without ever creating an at_bats row for that
+            specific inning -- the per-inning R box above sums only
+            at_bats.runs_scored, so a run like this is real in the final
+            score but invisible in that one inning's box. Flagging this
+            plainly rather than guessing which inning to add it to: there
+            is no stored per-inning amount for most of these events (see
+            the run-attribution migration's own comment), so any guess
+            would be fabricating a number this schema doesn't actually have. */}
+        <p className="mt-1 text-[9px] italic text-black/50">
+          Runs from wild pitches, steals and sac flies appear in the final score but may not appear in the inning boxes.
         </p>
 
         <div className="mt-5">
