@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import type { Database } from "@/lib/supabase/types";
+import { VIEW_SWITCH_COOKIE, isViewSwitchActive } from "@/lib/view-switch";
 
 const ROLE_HOME: Record<string, string> = {
   operator: "/operator",
@@ -116,8 +117,16 @@ export async function updateSession(request: NextRequest) {
       .eq("id", user.id)
       .single();
 
-    const home = profile?.team_id ? ROLE_HOME[profile.role ?? ""] : undefined;
-    const allowedSections = home ? [home, ...(EXTRA_ALLOWED_SECTIONS[profile?.role ?? ""] ?? [])] : [];
+    // "View as player" batch: for the one coach account this applies to,
+    // with the cookie their own toggle sets, routing treats them as a
+    // player -- everyone else's effectiveRole is just their own real
+    // role, unchanged. See src/lib/view-switch.ts's own comment for why
+    // this can only ever narrow access (coach -> player), never widen it.
+    const viewAsCookie = request.cookies.get(VIEW_SWITCH_COOKIE)?.value;
+    const effectiveRole = isViewSwitchActive(user.id, profile?.role ?? null, viewAsCookie) ? "player" : profile?.role;
+
+    const home = profile?.team_id ? ROLE_HOME[effectiveRole ?? ""] : undefined;
+    const allowedSections = home ? [home, ...(EXTRA_ALLOWED_SECTIONS[effectiveRole ?? ""] ?? [])] : [];
     const inAllowedSection = allowedSections.some((h) => pathname.startsWith(h));
     const isRoleSection = Object.values(ROLE_HOME).some((h) => pathname.startsWith(h));
 

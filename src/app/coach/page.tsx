@@ -17,8 +17,10 @@ import { KairosWidget } from "./kairos-widget";
 import { findCurrentLineup } from "@/lib/lineup-analysis";
 import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import type { AtBatResult } from "@/lib/supabase/types";
+import { isViewSwitchEligible } from "@/lib/view-switch";
+import { enableViewAsPlayer } from "@/lib/view-switch-actions";
 
-export default async function CoachPage() {
+export default async function CoachPage({ searchParams }: { searchParams: { view_switch?: string } }) {
   const supabase = createClient();
   const {
     data: { user },
@@ -34,6 +36,7 @@ export default async function CoachPage() {
   if (!profile?.team_id) redirect("/pending");
 
   const teamId = profile.team_id;
+  const canViewAsPlayer = isViewSwitchEligible(user.id, profile.role ?? null);
 
   const [{ data: team }, { data: players }, { data: games }, { data: opponents }, { data: seasons }] = await Promise.all([
     supabase.from("teams").select("name, spray_chart_locked").eq("id", teamId).single(),
@@ -167,9 +170,30 @@ export default async function CoachPage() {
           <span className="text-xs text-foreground/50">
             {profile.full_name ?? profile.email}
           </span>
+          {/* "View as player" batch: this button, and the matching pill on
+              /player/clubhouse, are the ONLY two places this feature is
+              visible anywhere in the app -- both gated by the exact same
+              isViewSwitchEligible check, which is false for every other
+              coach, operator, and player. */}
+          {canViewAsPlayer && (
+            <form action={enableViewAsPlayer}>
+              <button
+                type="submit"
+                className="rounded-md border border-accent-gold/40 px-3 py-1.5 text-xs font-medium text-accent-gold transition hover:bg-accent-gold/10"
+              >
+                Switch to player view
+              </button>
+            </form>
+          )}
           <SignOutButton />
         </div>
       </header>
+
+      {canViewAsPlayer && searchParams.view_switch === "no_player_link" && (
+        <p className="mx-auto mt-4 max-w-6xl rounded-md border border-accent-red/40 bg-accent-red/10 px-4 py-2 text-sm text-accent-red">
+          You need to link your account to your player record first (set your profile&apos;s player_id) before you can view as a player.
+        </p>
+      )}
 
       <div className="mx-auto mt-6 flex max-w-6xl flex-col gap-6">
         {/* KAIROS batch: "the FIRST element on the /coach dashboard --

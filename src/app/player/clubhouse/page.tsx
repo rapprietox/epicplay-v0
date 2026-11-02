@@ -21,6 +21,8 @@ import { SeasonStatsCard } from "./season-stats-card";
 import { TeamSection } from "./team-section";
 import { ProSection } from "./pro-section";
 import { UnlockingBanner } from "./pro/unlocking-banner";
+import { isViewSwitchEligible } from "@/lib/view-switch";
+import { disableViewAsPlayer } from "@/lib/view-switch-actions";
 import type { GameHistoryRow } from "./types";
 
 export default async function ClubhousePage({ searchParams }: { searchParams: { unlocked?: string } }) {
@@ -30,8 +32,16 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase.from("profiles").select("team_id, player_id").eq("id", user.id).single();
+  const { data: profile } = await supabase.from("profiles").select("role, team_id, player_id").eq("id", user.id).single();
   if (!profile?.team_id || !profile?.player_id) redirect("/player");
+
+  // "View as player" batch: reaching this page at all with a real
+  // profiles.role of "coach" is only possible via the toggle (a real
+  // player's role is already "player", and middleware would otherwise
+  // never let a coach-role user reach /player/*) -- so this check alone
+  // is enough to know it's the one eligible coach currently viewing as
+  // a player, no second cookie read needed here.
+  const viewingAsPlayer = isViewSwitchEligible(user.id, profile.role ?? null);
 
   const [{ data: player }, { data: team }] = await Promise.all([
     supabase.from("players").select("*").eq("id", profile.player_id).single(),
@@ -237,6 +247,16 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
   return (
     <main className="min-h-screen bg-background">
+      {viewingAsPlayer && (
+        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-accent-gold/40 bg-surface px-4 py-2 shadow-lg">
+          <span className="text-xs text-foreground/70">Viewing as player</span>
+          <form action={disableViewAsPlayer}>
+            <button type="submit" className="text-xs font-semibold text-accent-gold underline-offset-2 hover:underline">
+              Switch to coach view
+            </button>
+          </form>
+        </div>
+      )}
       <ClubhouseNavBar />
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6">
         <ClubhouseHeader player={player} teamName={team?.name ?? "Team"} line={seasonLine} eps={eps} />

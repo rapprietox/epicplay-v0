@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { MarketingPage } from "./_marketing/MarketingPage";
+import { VIEW_SWITCH_COOKIE, isViewSwitchActive } from "@/lib/view-switch";
 
 // Anonymous visitors render the marketing site (src/app/_marketing),
 // built natively as React/Three.js/GSAP components. Signed-in users fall
@@ -24,10 +26,17 @@ export default async function HomePage() {
     .eq("id", user.id)
     .single();
 
+  // "View as player" batch: mirrors the same effectiveRole logic
+  // middleware uses, so the home redirect agrees with it instead of
+  // bouncing the one toggled coach to /coach only to have middleware
+  // immediately redirect them back to /player anyway.
+  const viewAsCookie = cookies().get(VIEW_SWITCH_COOKIE)?.value;
+  const effectiveRole = isViewSwitchActive(user.id, profile?.role ?? null, viewAsCookie) ? "player" : profile?.role;
+
   if (profile?.team_id) {
-    if (profile.role === "coach") redirect("/coach");
-    if (profile.role === "operator") redirect("/operator");
-    if (profile.role === "player") redirect("/player/clubhouse");
+    if (effectiveRole === "coach") redirect("/coach");
+    if (effectiveRole === "operator") redirect("/operator");
+    if (effectiveRole === "player") redirect("/player/clubhouse");
   }
   redirect("/pending");
 }
