@@ -72,7 +72,11 @@ export type GameEventType =
   // Feature 2 (lineup-status batch): a chain substitution's single
   // summary event -- see lib/substitution-chain.ts's own comment for why
   // one rich event beats one row per movement.
-  | "substitution";
+  | "substitution"
+  // Run-attribution batch: a generic ad-hoc "Scored" tap with no more
+  // specific cause already covered above (wild_pitch/passed_ball/balk/
+  // squeeze_play/stolen_base all keep using their own type).
+  | "runner_scored";
 export type OutType = "force" | "tag";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";
@@ -663,6 +667,13 @@ export interface Database {
           note: string | null;
           player_id: string | null;
           opponent_player_id: string | null;
+          // Run-attribution batch: who (our own roster only) actually
+          // crossed the plate on this event, and how many runs it
+          // credited -- see the migration's own comment for why
+          // scorer_player_id has no opponent-side equivalent and why
+          // runs_scored defaults to 0, not 1.
+          scorer_player_id: string | null;
+          runs_scored: number;
           created_at: string;
         };
         Insert: {
@@ -674,6 +685,8 @@ export interface Database {
           note?: string | null;
           player_id?: string | null;
           opponent_player_id?: string | null;
+          scorer_player_id?: string | null;
+          runs_scored?: number;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["game_events"]["Insert"]>;

@@ -756,6 +756,11 @@ export async function logGameEvent(
     note?: string;
     mode: AtBatMode;
     runsScored?: number;
+    // Run-attribution batch: our own roster only (the column's FK target
+    // -- see the migration's own comment on why an opposing runner has
+    // no equivalent), so this stays null for every opponent-scored event,
+    // exactly as every such event already renders everywhere else.
+    scorerPlayerId?: string | null;
     playerId?: string | null;
     opponentPlayerId?: string | null;
   }
@@ -769,6 +774,8 @@ export async function logGameEvent(
     note: input.note ?? null,
     player_id: input.playerId ?? null,
     opponent_player_id: input.opponentPlayerId ?? null,
+    scorer_player_id: input.scorerPlayerId ?? null,
+    runs_scored: input.runsScored ?? 0,
   });
   if (error) throw new Error(error.message);
 

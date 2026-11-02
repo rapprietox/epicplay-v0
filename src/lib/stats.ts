@@ -3,6 +3,7 @@ import type { Database } from "@/lib/supabase/types";
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
+type GameEvent = Database["public"]["Tables"]["game_events"]["Row"];
 
 // ground_rule_double counts as a double everywhere a regular double does
 // (Fix 9, baseball-logic-fixes batch, minor tier) -- same 2 total bases,
@@ -68,9 +69,23 @@ function emptyBattingLine(playerId: string): BattingLine {
 // corrupt these counts. This also defensively skips any row with a null
 // player_id (pitching-mode at-bats, where the batter is an opponent) or
 // null result (a draft that slipped through un-filtered).
+// Run-attribution batch: scoringEvents defaults to [] so every existing
+// call site (there are 30+, none of which have a game_events fetch to
+// hand in) keeps compiling and behaving exactly as before -- only a
+// caller that actually passes real rows (the scorebook; the operator's
+// own going-forward logging) gets the extra credit. Each matching event
+// only ever adds to runsScored -- never ab/pa/rbi -- since it represents
+// a run that happened outside any at-bat, same reasoning the per-at-bat
+// runs_scored path already follows for errors/walks/etc (an RBI needs a
+// batter's own action, which this player didn't necessarily take here).
+// An event with no scorer_player_id (every event logged before this
+// batch, and an opposing runner's event even after it -- see the
+// migration's own comment) contributes nothing here and is left exactly
+// as it already renders everywhere else (team score only).
 export function computeBattingLines(
   atBats: Pick<AtBat, "player_id" | "result" | "rbi" | "runs_scored">[],
-  stolenBases: Pick<StolenBase, "player_id">[]
+  stolenBases: Pick<StolenBase, "player_id">[],
+  scoringEvents: Pick<GameEvent, "scorer_player_id" | "runs_scored">[] = []
 ): Map<string, BattingLine> {
   const lines = new Map<string, BattingLine>();
 
@@ -111,6 +126,11 @@ export function computeBattingLines(
 
   for (const sb of stolenBases) {
     get(sb.player_id).sb += 1;
+  }
+
+  for (const ev of scoringEvents) {
+    if (!ev.scorer_player_id || !ev.runs_scored) continue;
+    get(ev.scorer_player_id).runsScored += ev.runs_scored;
   }
 
   for (const line of Array.from(lines.values())) {
