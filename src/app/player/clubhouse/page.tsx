@@ -13,6 +13,7 @@ import { recentGamesAvg, currentHitStreak, streakStatus } from "@/lib/streaks";
 import { computeHeadToHead } from "@/lib/head-to-head";
 import { computeMilestones } from "@/lib/milestones";
 import { computeEpsForPlayer } from "@/lib/eps";
+import { isFreePreviewActive } from "@/lib/free-preview";
 import { ClubhouseHeader } from "./header";
 import { ClubhouseNavBar } from "./clubhouse-nav-bar";
 import { PregameCard } from "./pregame-card";
@@ -111,6 +112,9 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   const seasonLine = computeBattingLines(confirmedAtBats, stolenBases ?? []).get(player.id);
   // Feature 3 (EPS): Clubhouse Pro only, per the request's own scoping.
   const eps = player.clubhouse_unlocked ? computeEpsForPlayer(player.id, confirmedAtBats, caughtStealingEvents ?? []) : null;
+  // Free preview batch: only meaningful for a still-locked player -- a
+  // Pro player's view never changes because of it.
+  const freePreviewActive = !player.clubhouse_unlocked && isFreePreviewActive();
 
   // Zone data for the mini Map 1 panel + ZoneAnalyticsRow, mirroring the
   // same "last pitch of the at-bat is the zone" derivation the coach's
@@ -156,6 +160,7 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
         opponentName: g?.opponent_name ?? "Unknown",
         hitType: ab.hit_type,
         gameType: (g?.game_type ?? "friendly") as GameType,
+        gameId: ab.game_id,
       };
     });
 
@@ -280,12 +285,14 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
         <ProSection
           unlocked={player.clubhouse_unlocked}
+          freePreviewActive={freePreviewActive}
           playerId={player.id}
           battingAvgZoneLines={battingAvgZoneLines}
           battingZoneAtBats={battingZoneAtBats}
           pitches={batterPitches}
           insights={insights}
           sprayDots={sprayDots}
+          playerGames={playerGames.map((g) => ({ id: g.id, gameDate: g.game_date, opponentName: g.opponent_name }))}
           fieldCalibration={fieldCalibration}
           hitterCountAtBats={hitterCountAtBats}
           hitterPitchTypeAtBats={hitterPitchTypeAtBats}

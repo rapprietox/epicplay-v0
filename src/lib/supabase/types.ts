@@ -248,6 +248,10 @@ export interface Database {
           kairos_messages_used: number;
           kairos_messages_reset_date: string;
           kairos_initial_assessment: string | null;
+          // Free preview batch: see the migration's own comment
+          // (20261102120001_players_free_preview_kairos.sql) -- a
+          // separate, never-resetting counter from kairos_messages_used.
+          free_preview_kairos_used: number;
           // Lineup Intelligence 2.0, Part 1.
           speed_rating: number;
           player_type: PlayerType;
@@ -267,6 +271,7 @@ export interface Database {
           kairos_messages_used?: number;
           kairos_messages_reset_date?: string;
           kairos_initial_assessment?: string | null;
+          free_preview_kairos_used?: number;
           speed_rating?: number;
           player_type?: PlayerType;
           created_at?: string;

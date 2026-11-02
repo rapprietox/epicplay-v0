@@ -9,7 +9,7 @@ import { KairosChat } from "./kairos-chat";
 // coupling in the original), swapping teamId for playerId and rendering
 // the player-scoped KairosChat above. Satisfies "floating baseball also
 // appears on player Clubhouse when scrolled."
-export function KairosWidget({ playerId }: { playerId: string }) {
+export function KairosWidget({ playerId, source = "pro" }: { playerId: string; source?: "pro" | "free_preview" }) {
   const [minimized, setMinimized] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [panelVisible, setPanelVisible] = useState(true);
@@ -54,7 +54,7 @@ export function KairosWidget({ playerId }: { playerId: string }) {
 
         {!minimized && (
           <div className="mt-1.5">
-            <KairosChat playerId={playerId} variant="dashboard" />
+            <KairosChat playerId={playerId} variant="dashboard" source={source} />
           </div>
         )}
       </section>
@@ -103,7 +103,7 @@ export function KairosWidget({ playerId }: { playerId: string }) {
                 a flex child shrink below its content size instead of
                 forcing the modal itself to grow past max-h-[60vh]). */}
             <div className="mt-3 min-h-0 flex-1">
-              <KairosChat playerId={playerId} variant="modal" />
+              <KairosChat playerId={playerId} variant="modal" source={source} />
             </div>
           </div>
         </div>

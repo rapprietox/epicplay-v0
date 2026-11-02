@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { askPlayerKairos, type KairosMessage } from "../kairos-actions";
 import { useSpeechRecognition } from "@/lib/kairos/use-speech-recognition";
+import { FREE_PREVIEW_KAIROS_MESSAGES } from "@/lib/free-preview";
 
 // Clubhouse Pro enhancement, Part 3: a trimmed copy of the coach's
 // src/app/coach/kairos-chat.tsx -- same message-list rendering, scroll
@@ -18,7 +19,7 @@ import { useSpeechRecognition } from "@/lib/kairos/use-speech-recognition";
 const storageKey = (playerId: string) => `kairos_history_player_${playerId}`;
 const MAX_STORED_MESSAGES = 40;
 const MAX_SHOWN_MESSAGES = 10;
-const MONTHLY_LIMIT = 20;
+const DEFAULT_LIMIT = 20;
 
 function loadMessages(playerId: string): KairosMessage[] {
   if (typeof window === "undefined") return [];
@@ -41,13 +42,27 @@ function saveMessages(playerId: string, messages: KairosMessage[]) {
   }
 }
 
-export function KairosChat({ playerId, variant = "dashboard" }: { playerId: string; variant?: "dashboard" | "modal" }) {
+export function KairosChat({
+  playerId,
+  variant = "dashboard",
+  source = "pro",
+}: {
+  playerId: string;
+  variant?: "dashboard" | "modal";
+  // Free preview batch: which budget this chat is drawing against --
+  // purely a display hint (the server re-derives the real source on
+  // every send, see askPlayerKairos), so the "N of M" counter reads
+  // correctly before the first message's real response comes back.
+  source?: "pro" | "free_preview";
+}) {
+  const defaultLimit = source === "free_preview" ? FREE_PREVIEW_KAIROS_MESSAGES : DEFAULT_LIMIT;
   const [messages, setMessages] = useState<KairosMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [remaining, setRemaining] = useState<number | null>(null);
-  const [exhaustedUntil, setExhaustedUntil] = useState<string | null>(null);
+  const [limit, setLimit] = useState(defaultLimit);
+  const [exhaustedMessage, setExhaustedMessage] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -64,7 +79,7 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
 
   async function send(text: string) {
     const trimmed = text.trim();
-    if (!trimmed || loading || exhaustedUntil) return;
+    if (!trimmed || loading || exhaustedMessage) return;
     setInput("");
     setError(null);
     const historyForRequest = messages;
@@ -74,8 +89,8 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
     try {
       const res = await askPlayerKairos(historyForRequest, trimmed);
       if (!res.ok) {
-        if (res.reason === "credits_exhausted") {
-          setExhaustedUntil(res.resetDate);
+        if (res.reason === "credits_exhausted" || res.reason === "locked") {
+          setExhaustedMessage(res.message);
           setMessages(messages);
         } else {
           setError(res.error);
@@ -87,6 +102,7 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
       setMessages(updated);
       saveMessages(playerId, updated);
       setRemaining(res.remaining);
+      setLimit(res.limit);
     } catch (err) {
       setError(err instanceof Error ? err.message : "KAIROS couldn't respond -- check your connection and try again.");
       setMessages(messages);
@@ -118,7 +134,11 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
     <div className={`flex flex-col ${isDashboard ? "" : "h-full"}`}>
       <div className="mb-0.5 flex items-center justify-between">
         <span className="text-[9px] uppercase tracking-wide text-[#5A7A64]">
-          {remaining !== null ? `${remaining} of ${MONTHLY_LIMIT} messages remaining this month` : `${MONTHLY_LIMIT} messages remaining this month`}
+          {source === "free_preview"
+            ? `${remaining !== null ? remaining : limit} of ${limit} free messages left`
+            : remaining !== null
+              ? `${remaining} of ${limit} messages remaining this month`
+              : `${limit} messages remaining this month`}
         </span>
         {messages.length > 0 && (
           <button type="button" onClick={clearHistory} className="text-[9px] uppercase tracking-wide text-[#5A7A64] hover:text-[#9FCBAC]">
@@ -154,9 +174,7 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
         )}
       </div>
 
-      {exhaustedUntil && (
-        <p className="mt-2 text-xs text-accent-amber">Credits reset on {exhaustedUntil}. Come back then for more coaching.</p>
-      )}
+      {exhaustedMessage && <p className="mt-2 text-xs text-accent-amber">{exhaustedMessage}</p>}
       {error && <p className="mt-2 text-xs text-accent-red">{error}</p>}
 
       <div
@@ -174,7 +192,7 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
           }}
           placeholder="Ask KAIROS about your stats, drills, or technique..."
           rows={variant === "modal" ? 2 : 1}
-          disabled={Boolean(exhaustedUntil)}
+          disabled={Boolean(exhaustedMessage)}
           className={`w-full resize-none rounded-md border border-[#1A3D28] bg-[#06150A] text-sm text-white outline-none placeholder:text-[#5A7A64] focus:border-accent-green disabled:opacity-50 ${
             isDashboard ? "px-2 py-1.5" : "px-3 py-2"
           }`}
@@ -185,7 +203,7 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
               type="button"
               onClick={() => (listening ? stopListening() : startListening())}
               title="Voice input"
-              disabled={Boolean(exhaustedUntil)}
+              disabled={Boolean(exhaustedMessage)}
               className={`flex min-h-[40px] min-w-[40px] items-center justify-center rounded-full border text-lg transition disabled:opacity-50 ${
                 listening ? "animate-pulse border-accent-red bg-accent-red/20 text-accent-red" : "border-accent-green/50 text-accent-green hover:bg-accent-green/10"
               }`}
@@ -196,7 +214,7 @@ export function KairosChat({ playerId, variant = "dashboard" }: { playerId: stri
           <button
             type="button"
             onClick={() => void send(input)}
-            disabled={loading || !input.trim() || Boolean(exhaustedUntil)}
+            disabled={loading || !input.trim() || Boolean(exhaustedMessage)}
             className="min-h-[40px] shrink-0 rounded-full bg-accent-green px-5 text-sm font-semibold text-background transition hover:bg-accent-green/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Ask Kairos →

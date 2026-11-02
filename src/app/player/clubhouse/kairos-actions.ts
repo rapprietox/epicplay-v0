@@ -3,10 +3,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { checkAndConsumeKairosCredit } from "@/lib/kairos-credits";
+import { checkAndConsumeKairosCredit, checkAndConsumeFreePreviewKairosCredit } from "@/lib/kairos-credits";
 import { ensureInitialAssessment, regenerateAssessment, type AssessmentZoneInputs } from "@/lib/kairos-assessment";
 import { computeBattingLines, formatAvg } from "@/lib/stats";
 import { computeZoneBattingLines, computeZoneWhiffLines, zoneIndexFromCoords, extendedZoneLabel, zoneLabel9, resultCategory } from "@/lib/heat-map";
+import { isFreePreviewActive, FREE_PREVIEW_KAIROS_MESSAGES } from "@/lib/free-preview";
 import type { AtBatResult, PitchOutcome } from "@/lib/supabase/types";
 
 // Clubhouse Pro enhancement, Part 3. Mirrors src/app/coach/kairos-actions.ts's
@@ -40,9 +41,17 @@ export interface KairosMessage {
   content: string;
 }
 
+// Free preview batch: "source" tells the UI which budget just got
+// charged, so the counter line can say "N of 20 this month" (Pro) vs
+// "N of 5 free messages left" (preview) without guessing from the
+// numbers alone. "locked" is a defense-in-depth reason -- the UI never
+// renders a KAIROS entry point for a locked player once the preview has
+// ended, but the server re-checks unlocked/preview status on every
+// request regardless of what the client thinks it can show.
 export type AskPlayerKairosResult =
-  | { ok: true; text: string; remaining: number }
-  | { ok: false; reason: "credits_exhausted"; resetDate: string }
+  | { ok: true; text: string; remaining: number; limit: number; source: "pro" | "free_preview" }
+  | { ok: false; reason: "credits_exhausted"; message: string; source: "pro" | "free_preview" }
+  | { ok: false; reason: "locked"; message: string }
   | { ok: false; reason: "error"; error: string };
 
 function extractText(message: Anthropic.Message): string {
@@ -52,7 +61,7 @@ function extractText(message: Anthropic.Message): string {
 
 async function fetchPlayerContext(supabase: ReturnType<typeof createClient>, teamId: string, playerId: string) {
   const [{ data: player }, { data: team }, { data: games }] = await Promise.all([
-    supabase.from("players").select("name, position").eq("id", playerId).single(),
+    supabase.from("players").select("name, position, clubhouse_unlocked").eq("id", playerId).single(),
     supabase.from("teams").select("name").eq("id", teamId).single(),
     supabase.from("games").select("*").eq("team_id", teamId),
   ]);
@@ -211,8 +220,39 @@ export async function askPlayerKairos(history: KairosMessage[], message: string)
     const { supabase, teamId, playerId } = await requirePlayer();
     const service = createServiceRoleClient();
 
-    const credit = await checkAndConsumeKairosCredit(service, playerId);
-    if (!credit.allowed) return { ok: false, reason: "credits_exhausted", resetDate: credit.resetDate };
+    // Free preview batch: re-derive unlocked/preview status server-side
+    // on every call, never trust the client -- the same "extra data only
+    // ever goes to this signed-in player, scoped by the server" rule the
+    // spray-chart/game-detail routes already follow. A locked player
+    // outside the preview window gets a plain refusal, no Anthropic call.
+    const { data: playerRow } = await supabase.from("players").select("clubhouse_unlocked").eq("id", playerId).single();
+    const unlocked = Boolean(playerRow?.clubhouse_unlocked);
+    const freePreview = !unlocked && isFreePreviewActive();
+
+    if (!unlocked && !freePreview) {
+      return { ok: false, reason: "locked", message: "Unlock Clubhouse Pro to use your personal KAIROS." };
+    }
+
+    const source: "pro" | "free_preview" = unlocked ? "pro" : "free_preview";
+    let remaining: number;
+    if (unlocked) {
+      const credit = await checkAndConsumeKairosCredit(service, playerId);
+      if (!credit.allowed) {
+        return { ok: false, reason: "credits_exhausted", message: `You've used all 20 messages this month. Credits reset on ${credit.resetDate}.`, source };
+      }
+      remaining = credit.remaining;
+    } else {
+      const credit = await checkAndConsumeFreePreviewKairosCredit(service, playerId);
+      if (!credit.allowed) {
+        return {
+          ok: false,
+          reason: "credits_exhausted",
+          message: `You've used all ${FREE_PREVIEW_KAIROS_MESSAGES} free preview messages. Unlock Clubhouse Pro to keep chatting with KAIROS.`,
+          source,
+        };
+      }
+      remaining = credit.remaining;
+    }
 
     const system = await buildPlayerSystemPrompt(supabase, teamId, playerId);
     const messages: Anthropic.MessageParam[] = [
@@ -222,7 +262,8 @@ export async function askPlayerKairos(history: KairosMessage[], message: string)
 
     const response = await client.messages.create({ model: MODEL, max_tokens: 1024, system, messages });
     const text = extractText(response) || "I couldn't come up with a response to that -- try rephrasing?";
-    return { ok: true, text, remaining: credit.remaining };
+    const limit = source === "pro" ? 20 : FREE_PREVIEW_KAIROS_MESSAGES;
+    return { ok: true, text, remaining, limit, source };
   } catch (err) {
     console.error("[askPlayerKairos] unexpected error", err);
     return { ok: false, reason: "error", error: err instanceof Error ? err.message : "KAIROS couldn't respond -- try again?" };
