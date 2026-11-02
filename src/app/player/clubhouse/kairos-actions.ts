@@ -72,19 +72,56 @@ async function fetchPlayerContext(supabase: ReturnType<typeof createClient>, tea
     : { data: [] };
   const pitches = pitchRows ?? [];
 
-  return { player, team, allGames, gameById, confirmedAtBats, pitches };
+  // Fix: stolen bases were never fetched here either (same gap as
+  // coach/kairos-actions.ts) -- every computeBattingLines call below
+  // passed [] for stolenBases, so this player's own `sb` always computed
+  // to 0 regardless of real rows. Caught stealing only lives in
+  // game_events, no stolen_bases equivalent.
+  const { data: stolenBaseRows } = gameIds.length
+    ? await supabase.from("stolen_bases").select("player_id, game_id, inning").eq("player_id", playerId).in("game_id", gameIds)
+    : { data: [] };
+  const stolenBases = stolenBaseRows ?? [];
+  const { data: caughtStealingRows } = gameIds.length
+    ? await supabase.from("game_events").select("game_id").eq("player_id", playerId).in("game_id", gameIds).eq("event_type", "caught_stealing")
+    : { data: [] };
+  const caughtStealing = caughtStealingRows ?? [];
+
+  return { player, team, allGames, gameById, confirmedAtBats, pitches, stolenBases, caughtStealing };
 }
 
 async function buildPlayerSystemPrompt(supabase: ReturnType<typeof createClient>, teamId: string, playerId: string): Promise<string> {
-  const { player, team, gameById, confirmedAtBats, pitches } = await fetchPlayerContext(supabase, teamId, playerId);
+  const { player, team, gameById, confirmedAtBats, pitches, stolenBases, caughtStealing } = await fetchPlayerContext(supabase, teamId, playerId);
   const playerName = player?.name ?? "this player";
   const position = player?.position ?? "the field";
   const today = new Date().toISOString().slice(0, 10);
 
-  const battingLine = computeBattingLines(confirmedAtBats, []).get(playerId);
+  const battingLine = computeBattingLines(confirmedAtBats, stolenBases).get(playerId);
+  const sbText = battingLine && (battingLine.sb > 0 || caughtStealing.length > 0)
+    ? `, ${battingLine.sb} SB${caughtStealing.length > 0 ? `, ${caughtStealing.length} CS` : ""}`
+    : "";
   const statsSummary = battingLine
-    ? `${battingLine.ab} AB, ${formatAvg(battingLine.avg)} AVG, ${battingLine.hr} HR, ${battingLine.rbi} RBI, ${formatAvg(battingLine.obp)} OBP, ${formatAvg(battingLine.slg)} SLG, ${battingLine.ops.toFixed(3)} OPS`
+    ? `${battingLine.ab} AB, ${formatAvg(battingLine.avg)} AVG, ${battingLine.hr} HR, ${battingLine.rbi} RBI, ${formatAvg(battingLine.obp)} OBP, ${formatAvg(battingLine.slg)} SLG, ${battingLine.ops.toFixed(3)} OPS${sbText}`
     : "No at-bats logged yet.";
+
+  // No tool-calling loop here (see this file's own top comment), so a
+  // per-game breakdown has to be baked into the prompt directly rather
+  // than fetched lazily the way coach/kairos-actions.ts's query_team_stats
+  // does it -- this is this player's only chance to answer "how many
+  // steals per game."
+  const sbCountByGame = new Map<string, number>();
+  for (const sb of stolenBases) {
+    sbCountByGame.set(sb.game_id, (sbCountByGame.get(sb.game_id) ?? 0) + 1);
+  }
+  const stolenBasesByGame = Array.from(sbCountByGame.entries())
+    .map(([gameId, count]) => {
+      const g = gameById.get(gameId);
+      return g ? { gameDate: g.game_date, opponent: g.opponent_name, count } : null;
+    })
+    .filter((g): g is { gameDate: string; opponent: string; count: number } => g !== null)
+    .sort((a, b) => a.gameDate.localeCompare(b.gameDate));
+  const stolenBasesSummary = stolenBasesByGame.length
+    ? stolenBasesByGame.map((g) => `${g.gameDate} vs ${g.opponent}: ${g.count}`).join("; ")
+    : "No stolen bases logged yet.";
 
   const lastZoneByAtBat = new Map<string, number | null>();
   for (const ab of confirmedAtBats) {
@@ -165,7 +202,8 @@ Heat map (batting average by zone, min 3 AB): ${heatMapSummary}
 Weak zones: ${weakZones.length ? weakZones.join("; ") : "Not enough data yet."}
 Strong zones: ${strongZones.length ? strongZones.join("; ") : "Not enough data yet."}
 Recent form: ${recentForm}
-Spray chart breakdown: ${sprayChartSummary}`;
+Spray chart breakdown: ${sprayChartSummary}
+Stolen bases by game: ${stolenBasesSummary}`;
 }
 
 export async function askPlayerKairos(history: KairosMessage[], message: string): Promise<AskPlayerKairosResult> {
@@ -215,16 +253,16 @@ function zoneInputsFrom(
 // scope decision).
 export async function getOrCreateInitialAssessment(): Promise<string> {
   const { supabase, teamId, playerId } = await requirePlayer();
-  const { player, team, confirmedAtBats, pitches } = await fetchPlayerContext(supabase, teamId, playerId);
-  const battingLine = computeBattingLines(confirmedAtBats, []).get(playerId) ?? null;
+  const { player, team, confirmedAtBats, pitches, stolenBases } = await fetchPlayerContext(supabase, teamId, playerId);
+  const battingLine = computeBattingLines(confirmedAtBats, stolenBases).get(playerId) ?? null;
   const zoneInputs = zoneInputsFrom(confirmedAtBats, pitches);
   return ensureInitialAssessment(playerId, player?.name ?? "this player", player?.position ?? null, team?.name ?? "your team", battingLine, zoneInputs);
 }
 
 export async function regenerateInitialAssessment(): Promise<string> {
   const { supabase, teamId, playerId } = await requirePlayer();
-  const { player, team, confirmedAtBats, pitches } = await fetchPlayerContext(supabase, teamId, playerId);
-  const battingLine = computeBattingLines(confirmedAtBats, []).get(playerId) ?? null;
+  const { player, team, confirmedAtBats, pitches, stolenBases } = await fetchPlayerContext(supabase, teamId, playerId);
+  const battingLine = computeBattingLines(confirmedAtBats, stolenBases).get(playerId) ?? null;
   const zoneInputs = zoneInputsFrom(confirmedAtBats, pitches);
   return regenerateAssessment(playerId, player?.name ?? "this player", player?.position ?? null, team?.name ?? "your team", battingLine, zoneInputs);
 }
