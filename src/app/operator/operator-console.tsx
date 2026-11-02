@@ -2213,6 +2213,23 @@ export function OperatorConsole({
     const nextInning = state.inningHalf === "bottom" ? state.inning + 1 : state.inning;
     const weAreHitting = (game.home_away === "home") === (nextHalf === "bottom");
     dispatch({ type: "SET_MODE", mode: weAreHitting ? "hitting" : "pitching" });
+
+    // Pitcher auto-default: nothing previously defaulted current_pitcher_id
+    // to anyone, so a half-inning logged start to finish without ever
+    // tapping the Pitcher Picker (a small, easy-to-miss "P: Select…" link)
+    // left every one of its at-bats with pitcher_id null -- not a picker
+    // bug (it always correctly wrote whatever was explicitly selected),
+    // just nothing ever selected anything on its own. The lineup's own
+    // position="P" starter is exactly who's actually pitching the instant
+    // a half-inning flips to pitching mode, so default to them here. An
+    // explicit mid-inning change still goes through the Pitcher Picker
+    // completely unchanged, and always overrides this afterward. Scoped to
+    // this one transition (not the manual HITTING/PITCHING toggle button,
+    // and not the very first half-inning of a game) since that's the
+    // concrete gap this was built for -- every normal inning change.
+    const defaultPitcher = !weAreHitting ? liveLineup.find((l) => l.status === "starting" && l.position === "P") : null;
+    if (defaultPitcher) dispatch({ type: "SET_PITCHER", playerId: defaultPitcher.player_id });
+
     void withOfflineRetry(`endinning-${game.id}-${Date.now()}`, () =>
       syncGameState(game.id, {
         inning: nextInning,
@@ -2221,6 +2238,7 @@ export function OperatorConsole({
         runners: {},
         current_at_bat_id: null,
         mode: weAreHitting ? "hitting" : "pitching",
+        ...(defaultPitcher ? { current_pitcher_id: defaultPitcher.player_id, pitch_count_for_current_pitcher: 0 } : {}),
       })
     );
   }
