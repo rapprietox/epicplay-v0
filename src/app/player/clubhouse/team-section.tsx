@@ -1,3 +1,16 @@
+"use client";
+
+// Hotfix: this file builds and passes an inline function
+// (getPlayerHref) as a prop to TeamLeadersBoard, a Client Component.
+// React Server Components cannot serialize a function prop across the
+// server->client boundary -- without "use client" here, this file is
+// itself a Server Component by default, and that function prop throws
+// at render time ("a server-side exception has occurred") on every
+// request to /player/clubhouse. The coach board never hit this because
+// src/app/coach/leaders-board.tsx already has its own "use client" --
+// its function prop to the same TeamLeadersBoard is a client-to-client
+// pass, which is fine. This file has no hooks of its own, so the fix
+// is just restoring the directive, not restructuring anything.
 import { formatGameDate } from "@/lib/dates";
 import { resultLetter } from "@/lib/opponent-history";
 import { computeBattingLines, computePitchingLines } from "@/lib/stats";
