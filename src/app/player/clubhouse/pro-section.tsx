@@ -15,6 +15,7 @@ import { PressurePerformance } from "./pro/pressure-performance";
 import { WalkupSongSelector } from "./pro/walkup-song-selector";
 import { CheckoutButton } from "./pro/checkout-button";
 import { PromoCodeForm } from "./pro/promo-code-form";
+import { WhatYouGet } from "./pro/what-you-get";
 import { KairosWidget } from "./pro/kairos-widget";
 import { InitialAssessment } from "./pro/initial-assessment";
 import { SituationalStats } from "./pro/situational-stats";
@@ -103,6 +104,8 @@ export function ProSection({
             &ldquo;{cutoff}&hellip;&rdquo;
           </p>
         )}
+
+        <WhatYouGet />
 
         <div className="mt-6 flex flex-col items-center gap-4">
           <CheckoutButton />
