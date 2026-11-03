@@ -100,7 +100,18 @@ export function FullLineupAnalysisPanel({
           KAIROS is analyzing your lineup…
         </p>
       )}
-      {error && <p className="mt-2 text-sm text-accent-red">{error}</p>}
+      {/* Bug fix (feature/lineup-drafts): never render `error` verbatim --
+          a coach should never see a raw AI/JSON failure string. The
+          server-side retry-once in full-lineup-analysis-actions.ts means
+          this only shows after two attempts have already failed. */}
+      {error && (
+        <p className="mt-2 flex items-center gap-2 text-sm text-accent-red">
+          Analysis unavailable, try again.
+          <button type="button" onClick={analyze} disabled={loading} className="text-xs font-semibold underline hover:text-white disabled:opacity-50">
+            Retry
+          </button>
+        </p>
+      )}
 
       {analysis && (
         <div className="glossy mt-3 rounded-lg border border-accent-gold/30 bg-surface p-5">

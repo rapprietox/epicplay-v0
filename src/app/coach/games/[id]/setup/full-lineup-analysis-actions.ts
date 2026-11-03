@@ -1,6 +1,8 @@
 "use server";
 
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { computeBattingLines } from "@/lib/stats";
 import { calculateReliability } from "@/lib/reliability";
@@ -8,6 +10,60 @@ import { recordAgainstOpponent, formatRecord, resultLetter } from "@/lib/opponen
 import { AI_MODELS } from "@/lib/ai-models";
 
 const client = new Anthropic();
+
+// Bug fix (feature/lineup-drafts): "Analyze Full Lineup" was failing with
+// a raw JSON.parse error ("Expected ',' or ']' after array element...")
+// shown directly to the coach. Root cause, confirmed against the exact
+// error text: the old code asked for free-text with an embedded JSON
+// object (client.messages.create + a hand-written
+// text.match(/\{[\s\S]*\}/) + JSON.parse), with no escaping guarantee on
+// any of the 20+ short prose fields the model writes (slot notes,
+// optimal-lineup reasons, the assessment/holes/strengths/reliability
+// paragraphs). "Expected ',' or ']' after array element" is exactly
+// what V8 produces when a string value contains an unescaped internal
+// double quote (common in analyst-voice prose that quotes a phrase for
+// emphasis) -- the string closes early, and the next raw character
+// isn't the comma/bracket the parser now expects. A 2048 max_tokens cap
+// on a response with ~20 free-text fields was a secondary truncation
+// risk on top of that, but doesn't match this specific error message
+// (truncation produces "Unexpected end of JSON input," not this).
+//
+// Fixed by switching to the Anthropic SDK's own structured-output
+// helper (client.messages.parse + zodOutputFormat) -- the same
+// mechanism src/lib/anthropic.ts already uses for every other one-shot
+// extraction in this app (schedule/roster extraction, zone insights,
+// voice command parsing). The API constrains sampling to the schema
+// itself, which eliminates this entire class of bug (no hand-written
+// JSON to go wrong) rather than just parsing more defensively around
+// it. A schema violation or a truncated reply still throws (see
+// parseOutputFormat in the SDK's own lib/parser.ts) -- callOnce() below
+// is retried exactly once on any such failure before giving up with a
+// plain, friendly message. See live-feedback-actions.ts for the
+// identical fix applied to the live per-slot rating, which had the same
+// hand-written-JSON weakness; post-game analysis
+// (src/lib/post-game-analysis.ts) was checked too and never parses JSON
+// at all -- it stores the model's prose directly, so it was never
+// exposed to this bug.
+const SlotEvaluationSchema = z.object({
+  slot: z.number(),
+  rating: z.enum(["optimal", "suboptimal", "problematic"]),
+  note: z.string().describe("One short sentence, under 20 words."),
+});
+const RawOptimalLineupSlotSchema = z.object({
+  slot: z.number(),
+  playerName: z.string(),
+  reason: z.string().describe("One short sentence, under 15 words."),
+});
+const FullLineupAnalysisSchema = z.object({
+  overallAssessment: z.string().describe("2-3 sentences."),
+  slotEvaluations: z.array(SlotEvaluationSchema),
+  lineupHoles: z.string().describe("2-3 sentences."),
+  strengthsToProtect: z.string().describe("2-3 sentences."),
+  optimalLineup: z.array(RawOptimalLineupSlotSchema),
+  thingsToWatch: z.array(z.string().describe("One short sentence, under 20 words.")).length(3),
+  reliabilityStatement: z.string().describe("1-2 sentences."),
+});
+type RawFullLineupAnalysis = z.infer<typeof FullLineupAnalysisSchema>;
 
 async function requireCoachGame(gameId: string) {
   const supabase = createClient();
@@ -144,38 +200,38 @@ ${SLOT_RULES}
 
 Generate a complete analysis with:
 1. OVERALL ASSESSMENT (2-3 sentences)
-2. SLOT BY SLOT EVALUATION -- for each slot: rating (optimal / suboptimal / problematic) + one sentence why
-3. LINEUP HOLES -- consecutive weak slots and the strategic impact
-4. STRENGTHS TO PROTECT -- what's working and why to preserve it
-5. OPTIMAL LINEUP SUGGESTION -- a complete reordered lineup using the exact player names given above, one-line reason per slot
-6. 3 THINGS TO WATCH IN THIS GAME -- specific tactical advice for this matchup
-7. RELIABILITY STATEMENT -- be honest about data limitations; if only a couple games, say so clearly
+2. SLOT BY SLOT EVALUATION -- for each slot: rating (optimal / suboptimal / problematic) + one short sentence why (under 20 words)
+3. LINEUP HOLES -- consecutive weak slots and the strategic impact (2-3 sentences)
+4. STRENGTHS TO PROTECT -- what's working and why to preserve it (2-3 sentences)
+5. OPTIMAL LINEUP SUGGESTION -- a complete reordered lineup using the exact player names given above, one short reason per slot (under 15 words)
+6. EXACTLY 3 THINGS TO WATCH IN THIS GAME -- specific tactical advice for this matchup, one short sentence each (under 20 words)
+7. RELIABILITY STATEMENT -- be honest about data limitations; if only a couple games, say so clearly (1-2 sentences)
 
 Use real player names and real numbers always. Never be generic. Sound like an MLB analytics department, not a chatbot.
+Keep every field within its stated length -- short, specific, no padding. Never wrap a word or phrase in double quotes for emphasis; use italics-free plain language instead.`;
 
-Respond with EXACTLY this JSON shape (playerName must exactly match a name from the lineup data above):
-{
-  "overallAssessment": "...",
-  "slotEvaluations": [{"slot": 1, "rating": "optimal|suboptimal|problematic", "note": "..."}],
-  "lineupHoles": "...",
-  "strengthsToProtect": "...",
-  "optimalLineup": [{"slot": 1, "playerName": "...", "reason": "..."}],
-  "thingsToWatch": ["...", "...", "..."],
-  "reliabilityStatement": "..."
-}`;
-
-    const response = await client.messages.create({
-      model: AI_MODELS.fullLineupAnalysis,
-      max_tokens: 2048,
-      system,
-      messages: [{ role: "user", content: "Generate the full lineup analysis now." }],
-    });
-    const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { ok: false, error: "KAIROS didn't return a readable analysis" };
-    const parsed = JSON.parse(jsonMatch[0]) as Omit<FullLineupAnalysis, "optimalLineup" | "reliabilityPct"> & {
-      optimalLineup: { slot: number; playerName: string; reason: string }[];
+    const callOnce = async (): Promise<RawFullLineupAnalysis> => {
+      const response = await client.messages.parse({
+        model: AI_MODELS.fullLineupAnalysis,
+        max_tokens: 4096,
+        system,
+        messages: [{ role: "user", content: "Generate the full lineup analysis now." }],
+        output_config: { format: zodOutputFormat(FullLineupAnalysisSchema) },
+      });
+      if (!response.parsed_output) throw new Error("KAIROS didn't return a structured analysis");
+      return response.parsed_output;
     };
+
+    let parsed: RawFullLineupAnalysis;
+    try {
+      parsed = await callOnce();
+    } catch {
+      try {
+        parsed = await callOnce();
+      } catch {
+        return { ok: false, error: "Analysis unavailable, try again." };
+      }
+    }
 
     const nameToId = new Map((players ?? []).map((p) => [p.name.trim().toLowerCase(), p.id]));
     const optimalLineup: OptimalLineupSlot[] = parsed.optimalLineup.map((s) => ({

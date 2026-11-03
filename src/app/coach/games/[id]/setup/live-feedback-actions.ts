@@ -1,12 +1,33 @@
 "use server";
 
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { computeBattingLines } from "@/lib/stats";
 import { calculateReliability } from "@/lib/reliability";
 import { AI_MODELS } from "@/lib/ai-models";
 
 const client = new Anthropic();
+
+// Bug fix (feature/lineup-drafts): same hand-written-JSON weakness as
+// full-lineup-analysis-actions.ts (see that file's own comment for the
+// full diagnosis), just a smaller response here. Fixed the same way --
+// client.messages.parse + zodOutputFormat instead of a regex-extracted
+// JSON.parse -- and retried once before falling back. This call site
+// never showed its raw error text to the coach to begin with (a failed
+// result just silently clears the pending feedback, see
+// lineup-builder.tsx), so there was no visible leak here, but it had
+// the identical parsing fragility underneath.
+const LiveFeedbackSchema = z.object({
+  rating: z.enum(["EXCELLENT", "GOOD", "CONSIDER", "MISTAKE", "BLUNDER"]),
+  message: z.string().describe("One sentence, under 25 words, with specific numbers."),
+  alternative: z
+    .string()
+    .nullable()
+    .describe("One sentence suggesting a better option if rating is CONSIDER/MISTAKE/BLUNDER, null if EXCELLENT/GOOD."),
+});
+type RawLiveFeedback = z.infer<typeof LiveFeedbackSchema>;
 
 async function requireCoachGame(gameId: string) {
   const supabase = createClient();
@@ -116,23 +137,30 @@ Team context: ${team?.name ?? "the team"}, ${gameIds.length} games played
 
 ${SLOT_RULES}
 
-Respond with EXACTLY this JSON format:
-{
-  "rating": "EXCELLENT|GOOD|CONSIDER|MISTAKE|BLUNDER",
-  "message": "One sentence explanation with specific numbers",
-  "alternative": "One sentence suggesting better option if rating is CONSIDER/MISTAKE/BLUNDER, null if EXCELLENT/GOOD"
-}`;
+Keep "message" and "alternative" within their stated length -- short, specific, no padding. Never wrap a word or phrase in double quotes for emphasis; use plain language instead.`;
 
-    const response = await client.messages.create({
-      model: AI_MODELS.liveLineupFeedback,
-      max_tokens: 300,
-      system,
-      messages: [{ role: "user", content: "Rate this placement now." }],
-    });
-    const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { ok: false, error: "KAIROS didn't return a readable rating" };
-    const parsed = JSON.parse(jsonMatch[0]) as { rating: LiveRating; message: string; alternative: string | null };
+    const callOnce = async (): Promise<RawLiveFeedback> => {
+      const response = await client.messages.parse({
+        model: AI_MODELS.liveLineupFeedback,
+        max_tokens: 300,
+        system,
+        messages: [{ role: "user", content: "Rate this placement now." }],
+        output_config: { format: zodOutputFormat(LiveFeedbackSchema) },
+      });
+      if (!response.parsed_output) throw new Error("KAIROS didn't return a structured rating");
+      return response.parsed_output;
+    };
+
+    let parsed: RawLiveFeedback;
+    try {
+      parsed = await callOnce();
+    } catch {
+      try {
+        parsed = await callOnce();
+      } catch {
+        return { ok: false, error: "Analysis unavailable, try again." };
+      }
+    }
 
     return {
       ok: true,
