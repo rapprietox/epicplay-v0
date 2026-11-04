@@ -123,6 +123,24 @@ export function advanceAllRunnersOneBase(runners: Runners): AdvanceResult {
   return { runners: { first: null, second: runners.first ?? null, third: runners.second ?? null }, scored };
 }
 
+// Bug fix (feature/lineup-drafts): a sacrifice bunt's default suggestion
+// -- the batter gives up the out specifically to move the runner(s) up,
+// unlike a plain groundout (which correctly suggests no movement at
+// all). Deliberately leaves third untouched: whether a runner already on
+// third scores on a bunt is exactly what the existing squeeze-play
+// prompt (gated on state.runners.third, see operator-console.tsx) asks
+// about -- auto-scoring them here would bypass that confirmation and
+// contradict it. Only first and second have an unambiguous "the bunt
+// moves them up one" default; each uses advanceOneRunner's own
+// collision check (can't advance into an occupied base), processed lead
+// runner first so a trailing runner sees the base it just vacated.
+export function suggestSacBuntAdvance(runners: Runners): AdvanceResult {
+  let next = runners;
+  if (next.second) next = advanceOneRunner(next, "second").runners;
+  if (next.first) next = advanceOneRunner(next, "first").runners;
+  return { runners: next, scored: [] };
+}
+
 // Advances a single occupied base by one (Stolen Base / Error Advance /
 // the "Advance" quick action). Scores the runner if advancing from third.
 export function advanceOneRunner(runners: Runners, base: "first" | "second" | "third"): AdvanceResult {

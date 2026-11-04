@@ -33,7 +33,7 @@ import {
   type OutBase,
 } from "@/lib/field-zones";
 import { operatorReducer, UNDO_WINDOW_MS } from "@/lib/operator/reducer";
-import { advanceAllRunnersOneBase, advanceOneRunner, isForced, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
+import { advanceAllRunnersOneBase, advanceOneRunner, isForced, suggestRunnerAdvance, suggestSacBuntAdvance } from "@/lib/operator/runner-advance";
 import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
 import {
   RESULT_IS_OUT,
@@ -169,7 +169,7 @@ interface DpWizardState {
 // Runner-actions consolidation: the reasons behind "Advance", replacing
 // the standalone Wild Pitch/Passed Ball/Balk/Error (all-runners) buttons
 // and the separate Stolen Base quick action -- see handleAdvanceReason.
-type AdvanceReason = "stolen_base" | "wild_pitch" | "passed_ball" | "balk" | "error" | "passed_on_hit" | "obstruction";
+type AdvanceReason = "stolen_base" | "wild_pitch" | "passed_ball" | "balk" | "error" | "passed_on_hit" | "obstruction" | "sac_bunt";
 
 // Fix 3 (smart hit defaults): one dismissible-within-3s banner per
 // auto-scored runner. `base`/`runner` are the *pre-hit* position and
@@ -446,6 +446,16 @@ export function OperatorConsole({
   // exactly what naturally excludes it here -- no separate check needed
   // beyond "is anyone still on third."
   const [squeezePrompt, setSqueezePrompt] = useState(false);
+  // Bug fix (feature/lineup-drafts): whether the most recently confirmed
+  // Quick Mode play was a Sac Bunt -- plain UI state, same pattern as
+  // sacFlyQueue/squeezePrompt above, not threaded through the shared
+  // reducer. Drives AdvanceReasonMenu's own "Sac Bunt" option (see
+  // ADVANCE_REASONS below): offering it as a manual-advance reason only
+  // right after an actual bunt is what "the right reasons for the play"
+  // means here -- showing it permanently alongside Stolen Base/Wild
+  // Pitch/etc. regardless of what just happened would be the same kind
+  // of clutter this fix is otherwise trying to cut down on.
+  const [lastQuickPickWasSacBunt, setLastQuickPickWasSacBunt] = useState(false);
   // Quick Mode scorekeeper batch: "which runner" pickers for the two
   // Quick-Mode-only actions that need a follow-up base pick before they
   // can apply (Double Play, and Stolen Base as a direct button rather
@@ -1870,6 +1880,18 @@ export function OperatorConsole({
       return;
     }
 
+    // Bug fix (feature/lineup-drafts): "Sac Bunt" -- a manual correction
+    // to a runner's position after a bunt (e.g. the default one-base
+    // advance didn't match what actually happened, or the runner on
+    // third from the squeeze-play prompt needs adjusting by hand
+    // instead). RBI-eligible like sac_fly if it scores them, same
+    // "batter's own action drove the run in" logic; no separate
+    // game_events row, same as sac_fly/hit/forced_walk_hbp.
+    if (reason === "sac_bunt") {
+      advanceRunnerWithMethod(base, "sac_bunt");
+      return;
+    }
+
     // "passed_on_hit" (the plain, silent advance the old generic
     // "Advance" always meant -- still an RBI if it scores the runner,
     // same as a batted-ball advance always has been) and "obstruction"
@@ -2072,8 +2094,27 @@ export function OperatorConsole({
     if (state.outs >= 3) return;
     setBanner(null);
     const batter = currentBatterRunner();
-    const { runners: suggestion, scored } = suggestRunnerAdvance(state.runners, batter, pick.result);
-    const method = resultToScoreMethod(pick.result);
+    // Bug fix (feature/lineup-drafts): Sac Bunt (isSac + hitType "bunt")
+    // used to fall into suggestRunnerAdvance's generic "groundout" case,
+    // which -- correctly, for a PLAIN groundout -- suggests no movement
+    // at all (outs leave runners on base). A sacrifice bunt's whole point
+    // is the opposite: the batter gives up the out specifically to move
+    // the runner(s) up, so it needs its own suggestion -- see
+    // suggestSacBuntAdvance's own comment for why it leaves third alone
+    // (the existing squeeze-play prompt, right below, already governs
+    // whether a runner on third scores on a bunt). Still only a
+    // *suggestion* -- the diamond stays tappable afterward to correct
+    // any one runner, same as every other auto-applied suggestion in
+    // this app (a single's silent 1st->2nd advance, WP/PB/Balk's own
+    // all-runners move); not routed through the sac-fly/tag-up ask-first
+    // queue, since that queue's whole design assumes nothing has moved
+    // yet, which would conflict with "advances by default."
+    const isSacBunt = pick.isSac && pick.hitType === "bunt";
+    if (isSacBunt && state.outs >= 2) return; // defensive -- the button itself is already hidden past 1 out.
+    const { runners: suggestion, scored } = isSacBunt
+      ? suggestSacBuntAdvance(state.runners)
+      : suggestRunnerAdvance(state.runners, batter, pick.result);
+    const method: ScoreMethod = isSacBunt ? "sac_bunt" : resultToScoreMethod(pick.result);
     const runsScored = scored.length;
     const rbi = SCORE_METHOD_AWARDS_RBI[method] ? runsScored : 0;
     const outsRecorded = RESULT_IS_OUT[pick.result] ? 1 : 0;
@@ -2110,6 +2151,7 @@ export function OperatorConsole({
       });
       syncRunners(suggestion);
       setSummaryFlash(`${pick.label}${runsScored > 0 ? ` — ${runsScored} run${runsScored === 1 ? "" : "s"}` : ""}`);
+      setLastQuickPickWasSacBunt(isSacBunt);
 
       // Sac-fly/tag-up decision queue -- identical trigger to full mode's
       // handleConfirm (any flyout/lineout, runners on base, inning still
@@ -3125,6 +3167,7 @@ export function OperatorConsole({
               <AdvanceReasonMenu
                 base={advanceReasonPrompt.base}
                 runner={advanceReasonPrompt.runner}
+                showSacBunt={lastQuickPickWasSacBunt}
                 onSelect={(reason) => {
                   if (reason === "error") {
                     setAdvanceErrorFielding(advanceReasonPrompt.base);
@@ -4616,7 +4659,15 @@ function HitRunnerConfirmPanel({
   );
 }
 
+// Bug fix (feature/lineup-drafts): "Sac Bunt" was missing entirely --
+// the only one of these 7 that actually described what happened when a
+// runner advanced off the Sac Bunt button was "Passed on Hit" (the
+// generic catch-all), which is why it looked like "the only choice."
+// Listed first (not appended last) so it's the most visible option
+// right when it's actually relevant -- see showSacBunt below for when
+// that is.
 const ADVANCE_REASONS: { value: AdvanceReason; label: string }[] = [
+  { value: "sac_bunt", label: "Sac Bunt" },
   { value: "stolen_base", label: "Stolen Base" },
   { value: "wild_pitch", label: "Wild Pitch" },
   { value: "passed_ball", label: "Passed Ball" },
@@ -4629,14 +4680,24 @@ const ADVANCE_REASONS: { value: AdvanceReason; label: string }[] = [
 function AdvanceReasonMenu({
   base,
   runner,
+  showSacBunt,
   onSelect,
   onClose,
 }: {
   base: Base;
   runner: RunnerState;
+  // Bug fix (feature/lineup-drafts): "the right reasons for the play" --
+  // Sac Bunt only makes sense as a reason immediately after an actual
+  // Sac Bunt was just logged (lastQuickPickWasSacBunt in
+  // operator-console.tsx), not permanently alongside the other 6
+  // context-free reasons. The other 6 keep their existing always-shown
+  // behavior -- narrowing those too would be a much bigger change than
+  // this fix asked for.
+  showSacBunt: boolean;
   onSelect: (reason: AdvanceReason) => void;
   onClose: () => void;
 }) {
+  const reasons = showSacBunt ? ADVANCE_REASONS : ADVANCE_REASONS.filter((r) => r.value !== "sac_bunt");
   return (
     <div className="glossy w-full min-w-[200px] max-w-xs rounded-md border border-accent-primary/40 bg-background p-3">
       <p className="mb-2 text-xs text-foreground/50">
@@ -4644,7 +4705,7 @@ function AdvanceReasonMenu({
         {runner.name} on {base} advances — why?
       </p>
       <div className="grid grid-cols-2 gap-2">
-        {ADVANCE_REASONS.map((r) => (
+        {reasons.map((r) => (
           <button
             key={r.value}
             onClick={() => onSelect(r.value)}

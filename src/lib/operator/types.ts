@@ -38,13 +38,22 @@ export type ScoreMethod =
   // (it's the same "batter's own action drove the run in" logic) but
   // logs its own game_events row instead of being silently absorbed
   // into the at-bat's own result the way sac_fly/hit/forced_walk_hbp do.
-  | "squeeze_play";
+  | "squeeze_play"
+  // Bug fix (feature/lineup-drafts): a sacrifice bunt advancing a
+  // runner (1st->2nd/2nd->3rd by default, see suggestSacBuntAdvance) or
+  // scoring one from third by manual adjustment -- RBI-eligible like
+  // sac_fly for the same reason (the batter's own action drove the run
+  // in), but like hit/sac_fly/forced_walk_hbp it's explained entirely by
+  // the batter's own at-bat result (a bunted groundout), so it logs no
+  // separate game_events row either.
+  | "sac_bunt";
 
 export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
   hit: true,
   sac_fly: true,
   forced_walk_hbp: true,
   squeeze_play: true,
+  sac_bunt: true,
   wild_pitch: false,
   passed_ball: false,
   balk: false,
@@ -64,6 +73,7 @@ export const SCORE_METHOD_LABELS: Record<ScoreMethod, string> = {
   stolen_base: "Stolen base",
   obstruction: "Obstruction",
   squeeze_play: "Squeeze play",
+  sac_bunt: "Sacrifice bunt",
 };
 
 // wild_pitch/passed_ball/balk/error/squeeze_play map onto the existing
