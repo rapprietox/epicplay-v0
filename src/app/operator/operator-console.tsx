@@ -57,7 +57,7 @@ import {
 import { atBatAccuracyRatio, runningAccuracy } from "@/lib/pitch-accuracy";
 import { resolveGameRules, formatElapsed, checkInningEndBanner, type InningEndBanner } from "@/lib/game-rules";
 import { formatAvg, type BattingLine } from "@/lib/stats";
-import { loadOperatorStateLocal, saveOperatorStateLocal } from "@/lib/operator/local-storage";
+import { loadOperatorStateLocal, saveOperatorStateLocal, clearOperatorStateLocal } from "@/lib/operator/local-storage";
 import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
 import { withOfflineRetry, onQueueChange, pendingCount } from "@/lib/operator/sync-queue";
 import { buildInitialStateFromServer } from "./initial-state";
@@ -262,9 +262,36 @@ export function OperatorConsole({
   // Swapping in a recovered localStorage snapshot happens *after* mount
   // instead, once hydration has already matched the server output --
   // this is what the reducer's HYDRATE action is for.
+  //
+  // Bug fix (feature/lineup-drafts): a dirty snapshot used to be trusted
+  // unconditionally -- found while re-testing the Sac Fly/Sac Bunt
+  // visibility fix on the dummy game, right after resetting its data
+  // directly in the database (deleting at_bats/game_state outside the
+  // app entirely). isVisible and UNDO_LOCAL both turned out correct
+  // under direct simulation; the actual cause was this effect blindly
+  // hydrating a browser's own leftover snapshot from BEFORE that reset
+  // -- runners/outs that were real for the old (now-deleted) at-bats,
+  // reapplied on top of a freshly reset game, with Undo then faithfully
+  // restoring *that* stale pre-at-bat snapshot. `dirty` is set on nearly
+  // every local action and nothing ever clears it mid-session (MARK_SAVED
+  // is defined but never dispatched), so without this check ANY snapshot
+  // from a previous session -- not just a DB reset, any case where the
+  // server's own game_state was recreated since -- would be trusted the
+  // same way. getOrCreateGameState stamps a fresh game_started_at only
+  // when a game_state row is first created, so comparing against it is a
+  // simple, reliable "is this snapshot older than the current game
+  // session" check -- a snapshot saved before this fix shipped has
+  // savedAt stuck at 0 (see below), which safely always counts as stale
+  // rather than being trusted by default.
   useEffect(() => {
     const local = loadOperatorStateLocal(game.id);
-    if (local && local.dirty) dispatch({ type: "HYDRATE", state: local });
+    if (!local || !local.dirty) return;
+    const gameStartedAtMs = initialGameState.game_started_at ? new Date(initialGameState.game_started_at).getTime() : 0;
+    if (local.savedAt < gameStartedAtMs) {
+      clearOperatorStateLocal(game.id);
+      return;
+    }
+    dispatch({ type: "HYDRATE", state: local });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game.id]);
 
@@ -274,7 +301,7 @@ export function OperatorConsole({
   }, [state]);
 
   useEffect(() => {
-    const t = setInterval(() => saveOperatorStateLocal(stateRef.current), 5000);
+    const t = setInterval(() => saveOperatorStateLocal({ ...stateRef.current, savedAt: Date.now() }), 5000);
     return () => clearInterval(t);
   }, []);
 
