@@ -74,6 +74,12 @@ export type GameEventType =
   // one rich event beats one row per movement.
   | "substitution";
 export type OutType = "force" | "tag";
+// Sacrifice-rules batch: set only when the outcome-based rules in
+// operator-console.tsx actually produced a sacrifice -- a flyout/lineout
+// that scored a runner ("fly"), or a bunt-out-at-first that moved a
+// runner up with nobody put out ("bunt"). Never set from which button
+// the operator tapped; always derived from what happened to the runners.
+export type SacrificeType = "fly" | "bunt";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";
 export type ThrowingHand = "L" | "R";
@@ -440,6 +446,11 @@ export interface Database {
           // tracked for this row," never as "zero."
           outs_before: number | null;
           risp_before: boolean | null;
+          // Sacrifice-rules batch: null unless the outcome-based rules
+          // above actually produced a sacrifice. Drives computeBattingLines
+          // (PA but not AB, and only "fly" also widens OBP's denominator)
+          // and the scorebook's SF/SH notation.
+          sacrifice_type: SacrificeType | null;
           confirmed_at: string | null;
           created_at: string;
         };
@@ -467,6 +478,7 @@ export interface Database {
           opponent_pitcher_id?: string | null;
           outs_before?: number | null;
           risp_before?: boolean | null;
+          sacrifice_type?: SacrificeType | null;
           confirmed_at?: string | null;
           created_at?: string;
         };

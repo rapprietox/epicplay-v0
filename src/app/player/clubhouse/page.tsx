@@ -104,8 +104,8 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   }));
   const battingAvgZoneLines = computeZoneBattingLines(battingZoneAtBats);
 
-  const hitterCountAtBats = decidedAtBats.map((ab) => ({ result: ab.result, finalCount: finalCountByAtBat.get(ab.id) ?? null }));
-  const hitterPitchTypeAtBats = decidedAtBats.map((ab) => ({ result: ab.result, pitchType: lastPitchTypeByAtBat.get(ab.id) ?? null }));
+  const hitterCountAtBats = decidedAtBats.map((ab) => ({ result: ab.result, finalCount: finalCountByAtBat.get(ab.id) ?? null, sacrificeType: ab.sacrifice_type }));
+  const hitterPitchTypeAtBats = decidedAtBats.map((ab) => ({ result: ab.result, pitchType: lastPitchTypeByAtBat.get(ab.id) ?? null, sacrificeType: ab.sacrifice_type }));
   const pressureSplits = computePressureSplits(hitterCountAtBats);
 
   const sprayDots = decidedAtBats

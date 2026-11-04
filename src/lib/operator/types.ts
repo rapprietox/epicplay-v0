@@ -39,13 +39,13 @@ export type ScoreMethod =
   // logs its own game_events row instead of being silently absorbed
   // into the at-bat's own result the way sac_fly/hit/forced_walk_hbp do.
   | "squeeze_play"
-  // Bug fix (feature/lineup-drafts): a sacrifice bunt advancing a
-  // runner (1st->2nd/2nd->3rd by default, see suggestSacBuntAdvance) or
-  // scoring one from third by manual adjustment -- RBI-eligible like
-  // sac_fly for the same reason (the batter's own action drove the run
-  // in), but like hit/sac_fly/forced_walk_hbp it's explained entirely by
-  // the batter's own at-bat result (a bunted groundout), so it logs no
-  // separate game_events row either.
+  // Sacrifice-rules batch: a runner advancing or scoring from second/
+  // first on a bunt out at first (runnerOutcomeQueue in operator-
+  // console.tsx), or by manual adjustment via the diamond's own Advance
+  // menu -- RBI-eligible like sac_fly for the same reason (the batter's
+  // own action drove the run in), but like hit/sac_fly/forced_walk_hbp
+  // it's explained entirely by the batter's own at-bat result (a bunted
+  // groundout), so it logs no separate game_events row either.
   | "sac_bunt";
 
 export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
@@ -359,6 +359,21 @@ export const HIT_TYPE_RESULT_OPTIONS: Record<HitType, AtBatResult[]> = {
   popup: ["flyout", "single", "error", "fc"],
   bunt: ["groundout", "single", "error", "fc"],
   hr: ["hr"],
+};
+
+// Sacrifice-rules batch: relabels the same four bunt result buttons in
+// "how it ended" terms instead of the generic groundout/single/error/fc
+// wording -- the underlying AtBatResult values are unchanged (still just
+// a groundout/single/error/fc, per the HIT_TYPE_RESULT_OPTIONS.bunt list
+// above), only the button text changes when state.pendingHitType ===
+// "bunt". "groundout" (out at first) is also the one case that can turn
+// into a sacrifice bunt -- see maybeStartRunnerOutcomeQueue in
+// operator-console.tsx.
+export const BUNT_RESULT_LABELS: Partial<Record<AtBatResult, string>> = {
+  groundout: "Out at First",
+  single: "Safe (Bunt Hit)",
+  error: "Error",
+  fc: "Fielder's Choice",
 };
 
 export const PITCH_TYPE_LABELS: Record<PitchType, string> = {

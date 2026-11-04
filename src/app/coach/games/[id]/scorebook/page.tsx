@@ -157,8 +157,18 @@ export default async function ScorebookPage({ params }: { params: { id: string }
   });
 
   function notationFor(ab: AtBat): string {
-    if (ab.scorebook_notation) return ab.scorebook_notation;
     const fielderNum = ab.fielded_by_position ? FIELDING_POSITION_TO_NUMBER[ab.fielded_by_position as FieldingPosition] : null;
+    // Sacrifice-rules batch: checked before the stored scorebook_notation
+    // shortcut below, since that string was computed at confirm time
+    // (Feature 1, fielding-play logging batch) before sacrifice_type
+    // existed and never includes the SF/SH suffix. sacrifice_type is set
+    // from outcome-based rules (did a runner actually score/advance, not
+    // which button was tapped) -- see operator-console.tsx's
+    // runnerOutcomeQueue -- so it's the one honest signal for this,
+    // replacing the old "RBI > 0 on a flyout" heuristic.
+    if (ab.sacrifice_type === "fly") return `${ab.scorebook_notation ?? (fielderNum ? `F${fielderNum}` : "FO")} SF`;
+    if (ab.sacrifice_type === "bunt") return `${ab.scorebook_notation ?? (fielderNum ? `G${fielderNum}` : "GO")} SH`;
+    if (ab.scorebook_notation) return ab.scorebook_notation;
     switch (ab.result) {
       case "single":
         return "1B";
@@ -187,11 +197,9 @@ export default async function ScorebookPage({ params }: { params: { id: string }
       case "groundout":
         return fielderNum ? `G${fielderNum}` : "GO";
       case "flyout":
-        // SF isn't its own AtBatResult -- a sac fly is stored as a plain
-        // flyout with an RBI (see CLAUDE.md's Fix 4 note on why "Sacrifice
-        // Fly" was never built as a separate result button); an RBI-
-        // crediting flyout is the closest honest signal available for it.
-        return (fielderNum ? `F${fielderNum}` : "FO") + (ab.rbi > 0 ? " SF" : "");
+        // A real sacrifice fly is already caught by the sacrifice_type
+        // check above -- this is the plain, non-sacrifice flyout case.
+        return fielderNum ? `F${fielderNum}` : "FO";
       case "lineout":
         return fielderNum ? `L${fielderNum}` : "LO";
       case "double_play":

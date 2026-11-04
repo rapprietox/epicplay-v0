@@ -13,6 +13,7 @@ import type {
   PitchOutcome,
   PitchType,
   Runners,
+  SacrificeType,
   SubReason,
 } from "@/lib/supabase/types";
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
@@ -410,6 +411,19 @@ export async function incrementAtBatRbi(gameId: string, atBatId: string, delta: 
   const { data: row } = await supabase.from("at_bats").select("rbi").eq("id", atBatId).single();
   if (!row) return;
   const { error } = await supabase.from("at_bats").update({ rbi: Math.max(0, row.rbi + delta) }).eq("id", atBatId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/operator");
+}
+
+// Sacrifice-rules batch: called once the runnerOutcomeQueue (see
+// operator-console.tsx) finishes asking about every runner on base after
+// a fly/line/foul out or a bunt out at first -- a sacrifice is decided by
+// what actually happened to the runners, never by which button was
+// tapped, so this is always a follow-up update to an already-logged
+// at-bat rather than something confirmAtBat/logQuickAtBat set directly.
+export async function setSacrificeType(gameId: string, atBatId: string, sacrificeType: SacrificeType) {
+  const { supabase } = await requireOperatorGame(gameId);
+  const { error } = await supabase.from("at_bats").update({ sacrifice_type: sacrificeType }).eq("id", atBatId);
   if (error) throw new Error(error.message);
   revalidatePath("/operator");
 }

@@ -101,7 +101,12 @@ function buildRows(
   epsLines: Map<string, { eps: number }>
 ): LeaderRow[] {
   const battingHasAb = (l: BattingLine) => l.ab > 0;
-  const battingHasPa = (l: BattingLine) => l.ab + l.bb + l.hbp > 0;
+  // Sacrifice-rules batch: was `l.ab + l.bb + l.hbp > 0`, a re-derivation
+  // that silently excluded sacrifices -- a player whose only PA was a
+  // sacrifice fly/bunt would fail OPS/OBP qualification despite having a
+  // real plate appearance. `l.pa` is now the correct, single source of
+  // truth for this (see computeBattingLines).
+  const battingHasPa = (l: BattingLine) => l.pa > 0;
   const pitchingHasIp = (l: PitchingLine) => l.ip > 0;
 
   const battingSpecs: {

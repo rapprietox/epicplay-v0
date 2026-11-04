@@ -127,7 +127,7 @@ export default async function OperatorPage({
   const { data: seasonAtBats } = teamGameIds.length
     ? await supabase
         .from("at_bats")
-        .select("player_id, result, rbi, runs_scored")
+        .select("player_id, result, rbi, runs_scored, sacrifice_type")
         .in("game_id", teamGameIds)
         .not("confirmed_at", "is", null)
     : { data: [] };

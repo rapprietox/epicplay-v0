@@ -241,19 +241,19 @@ export function PlayerBreakdownClient({
     return filteredPitches.filter((p) => ids.has(p.at_bat_id));
   }, [filteredBattingAtBats, filteredPitches]);
 
-  const hitterCountAtBats: { result: AtBatResult; finalCount: CountState | null }[] = useMemo(
+  const hitterCountAtBats: { result: AtBatResult; finalCount: CountState | null; sacrificeType: AtBat["sacrifice_type"] }[] = useMemo(
     () =>
       filteredBattingAtBats
         .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
-        .map((ab) => ({ result: ab.result, finalCount: finalCountByAtBat.get(ab.id) ?? null })),
+        .map((ab) => ({ result: ab.result, finalCount: finalCountByAtBat.get(ab.id) ?? null, sacrificeType: ab.sacrifice_type })),
     [filteredBattingAtBats, finalCountByAtBat]
   );
 
-  const hitterPitchTypeAtBats: { result: AtBatResult; pitchType: PitchType | null }[] = useMemo(
+  const hitterPitchTypeAtBats: { result: AtBatResult; pitchType: PitchType | null; sacrificeType: AtBat["sacrifice_type"] }[] = useMemo(
     () =>
       filteredBattingAtBats
         .filter((ab): ab is typeof ab & { result: AtBatResult } => ab.result !== null)
-        .map((ab) => ({ result: ab.result, pitchType: (lastPitchTypeByAtBat.get(ab.id) as PitchType | null) ?? null })),
+        .map((ab) => ({ result: ab.result, pitchType: (lastPitchTypeByAtBat.get(ab.id) as PitchType | null) ?? null, sacrificeType: ab.sacrifice_type })),
     [filteredBattingAtBats, lastPitchTypeByAtBat]
   );
 
