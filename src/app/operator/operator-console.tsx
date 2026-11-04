@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } fro
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import type {
+  AtBatMode,
   AtBatResult,
   BattingHand,
   Database,
@@ -11,6 +12,7 @@ import type {
   FieldingPosition,
   GameEventType,
   HitType,
+  InningHalf,
   OutType,
   PitchOutcome,
   PitchType,
@@ -598,6 +600,22 @@ export function OperatorConsole({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.currentAtBatId]);
 
+  // Bug fix (feature/lineup-drafts): self-corrects a game already stuck
+  // in the wrong mode for its current inning_half -- the exact state
+  // this fix found a real test game in (home team batting the top
+  // half). Runs on mount (covers a reload of an already-wrong game) and
+  // every inning_half change thereafter, as a second line of defense
+  // alongside confirmEndInning's own explicit SET_MODE dispatch. Synced
+  // to the server too, not just the local reducer, so a reload doesn't
+  // pull the wrong mode straight back down from game_state.
+  useEffect(() => {
+    const correct = correctModeForHalf(state.inningHalf);
+    if (state.mode === correct) return;
+    dispatch({ type: "SET_MODE", mode: correct });
+    void withOfflineRetry(`mode-autocorrect-${game.id}-${Date.now()}`, () => syncGameState(game.id, { mode: correct }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.inningHalf, game.home_away]);
+
   // Fix 6 (baseball-logic-fixes batch): who's currently on the field for
   // our team, and who's already been used up this game -- derived from
   // the starting lineup plus every substitution logged so far, no
@@ -1055,6 +1073,21 @@ export function OperatorConsole({
 
   function anyRunnerOnBase(): boolean {
     return Boolean(state.runners.first || state.runners.second || state.runners.third);
+  }
+
+  // Bug fix (feature/lineup-drafts): which side bats is always fully
+  // determined by home_away + inning_half -- the away team bats the top
+  // half, the home team bats the bottom, every inning, no exceptions.
+  // Previously the HITTING/PITCHING toggle let the operator pick either
+  // mode regardless of inning_half, which is how this exact game (home,
+  // started correctly in pitching for the top half) ended up with our
+  // own players batting in the top half instead of the opponent -- see
+  // the toggle buttons and the auto-correct effect below, both of which
+  // now key off this single function instead of leaving mode as a free
+  // choice. confirmEndInning already computed this inline (as
+  // weAreHitting); reused here instead of duplicating the formula.
+  function correctModeForHalf(inningHalf: InningHalf): AtBatMode {
+    return (game.home_away === "home") === (inningHalf === "bottom") ? "hitting" : "pitching";
   }
 
   // Step 2: where the batter's own out was made.
@@ -1584,6 +1617,26 @@ export function OperatorConsole({
     setLateArrivalOpen(false);
   }
 
+  // Bug fix (feature/lineup-drafts): shared by every ad-hoc (outside the
+  // at-bat review flow) path where a runner scores with no upcoming
+  // Confirm At-Bat to carry the run through -- the ad-hoc "Scored" tap
+  // (any ScoreMethod), a sac fly/squeeze decision, and now a stolen base
+  // from third (stealing home). Previously only the ad-hoc "Scored" tap
+  // had this; a steal of home went through a completely different early
+  // return in applyRunnerAction below that never bumped the score at
+  // all, on screen OR in the database. Dispatched once, synchronously,
+  // right at the call site -- not from adjustScore's own (fire-and-
+  // forget, no success callback) completion -- so it can't double count.
+  function bumpScoreAdHoc() {
+    if (state.awaitingResult) return;
+    dispatch({
+      type: "SET_SCORE",
+      ourScore: state.mode === "hitting" ? state.ourScore + 1 : state.ourScore,
+      opponentScore: state.mode === "pitching" ? state.opponentScore + 1 : state.opponentScore,
+    });
+    void withOfflineRetry(`score-${game.id}-${Date.now()}`, () => adjustScore(game.id, state.mode, 1));
+  }
+
   function applyRunnerAction(base: Base, action: RunnerQuickAction, scoreMethod?: ScoreMethod, forced?: boolean) {
     const runner = state.runners[base];
     if (!runner) return;
@@ -1606,6 +1659,15 @@ export function OperatorConsole({
       if (action === "stolen_base" && runner.type === "player" && runner.id) {
         void withOfflineRetry(`sb-${game.id}-${Date.now()}`, () => logStolenBase(game.id, runner.id!, state.inning));
       }
+      // Bug fix: advancing off third (a steal of home, or a plain
+      // "Advance" tapped on a runner already on third) means
+      // advanceOneRunner reports them scored -- see its own base ===
+      // "third" branch -- but this early return never used to check
+      // that at all. No RBI either way (advanceOneRunner's "scored" here
+      // carries no ScoreMethod/game_events concept -- stolen_base is
+      // already excluded from RBI eligibility, same as every other
+      // non-batted-ball way a runner reaches home).
+      if (advanced.scored.length > 0) bumpScoreAdHoc();
       return;
     }
 
@@ -1635,28 +1697,14 @@ export function OperatorConsole({
         })
       );
     }
-    if (!state.awaitingResult) {
-      // Ad-hoc, outside the at-bat review flow -- confirmAtBat's runsScored
-      // already covers the in-review case (RBI included), so this only
-      // fires when there's no upcoming Confirm At-Bat to carry the run.
-      // RBI isn't attributed here -- there's no "current batter" in an
-      // ad-hoc context to credit it to.
-      //
-      // Bug fix: this used to only call adjustScore (server), never
-      // bumping state.ourScore/opponentScore (what the screen actually
-      // renders) -- every Quick Mode sac fly/squeeze-play "Scored" tap,
-      // and this same ad-hoc path in Full Mode, credited the database
-      // but left the on-screen score exactly where it was. Dispatched
-      // once, synchronously, right here -- not from adjustScore's own
-      // (fire-and-forget, no success callback) completion -- so it can't
-      // double count.
-      dispatch({
-        type: "SET_SCORE",
-        ourScore: state.mode === "hitting" ? state.ourScore + 1 : state.ourScore,
-        opponentScore: state.mode === "pitching" ? state.opponentScore + 1 : state.opponentScore,
-      });
-      void withOfflineRetry(`score-${game.id}-${Date.now()}`, () => adjustScore(game.id, state.mode, 1));
-    }
+    // Ad-hoc, outside the at-bat review flow -- confirmAtBat's runsScored
+    // already covers the in-review case (RBI included), so this only
+    // fires when there's no upcoming Confirm At-Bat to carry the run.
+    // RBI isn't attributed here -- there's no "current batter" in an
+    // ad-hoc context to credit it to. bumpScoreAdHoc's own awaitingResult
+    // check is what keeps this from double-counting a run that's really
+    // part of an in-progress at-bat review.
+    bumpScoreAdHoc();
   }
 
   // Shared by every AdvanceReason branch below -- dispatches the same
@@ -2211,8 +2259,8 @@ export function OperatorConsole({
     dispatch({ type: "END_INNING_LOCAL" });
     const nextHalf = state.inningHalf === "top" ? "bottom" : "top";
     const nextInning = state.inningHalf === "bottom" ? state.inning + 1 : state.inning;
-    const weAreHitting = (game.home_away === "home") === (nextHalf === "bottom");
-    dispatch({ type: "SET_MODE", mode: weAreHitting ? "hitting" : "pitching" });
+    const nextMode = correctModeForHalf(nextHalf);
+    dispatch({ type: "SET_MODE", mode: nextMode });
     void withOfflineRetry(`endinning-${game.id}-${Date.now()}`, () =>
       syncGameState(game.id, {
         inning: nextInning,
@@ -2220,7 +2268,7 @@ export function OperatorConsole({
         outs: 0,
         runners: {},
         current_at_bat_id: null,
-        mode: weAreHitting ? "hitting" : "pitching",
+        mode: nextMode,
       })
     );
   }
@@ -2418,21 +2466,35 @@ export function OperatorConsole({
       {/* TOP BAR -- 52px, always visible */}
       <header className="z-10 flex h-[52px] shrink-0 items-center justify-between gap-2 border-b-2 border-accent-primary/40 bg-surface/90 px-3">
         <div className="flex rounded-md border border-border p-1 text-xs">
-          {(["hitting", "pitching"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => dispatch({ type: "SET_MODE", mode: m })}
-              className={`min-h-[36px] rounded px-3 font-heading font-semibold uppercase tracking-wide transition ${
-                state.mode === m
-                  ? m === "hitting"
-                    ? "bg-accent-green text-background"
-                    : "bg-accent-amber text-background"
-                  : "text-foreground/50"
-              }`}
-            >
-              {m}
-            </button>
-          ))}
+          {/* Bug fix (feature/lineup-drafts): which side bats is fully
+              determined by home_away + inning_half, never a free choice
+              -- the wrong mode's button is disabled rather than letting
+              a tap put the game in an invalid state (which is how our
+              own players ended up batting the top half of a home game).
+              The auto-correct effect above already keeps state.mode in
+              sync, so in practice only the correct button is ever
+              enabled; disabled here too as the actual enforcement, not
+              just a visual hint. */}
+          {(["hitting", "pitching"] as const).map((m) => {
+            const allowed = m === correctModeForHalf(state.inningHalf);
+            return (
+              <button
+                key={m}
+                disabled={!allowed}
+                title={!allowed ? `${game.home_away === "home" ? "Home" : "Away"} team bats the ${state.inningHalf} half -- this mode isn't available right now.` : undefined}
+                onClick={() => dispatch({ type: "SET_MODE", mode: m })}
+                className={`min-h-[36px] rounded px-3 font-heading font-semibold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-30 ${
+                  state.mode === m
+                    ? m === "hitting"
+                      ? "bg-accent-green text-background"
+                      : "bg-accent-amber text-background"
+                    : "text-foreground/50"
+                }`}
+              >
+                {m}
+              </button>
+            );
+          })}
         </div>
 
         {/* Addition 2 (two-additions batch): replaces the previous
@@ -3146,6 +3208,15 @@ export function OperatorConsole({
                             // Infield: "remove HR from result options" -- an
                             // infield hit physically can't clear the wall.
                             .filter((r) => !(fieldZone === "infield" && r === "hr"))
+                            // Bug fix (feature/lineup-drafts): Fielder's
+                            // Choice needs a runner on base -- same rule
+                            // Quick Mode's own FC button now enforces (see
+                            // quick-mode-grid.tsx). Full Mode has no
+                            // separate Sac Fly/Sac Bunt buttons to fix here
+                            // -- those are Quick Mode-only labels for a
+                            // plain Fly Out/bunted Ground Out, which Full
+                            // Mode already represents as such.
+                            .filter((r) => !(r === "fc" && !anyRunnerOnBase()))
                             .map((r) => (
                               <button
                                 key={r}
@@ -3869,6 +3940,8 @@ function QuickModeLeftPanel({
             onIbb={onIbb}
             disabled={state.outs >= 3}
             dpDisabled={state.outs > 1 || !anyRunnerOnBase}
+            runners={state.runners}
+            outs={state.outs}
           />
           <p className="mb-1 mt-3 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">More</p>
           <div className="flex flex-wrap gap-3">
@@ -3878,12 +3951,19 @@ function QuickModeLeftPanel({
               disabled={state.outs >= 3}
               className="flex-1"
             />
-            <QuickButton
-              label="Sac Bunt"
-              onClick={() => onPick({ label: "Sac Bunt", result: "groundout", hitType: "bunt", isSac: true })}
-              disabled={state.outs >= 3}
-              className="flex-1"
-            />
+            {/* Bug fix (feature/lineup-drafts): hidden (not greyed out)
+                unless a runner is on base and outs < 2 -- see
+                quick-mode-grid.tsx's own Sac Bunt condition, mirrored
+                here since this one standalone button lives outside the
+                grid system. */}
+            {anyRunnerOnBase && state.outs < 2 && (
+              <QuickButton
+                label="Sac Bunt"
+                onClick={() => onPick({ label: "Sac Bunt", result: "groundout", hitType: "bunt", isSac: true })}
+                disabled={state.outs >= 3}
+                className="flex-1"
+              />
+            )}
             <QuickButton label="Stolen Base" onClick={onStolenBase} disabled={!anyRunnerOnBase} className="flex-1" />
             <QuickButton label="Wild Pitch" onClick={onWildPitch} disabled={!anyRunnerOnBase} className="flex-1" />
             <QuickButton label="Passed Ball" onClick={onPassedBall} disabled={!anyRunnerOnBase} className="flex-1" />
@@ -3893,7 +3973,7 @@ function QuickModeLeftPanel({
 
         {/* Desktop/tablet: unchanged from before this batch. */}
         <div className="hidden sm:block">
-          <QuickModeGrid onPick={onPick} disabled={state.outs >= 3} />
+          <QuickModeGrid onPick={onPick} disabled={state.outs >= 3} runners={state.runners} outs={state.outs} />
 
           {/* Double Play needs a follow-up "which runner" pick (see
               quickRunnerPrompt in the shared right panel), so it isn't a

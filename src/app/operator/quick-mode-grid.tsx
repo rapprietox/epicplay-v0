@@ -1,6 +1,27 @@
 "use client";
 
-import type { AtBatResult, HitType } from "@/lib/supabase/types";
+import type { AtBatResult, HitType, Runners } from "@/lib/supabase/types";
+
+// Operator-screen bug fixes (feature/lineup-drafts): Fielder's Choice,
+// Sac Fly, and Sac Bunt were always rendered, even for the first batter
+// of a half-inning with the bases empty, or right after a play (e.g. a
+// home run) that clears every base -- none of the three can ever
+// legitimately happen with nobody on. Real baseball rules enforced here:
+//   - Fielder's Choice: needs a runner on base.
+//   - Sac Fly: needs a runner on 3rd or 2nd (tagging up from 2nd is
+//     already a real, supported play -- see the sac-fly decision queue
+//     in operator-console.tsx, which already asks about any occupied
+//     base, not just 3rd) and fewer than 2 outs (a sac fly with 2 outs
+//     doesn't exist -- the inning's over before the runner can score).
+//   - Sac Bunt: needs a runner on base and fewer than 2 outs (same
+//     reasoning -- a 2-out "sacrifice" bunt isn't a sacrifice, it's just
+//     an out with the runner still on, so the distinct SAC label would
+//     be misleading).
+// Hidden outright when the condition fails (never just greyed out) --
+// see isVisible below and its use in QuickModeGrid/MobileQuickModeGrid.
+function hasRunnerOnBase(runners: Runners): boolean {
+  return Boolean(runners.first || runners.second || runners.third);
+}
 
 export interface QuickModeButtonDef {
   label: string;
@@ -20,6 +41,10 @@ export interface QuickModeButtonDef {
   // looking) and "Foul Out" both reuse an existing result this way (see
   // logQuickAtBat's own comment).
   scorebookNotation?: string;
+  // Bug fix (feature/lineup-drafts): only set on Fielder's Choice/Sac
+  // Fly/Sac Bunt -- every other button has no base/outs precondition and
+  // is always visible, same as before this fix.
+  isVisible?: (ctx: { runners: Runners; outs: number }) => boolean;
 }
 
 interface QuickModeRow {
@@ -62,14 +87,26 @@ const ROWS: QuickModeRow[] = [
       { label: "Walk (BB)", result: "walk", hitType: null, isSac: false },
       { label: "HBP", result: "hbp", hitType: null, isSac: false },
       { label: "Error", result: "error", hitType: null, isSac: false },
-      { label: "Fielder's Choice", result: "fc", hitType: null, isSac: false },
+      { label: "Fielder's Choice", result: "fc", hitType: null, isSac: false, isVisible: ({ runners }) => hasRunnerOnBase(runners) },
     ],
   },
   {
     heading: "Sacrifices",
     buttons: [
-      { label: "Sac Fly", result: "flyout", hitType: null, isSac: true },
-      { label: "Sac Bunt", result: "groundout", hitType: "bunt", isSac: true },
+      {
+        label: "Sac Fly",
+        result: "flyout",
+        hitType: null,
+        isSac: true,
+        isVisible: ({ runners, outs }) => (Boolean(runners.third) || Boolean(runners.second)) && outs < 2,
+      },
+      {
+        label: "Sac Bunt",
+        result: "groundout",
+        hitType: "bunt",
+        isSac: true,
+        isVisible: ({ runners, outs }) => hasRunnerOnBase(runners) && outs < 2,
+      },
     ],
   },
 ];
@@ -101,8 +138,17 @@ const MOBILE_GRID: MobileCell[] = [
   { kind: "pick", def: { label: "LO", result: "lineout", hitType: null, isSac: false } },
   { kind: "dp" },
   { kind: "pick", def: { label: "E", result: "error", hitType: null, isSac: false } },
-  { kind: "pick", def: { label: "FC", result: "fc", hitType: null, isSac: false } },
-  { kind: "pick", def: { label: "SAC", result: "flyout", hitType: null, isSac: true } },
+  { kind: "pick", def: { label: "FC", result: "fc", hitType: null, isSac: false, isVisible: ({ runners }) => hasRunnerOnBase(runners) } },
+  {
+    kind: "pick",
+    def: {
+      label: "SAC",
+      result: "flyout",
+      hitType: null,
+      isSac: true,
+      isVisible: ({ runners, outs }) => (Boolean(runners.third) || Boolean(runners.second)) && outs < 2,
+    },
+  },
   { kind: "ibb" },
 ];
 
@@ -112,18 +158,22 @@ export function MobileQuickModeGrid({
   onIbb,
   disabled,
   dpDisabled,
+  runners,
+  outs,
 }: {
   onPick: (def: QuickModeButtonDef) => void;
   onDoublePlay: () => void;
   onIbb: () => void;
   disabled: boolean;
   dpDisabled: boolean;
+  runners: Runners;
+  outs: number;
 }) {
   return (
     // Urgent mobile fixes, Fix 6: extra gap so adjacent 64px buttons
     // have real breathing room between them, not just within each one.
     <div className="grid grid-cols-4 gap-3">
-      {MOBILE_GRID.map((cell, i) => {
+      {MOBILE_GRID.filter((cell) => cell.kind !== "pick" || !cell.def.isVisible || cell.def.isVisible({ runners, outs })).map((cell, i) => {
         if (cell.kind === "dp") {
           return (
             <button
@@ -166,27 +216,45 @@ export function MobileQuickModeGrid({
   );
 }
 
-export function QuickModeGrid({ onPick, disabled }: { onPick: (def: QuickModeButtonDef) => void; disabled: boolean }) {
+export function QuickModeGrid({
+  onPick,
+  disabled,
+  runners,
+  outs,
+}: {
+  onPick: (def: QuickModeButtonDef) => void;
+  disabled: boolean;
+  runners: Runners;
+  outs: number;
+}) {
   return (
     <div className="flex w-full flex-col gap-3">
-      {ROWS.map((row) => (
-        <div key={row.heading}>
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">{row.heading}</p>
-          <div className="flex flex-wrap gap-2">
-            {row.buttons.map((def) => (
-              <button
-                key={def.label}
-                type="button"
-                disabled={disabled}
-                onClick={() => onPick(def)}
-                className="glossy min-h-[48px] min-w-[84px] flex-1 rounded-md border-2 border-accent-primary bg-background px-3 text-sm font-bold uppercase tracking-wide text-white transition hover:border-accent-gold hover:bg-accent-primary/20 disabled:cursor-not-allowed disabled:opacity-30"
-              >
-                {def.label}
-              </button>
-            ))}
+      {ROWS.map((row) => {
+        // Bug fix (feature/lineup-drafts): hidden, not just greyed out --
+        // the whole "Sacrifices" heading disappears too if both its
+        // buttons fail their condition (e.g. 2 outs), rather than
+        // leaving a heading with nothing under it.
+        const visibleButtons = row.buttons.filter((def) => !def.isVisible || def.isVisible({ runners, outs }));
+        if (visibleButtons.length === 0) return null;
+        return (
+          <div key={row.heading}>
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">{row.heading}</p>
+            <div className="flex flex-wrap gap-2">
+              {visibleButtons.map((def) => (
+                <button
+                  key={def.label}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onPick(def)}
+                  className="glossy min-h-[48px] min-w-[84px] flex-1 rounded-md border-2 border-accent-primary bg-background px-3 text-sm font-bold uppercase tracking-wide text-white transition hover:border-accent-gold hover:bg-accent-primary/20 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  {def.label}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
