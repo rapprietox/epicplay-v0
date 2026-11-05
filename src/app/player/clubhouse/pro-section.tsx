@@ -1,4 +1,4 @@
-import type { GameType, FieldCalibrationPoints, AtBatResult, PitchType, PitchOutcome } from "@/lib/supabase/types";
+import type { GameType, FieldCalibrationPoints, AtBatResult, PitchType, PitchOutcome, SacrificeType } from "@/lib/supabase/types";
 import type { ZoneBattingLine, AtBatWithZone, SprayDot } from "@/lib/heat-map";
 import type { PressureSplits, CountState } from "@/lib/count-stats";
 import type { BattingLine } from "@/lib/stats";
@@ -79,8 +79,8 @@ export function ProSection({
   sprayDots: (SprayDot & { gameType: GameType; gameId: string })[];
   playerGames: { id: string; gameDate: string; opponentName: string }[];
   fieldCalibration: FieldCalibrationPoints | null;
-  hitterCountAtBats: { result: AtBatResult; finalCount: CountState | null }[];
-  hitterPitchTypeAtBats: { result: AtBatResult; pitchType: PitchType | null }[];
+  hitterCountAtBats: { result: AtBatResult; finalCount: CountState | null; sacrificeType: SacrificeType | null }[];
+  hitterPitchTypeAtBats: { result: AtBatResult; pitchType: PitchType | null; sacrificeType: SacrificeType | null }[];
   pressureSplits: PressureSplits;
   kairosAssessment: string;
   situationalRows: SituationalRow[];

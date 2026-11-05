@@ -37,7 +37,15 @@ function baseReached(ab: AtBat): 0 | 1 | 2 | 3 | 4 {
   }
 }
 
-export function DiamondCell({ atBat, notation }: { atBat: AtBat; notation: string }) {
+// Scorebook-fixes batch: batterLabel is only ever passed when the slot's
+// own chain has more than one player (see the page's own call site) --
+// a single-player slot already says who batted in the row header, so
+// repeating the same surname under every one of that player's own cells
+// would be pure noise. Deliberately a surname, not the full name/jersey
+// already shown in the row header -- this label's only job is telling
+// two or more cells in the same column apart from each other at a
+// glance, not re-identifying someone the header already names.
+export function DiamondCell({ atBat, notation, batterLabel }: { atBat: AtBat; notation: string; batterLabel?: string }) {
   const base = baseReached(atBat);
 
   return (
@@ -56,6 +64,7 @@ export function DiamondCell({ atBat, notation }: { atBat: AtBat; notation: strin
         )}
       </svg>
       <span className="whitespace-nowrap font-mono text-[8px]">{notation}</span>
+      {batterLabel && <span className="whitespace-nowrap text-[6.5px] italic text-black/50">{batterLabel}</span>}
     </div>
   );
 }

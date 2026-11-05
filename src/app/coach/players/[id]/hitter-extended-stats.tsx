@@ -4,15 +4,17 @@ import { useMemo } from "react";
 import { HIT_RESULTS, zoneIndexFromCoords } from "@/lib/heat-map";
 import { TRACKED_COUNTS, PITCH_TYPES, STRIKE_OUTCOMES, type CountState } from "@/lib/count-stats";
 import { formatAvg } from "@/lib/stats";
-import type { AtBatResult, PitchOutcome, PitchType } from "@/lib/supabase/types";
+import type { AtBatResult, PitchOutcome, PitchType, SacrificeType } from "@/lib/supabase/types";
 
 interface CountAtBat {
   result: AtBatResult;
   finalCount: CountState | null;
+  sacrificeType: SacrificeType | null;
 }
 interface PitchTypeAtBat {
   result: AtBatResult;
   pitchType: PitchType | null;
+  sacrificeType: SacrificeType | null;
 }
 interface RawPitch {
   pitch_type: PitchType | null;
@@ -22,6 +24,10 @@ interface RawPitch {
 }
 
 const NOT_AB_RESULTS = new Set<AtBatResult>(["walk", "intentional_walk", "hbp"]);
+// Sacrifice-rules batch: a sacrifice fly/bunt's result (flyout/lineout/
+// groundout) isn't in NOT_AB_RESULTS above, so this module's own AB
+// re-derivation needs the same exclusion computeBattingLines applies.
+const isAbEligible = (ab: { result: AtBatResult; sacrificeType: SacrificeType | null }) => !NOT_AB_RESULTS.has(ab.result) && !ab.sacrificeType;
 
 export function HitterExtendedStats({
   countAtBats,
@@ -40,7 +46,7 @@ export function HitterExtendedStats({
         for (const cab of countAtBats) {
           if (!cab.finalCount) continue;
           if (cab.finalCount.balls !== state.balls || cab.finalCount.strikes !== state.strikes) continue;
-          if (NOT_AB_RESULTS.has(cab.result)) continue;
+          if (!isAbEligible(cab)) continue;
           ab += 1;
           if (HIT_RESULTS.has(cab.result)) h += 1;
         }
@@ -57,7 +63,7 @@ export function HitterExtendedStats({
     () =>
       PITCH_TYPES.map(({ value, label }) => {
         const decided = pitchTypeAtBats.filter((ab) => ab.pitchType === value);
-        const abEligible = decided.filter((ab) => !NOT_AB_RESULTS.has(ab.result));
+        const abEligible = decided.filter(isAbEligible);
         const hits = abEligible.filter((ab) => HIT_RESULTS.has(ab.result)).length;
         // dropped_third_strike_safe still counts toward K rate -- it's a
         // strikeout by scoring rule, just not an out (Fix 2, baseball-

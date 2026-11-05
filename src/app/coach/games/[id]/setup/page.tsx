@@ -6,6 +6,7 @@ import type { PlayerPositionCalibration } from "@/lib/supabase/types";
 import { LineupBuilder } from "./lineup-builder";
 import { OpponentPhotoImport } from "./opponent-photo-import";
 import { GameRulesOverride } from "./game-rules-override";
+import { ensureDraftsAndLock } from "./draft-actions";
 
 export default async function GameSetupPage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -29,9 +30,8 @@ export default async function GameSetupPage({ params }: { params: { id: string }
     .single();
   if (!game) notFound();
 
-  const [{ data: players }, { data: lineup }, { data: fieldPositionsRow }] = await Promise.all([
+  const [{ data: players }, { data: fieldPositionsRow }, { drafts, lineupConfirmedAt }] = await Promise.all([
     supabase.from("players").select("*").eq("team_id", profile.team_id).order("jersey_number"),
-    supabase.from("lineup").select("*").eq("game_id", game.id),
     // Change 2 (calibrate-field-tabs batch): drives where a placed
     // player's avatar snaps to on the field diagram -- null (never
     // calibrated yet) is a real, expected state, handled by the builder
@@ -39,6 +39,13 @@ export default async function GameSetupPage({ params }: { params: { id: string }
     // and the field_type '2d' calibration it used, no longer apply here
     // at all -- see nearestSavedPosition in lib/field-zones.ts).
     supabase.from("field_calibration").select("calibration_points").eq("team_id", profile.team_id).eq("field_type", "positions").maybeSingle(),
+    // Feature B (lineup drafts): ensures at least one draft exists
+    // (seeded from the official `lineup` table the first time, if it's
+    // non-empty) and backfills lineup_confirmed_at for a game that was
+    // already fully set up before this feature existed -- see that
+    // function's own comment for why this is a one-time step, not a
+    // live check re-run on every load.
+    ensureDraftsAndLock(game.id),
   ]);
 
   const { data: opponentPlayers } = game.opponent_id
@@ -85,9 +92,10 @@ export default async function GameSetupPage({ params }: { params: { id: string }
             <LineupBuilder
               gameId={game.id}
               players={players ?? []}
-              initialLineup={lineup ?? []}
               initialUmpireName={game.umpire_name}
               fieldPositionsCalibration={(fieldPositionsRow?.calibration_points as PlayerPositionCalibration | undefined) ?? null}
+              initialDrafts={drafts}
+              initialLineupConfirmedAt={lineupConfirmedAt}
             />
           </div>
         </section>

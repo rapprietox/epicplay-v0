@@ -3,6 +3,7 @@ import type { Database } from "@/lib/supabase/types";
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
+type GameEvent = Database["public"]["Tables"]["game_events"]["Row"];
 
 // ground_rule_double counts as a double everywhere a regular double does
 // (Fix 9, baseball-logic-fixes batch, minor tier) -- same 2 total bases,
@@ -22,12 +23,16 @@ export interface BattingLine {
   // (only the separate pitching line's own `k`, for strikeouts a
   // player's pitching recorded against opponents) -- a batter's own
   // strikeout count had nowhere to live, so any UI trying to show it
-  // was reading undefined. `pa` (plate appearances, ab + bb + hbp) is
-  // the same denominator OBP already computes inline -- exposed here
-  // too since K%/BB% (lineup-grid and EPS batches) need it directly
+  // was reading undefined. `pa` (plate appearances) is the same
+  // denominator K%/BB% (lineup-grid and EPS batches) need directly
   // rather than re-deriving it at every call site.
   k: number;
   pa: number;
+  // Sacrifice-rules batch: broken out from `ab` so a caller can show "SF"/
+  // "SH" counts if it wants to -- see notationFor in the scorebook for the
+  // per-at-bat version of the same distinction.
+  sacFlies: number;
+  sacBunts: number;
   rbi: number;
   runsScored: number;
   sb: number;
@@ -49,6 +54,8 @@ function emptyBattingLine(playerId: string): BattingLine {
     hbp: 0,
     k: 0,
     pa: 0,
+    sacFlies: 0,
+    sacBunts: 0,
     rbi: 0,
     runsScored: 0,
     sb: 0,
@@ -59,8 +66,14 @@ function emptyBattingLine(playerId: string): BattingLine {
   };
 }
 
-// OBP/SLG here don't distinguish sacrifice flies (not tracked in the
-// schema) -- a documented V0 simplification, not an oversight.
+// Sacrifice-rules batch: a sacrifice (fly or bunt, see at_bats.sacrifice_type)
+// is a plate appearance but never an at-bat -- AVG and SLG are purely
+// AB-based, so they're unaffected either way. OBP follows official scoring
+// rule 9.02(b): its denominator includes a sacrifice FLY but not a
+// sacrifice BUNT. `sacrifice_type` is set under outcome-based rules computed
+// in operator-console.tsx (did a runner actually score/advance, not which
+// button was tapped) -- this function just trusts whatever's already
+// stored on the row.
 //
 // Callers must pass only confirmed at-bats (confirmed_at is not null) --
 // draft rows created the moment a batter steps up (see
@@ -68,9 +81,23 @@ function emptyBattingLine(playerId: string): BattingLine {
 // corrupt these counts. This also defensively skips any row with a null
 // player_id (pitching-mode at-bats, where the batter is an opponent) or
 // null result (a draft that slipped through un-filtered).
+// Run-attribution batch: scoringEvents defaults to [] so every existing
+// call site (there are 30+, none of which have a game_events fetch to
+// hand in) keeps compiling and behaving exactly as before -- only a
+// caller that actually passes real rows (the scorebook; the operator's
+// own going-forward logging) gets the extra credit. Each matching event
+// only ever adds to runsScored -- never ab/pa/rbi -- since it represents
+// a run that happened outside any at-bat, same reasoning the per-at-bat
+// runs_scored path already follows for errors/walks/etc (an RBI needs a
+// batter's own action, which this player didn't necessarily take here).
+// An event with no scorer_player_id (every event logged before this
+// batch, and an opposing runner's event even after it -- see the
+// migration's own comment) contributes nothing here and is left exactly
+// as it already renders everywhere else (team score only).
 export function computeBattingLines(
-  atBats: Pick<AtBat, "player_id" | "result" | "rbi" | "runs_scored">[],
-  stolenBases: Pick<StolenBase, "player_id">[]
+  atBats: Pick<AtBat, "player_id" | "result" | "rbi" | "runs_scored" | "sacrifice_type">[],
+  stolenBases: Pick<StolenBase, "player_id">[],
+  scoringEvents: Pick<GameEvent, "scorer_player_id" | "runs_scored">[] = []
 ): Map<string, BattingLine> {
   const lines = new Map<string, BattingLine>();
 
@@ -97,6 +124,13 @@ export function computeBattingLines(
       line.hbp += 1;
       continue;
     }
+    if (ab.sacrifice_type) {
+      // A sacrifice is always an out, never a hit/XBH/strikeout -- no
+      // further bookkeeping below applies.
+      if (ab.sacrifice_type === "fly") line.sacFlies += 1;
+      else line.sacBunts += 1;
+      continue;
+    }
 
     line.ab += 1;
     if (HIT_RESULTS.has(ab.result)) line.h += 1;
@@ -113,10 +147,15 @@ export function computeBattingLines(
     get(sb.player_id).sb += 1;
   }
 
+  for (const ev of scoringEvents) {
+    if (!ev.scorer_player_id || !ev.runs_scored) continue;
+    get(ev.scorer_player_id).runsScored += ev.runs_scored;
+  }
+
   for (const line of Array.from(lines.values())) {
     const totalBases = line.h - line.doubles - line.triples - line.hr + line.doubles * 2 + line.triples * 3 + line.hr * 4;
-    const obpDenominator = line.ab + line.bb + line.hbp;
-    line.pa = obpDenominator;
+    const obpDenominator = line.ab + line.bb + line.hbp + line.sacFlies;
+    line.pa = line.ab + line.bb + line.hbp + line.sacFlies + line.sacBunts;
     line.avg = line.ab > 0 ? line.h / line.ab : 0;
     line.obp = obpDenominator > 0 ? (line.h + line.bb + line.hbp) / obpDenominator : 0;
     line.slg = line.ab > 0 ? totalBases / line.ab : 0;

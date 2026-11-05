@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } fro
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import type {
+  AtBatMode,
   AtBatResult,
   BattingHand,
   Database,
@@ -11,12 +12,14 @@ import type {
   FieldingPosition,
   GameEventType,
   HitType,
+  InningHalf,
   OutType,
   PitchOutcome,
   PitchType,
   PlayerPositionCalibration,
   RunnerState,
   Runners,
+  SacrificeType,
 } from "@/lib/supabase/types";
 import {
   FIELDER_NUMBER_TO_POSITION,
@@ -36,6 +39,7 @@ import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
 import {
   RESULT_IS_OUT,
   RESULT_LABELS,
+  BUNT_RESULT_LABELS,
   PITCH_TYPE_LABELS,
   HIT_TYPE_LABELS,
   HIT_TYPE_RESULT_OPTIONS,
@@ -55,7 +59,7 @@ import {
 import { atBatAccuracyRatio, runningAccuracy } from "@/lib/pitch-accuracy";
 import { resolveGameRules, formatElapsed, checkInningEndBanner, type InningEndBanner } from "@/lib/game-rules";
 import { formatAvg, type BattingLine } from "@/lib/stats";
-import { loadOperatorStateLocal, saveOperatorStateLocal } from "@/lib/operator/local-storage";
+import { loadOperatorStateLocal, saveOperatorStateLocal, clearOperatorStateLocal } from "@/lib/operator/local-storage";
 import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
 import { withOfflineRetry, onQueueChange, pendingCount } from "@/lib/operator/sync-queue";
 import { buildInitialStateFromServer } from "./initial-state";
@@ -72,6 +76,7 @@ import {
   logQuickDoublePlay,
   logStolenBase,
   markLateArrival,
+  setSacrificeType,
   startDraftAtBat,
   syncGameState,
   undoAtBat,
@@ -167,7 +172,7 @@ interface DpWizardState {
 // Runner-actions consolidation: the reasons behind "Advance", replacing
 // the standalone Wild Pitch/Passed Ball/Balk/Error (all-runners) buttons
 // and the separate Stolen Base quick action -- see handleAdvanceReason.
-type AdvanceReason = "stolen_base" | "wild_pitch" | "passed_ball" | "balk" | "error" | "passed_on_hit" | "obstruction";
+type AdvanceReason = "stolen_base" | "wild_pitch" | "passed_ball" | "balk" | "error" | "passed_on_hit" | "obstruction" | "sac_bunt";
 
 // Fix 3 (smart hit defaults): one dismissible-within-3s banner per
 // auto-scored runner. `base`/`runner` are the *pre-hit* position and
@@ -260,9 +265,36 @@ export function OperatorConsole({
   // Swapping in a recovered localStorage snapshot happens *after* mount
   // instead, once hydration has already matched the server output --
   // this is what the reducer's HYDRATE action is for.
+  //
+  // Bug fix (feature/lineup-drafts): a dirty snapshot used to be trusted
+  // unconditionally -- found while re-testing the Sac Fly/Sac Bunt
+  // visibility fix on the dummy game, right after resetting its data
+  // directly in the database (deleting at_bats/game_state outside the
+  // app entirely). isVisible and UNDO_LOCAL both turned out correct
+  // under direct simulation; the actual cause was this effect blindly
+  // hydrating a browser's own leftover snapshot from BEFORE that reset
+  // -- runners/outs that were real for the old (now-deleted) at-bats,
+  // reapplied on top of a freshly reset game, with Undo then faithfully
+  // restoring *that* stale pre-at-bat snapshot. `dirty` is set on nearly
+  // every local action and nothing ever clears it mid-session (MARK_SAVED
+  // is defined but never dispatched), so without this check ANY snapshot
+  // from a previous session -- not just a DB reset, any case where the
+  // server's own game_state was recreated since -- would be trusted the
+  // same way. getOrCreateGameState stamps a fresh game_started_at only
+  // when a game_state row is first created, so comparing against it is a
+  // simple, reliable "is this snapshot older than the current game
+  // session" check -- a snapshot saved before this fix shipped has
+  // savedAt stuck at 0 (see below), which safely always counts as stale
+  // rather than being trusted by default.
   useEffect(() => {
     const local = loadOperatorStateLocal(game.id);
-    if (local && local.dirty) dispatch({ type: "HYDRATE", state: local });
+    if (!local || !local.dirty) return;
+    const gameStartedAtMs = initialGameState.game_started_at ? new Date(initialGameState.game_started_at).getTime() : 0;
+    if (local.savedAt < gameStartedAtMs) {
+      clearOperatorStateLocal(game.id);
+      return;
+    }
+    dispatch({ type: "HYDRATE", state: local });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game.id]);
 
@@ -272,7 +304,7 @@ export function OperatorConsole({
   }, [state]);
 
   useEffect(() => {
-    const t = setInterval(() => saveOperatorStateLocal(stateRef.current), 5000);
+    const t = setInterval(() => saveOperatorStateLocal({ ...stateRef.current, savedAt: Date.now() }), 5000);
     return () => clearInterval(t);
   }, []);
 
@@ -393,30 +425,43 @@ export function OperatorConsole({
   // game_events row (see CLAUDE.md). This one always does, and adds the
   // "attempted, runner safe" outcome that quick-action never had.
   const [pickoffWizard, setPickoffWizard] = useState<{ step: "base" | "result"; base?: Base } | null>(null);
-  // Addition 1 (two-additions batch): shown after a flyout/lineout
-  // at-bat confirms with runners on base and the inning still alive
-  // (outs < 3) -- asks what happened to each runner on the play, top
-  // base first (queue order: third, second, first). Supersedes the
-  // earlier, narrower "did anyone leave early" tag-up-only prompt: that
-  // was exactly this same trigger (flyouts + runners on base) but with
-  // only one of what are now four per-runner outcomes (Scored / Advanced
-  // / Held / Out-left-early) -- see SacFlyPanel below, which reuses
-  // handleTagUpViolation's own out-on-appeal logic verbatim for that
-  // fourth option rather than duplicating it. Cleared automatically once
-  // the next batter's first pitch starts a new draft at-bat (the window
-  // to decide has implicitly passed), or as each runner in the queue is
-  // resolved.
-  const [sacFlyQueue, setSacFlyQueue] = useState<Base[]>([]);
-  // Addition 1: "was this a squeeze play?" -- only ever prompted when a
-  // bunt confirms with the runner on third still actually on third
-  // (state.runners.third truthy at confirm time). A bunt *single*
-  // doesn't reach this at all: "single" is a HIT_RESULT, so the
-  // existing hit-runner-confirm/auto-score machinery (decideRunnerOnHit:
-  // "third base always auto-scores on any hit") already resolves that
-  // runner's third-base fate before handleConfirm ever runs, which is
-  // exactly what naturally excludes it here -- no separate check needed
-  // beyond "is anyone still on third."
-  const [squeezePrompt, setSqueezePrompt] = useState(false);
+  // Sacrifice-rules batch: shown after a fly/line/foul out OR a bunt out
+  // at first confirms with runners on base and outs below 2 -- asks what
+  // happened to each runner on the play, top base first (queue order:
+  // third, second, first). Replaces the old, narrower sacFlyQueue
+  // (fly/line outs only, always assumed "sac fly" if anyone scored) AND
+  // the standalone squeezePrompt (bunt only, third base only, yes/no) --
+  // both are now the same per-runner ask (Scored / Advanced / Stayed /
+  // Out), just with runnerOutcomeKind distinguishing which sacrifice type
+  // applies if the aggregate outcome ends up being one. See
+  // maybeStartRunnerOutcomeQueue (the single trigger, called from both
+  // handleConfirm and handleQuickPick) and handleRunnerOutcomeDecision.
+  // Cleared automatically once the queue drains or the next batter's
+  // first pitch starts a new draft at-bat.
+  const [runnerOutcomeQueue, setRunnerOutcomeQueue] = useState<Base[]>([]);
+  const [runnerOutcomeKind, setRunnerOutcomeKind] = useState<SacrificeType | null>(null);
+  const [runnerOutcomeAtBatId, setRunnerOutcomeAtBatId] = useState<string | null>(null);
+  // Aggregate outcome across the whole queue, read once it drains to
+  // decide the sacrifice_type (if any) -- see the finalize effect below.
+  // "fly": sacrifice iff at least one runner scored. "bunt": sacrifice
+  // iff at least one runner advanced/scored AND nobody was put out.
+  const [runnerOutcomeAnyScored, setRunnerOutcomeAnyScored] = useState(false);
+  const [runnerOutcomeAnyMoved, setRunnerOutcomeAnyMoved] = useState(false);
+  const [runnerOutcomeAnyOut, setRunnerOutcomeAnyOut] = useState(false);
+  // Bug fix (feature/lineup-drafts): whether the most recently confirmed
+  // Quick Mode play was a bunted groundout -- plain UI state, not
+  // threaded through the shared reducer. Drives AdvanceReasonMenu's own
+  // "Sac Bunt" option (see ADVANCE_REASONS below): offering it as a
+  // manual-advance reason only right after an actual bunt is what "the
+  // right reasons for the play" means here -- showing it permanently
+  // alongside Stolen Base/Wild Pitch/etc. regardless of what just
+  // happened would be the same kind of clutter this fix is otherwise
+  // trying to cut down on.
+  const [lastQuickPickWasSacBunt, setLastQuickPickWasSacBunt] = useState(false);
+  // Sacrifice-rules batch: the new standalone Quick Mode "Bunt" button
+  // asks how the play ended before anything is logged -- see onBunt/
+  // handleBuntOutcome and BuntOutcomePrompt below.
+  const [buntOutcomePrompt, setBuntOutcomePrompt] = useState(false);
   // Quick Mode scorekeeper batch: "which runner" pickers for the two
   // Quick-Mode-only actions that need a follow-up base pick before they
   // can apply (Double Play, and Stolen Base as a direct button rather
@@ -521,6 +566,22 @@ export function OperatorConsole({
   // machinery than a plain timeout needs.
   const [inningEndCelebrating, setInningEndCelebrating] = useState(false);
   const toastIdRef = useRef(0);
+  // Bug fix: an opposing batter with no name typed (the free-text
+  // "Opposing batter…" field, see opponent-batters datalist above) fell
+  // back to the literal string "Batter" -- fine for one runner, but with
+  // two nameless opponents on base at once (e.g. a walk following an
+  // earlier un-named single) both dots on the diamond read "•Batter,"
+  // indistinguishable. This ref counts up across the whole game, every
+  // time currentBatterRunner() actually resolves a nameless opponent
+  // batter (its five one-shot handler call sites -- pickResult, the
+  // hit-runner-confirm drain effect, handleIntentionalWalk,
+  // handleQuickPick, handleQuickDoublePlay -- each fires exactly once per
+  // real batter), so each nameless opponent gets its own "Opp #N" instead
+  // of colliding on one shared label. Deliberately NOT consumed by the
+  // IBB confirm dialog's own preview text (see ibbConfirmOpen below),
+  // which is a render-time JSX read that would otherwise burn through
+  // numbers on every re-render while the dialog stays open.
+  const opponentBatterSeqRef = useRef(0);
 
   // durationMs is the toast's total on-screen time including its 250ms
   // slide-in and 300ms slide-out (per spec, "stays 2s, slides out" etc.
@@ -559,8 +620,10 @@ export function OperatorConsole({
 
   useEffect(() => {
     if (state.currentAtBatId) {
-      setSacFlyQueue([]);
-      setSqueezePrompt(false);
+      setRunnerOutcomeQueue([]);
+      setRunnerOutcomeKind(null);
+      setRunnerOutcomeAtBatId(null);
+      setBuntOutcomePrompt(false);
     }
   }, [state.currentAtBatId]);
 
@@ -597,6 +660,44 @@ export function OperatorConsole({
     setPendingNotation(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.currentAtBatId]);
+
+  // Bug fix (feature/lineup-drafts): self-corrects a game already stuck
+  // in the wrong mode for its current inning_half -- the exact state
+  // this fix found a real test game in (home team batting the top
+  // half). Runs on mount (covers a reload of an already-wrong game) and
+  // every inning_half change thereafter, as a second line of defense
+  // alongside confirmEndInning's own explicit SET_MODE dispatch. Synced
+  // to the server too, not just the local reducer, so a reload doesn't
+  // pull the wrong mode straight back down from game_state.
+  useEffect(() => {
+    const correct = correctModeForHalf(state.inningHalf);
+    if (state.mode === correct) return;
+    dispatch({ type: "SET_MODE", mode: correct });
+    void withOfflineRetry(`mode-autocorrect-${game.id}-${Date.now()}`, () => syncGameState(game.id, { mode: correct }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.inningHalf, game.home_away]);
+
+  // Pitcher auto-default, the general-purpose catch-all: covers both "the
+  // game starts in pitching mode" (a home game's very first half-inning,
+  // before confirmEndInning's own default ever gets a chance to run) and
+  // "the page loads/reloads with no pitcher set while already in pitching
+  // mode" (a stale snapshot, a different device, or game_state predating
+  // this feature) -- any case where mode is pitching and currentPitcherId
+  // is still null, regardless of how that state was reached. Runs on
+  // mount and whenever mode/currentPitcherId/the lineup change, so it
+  // also catches a reload that lands mid-inning with no pitcher. A no-op
+  // once a pitcher is set, from here or anywhere else (confirmEndInning,
+  // the Pitcher Picker, or the substitution default in handleChainResolved).
+  useEffect(() => {
+    if (state.mode !== "pitching" || state.currentPitcherId) return;
+    const defaultPitcher = liveLineup.find((l) => l.status === "starting" && l.position === "P");
+    if (!defaultPitcher) return;
+    dispatch({ type: "SET_PITCHER", playerId: defaultPitcher.player_id });
+    void withOfflineRetry(`pitcher-autodefault-${game.id}-${Date.now()}`, () =>
+      syncGameState(game.id, { current_pitcher_id: defaultPitcher.player_id, pitch_count_for_current_pitcher: 0 })
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.mode, state.currentPitcherId, liveLineup]);
 
   // Fix 6 (baseball-logic-fixes batch): who's currently on the field for
   // our team, and who's already been used up this game -- derived from
@@ -757,7 +858,9 @@ export function OperatorConsole({
         jersey: battingPlayerInfo?.jersey_number ? String(battingPlayerInfo.jersey_number) : null,
       };
     }
-    return { type: "opponent", id: null, name: state.opponentBatterName || "Batter" };
+    if (state.opponentBatterName) return { type: "opponent", id: null, name: state.opponentBatterName };
+    opponentBatterSeqRef.current += 1;
+    return { type: "opponent", id: null, name: `Opp #${opponentBatterSeqRef.current}` };
   }
 
   function syncRunners(next: Runners) {
@@ -1057,6 +1160,21 @@ export function OperatorConsole({
     return Boolean(state.runners.first || state.runners.second || state.runners.third);
   }
 
+  // Bug fix (feature/lineup-drafts): which side bats is always fully
+  // determined by home_away + inning_half -- the away team bats the top
+  // half, the home team bats the bottom, every inning, no exceptions.
+  // Previously the HITTING/PITCHING toggle let the operator pick either
+  // mode regardless of inning_half, which is how this exact game (home,
+  // started correctly in pitching for the top half) ended up with our
+  // own players batting in the top half instead of the opponent -- see
+  // the toggle buttons and the auto-correct effect below, both of which
+  // now key off this single function instead of leaving mode as a free
+  // choice. confirmEndInning already computed this inline (as
+  // weAreHitting); reused here instead of duplicating the formula.
+  function correctModeForHalf(inningHalf: InningHalf): AtBatMode {
+    return (game.home_away === "home") === (inningHalf === "bottom") ? "hitting" : "pitching";
+  }
+
   // Step 2: where the batter's own out was made.
   function handleGroundOutLocation(base: OutBase) {
     setGroundOutPendingBase(base);
@@ -1318,19 +1436,10 @@ export function OperatorConsole({
     setSummaryFlash(
       [RESULT_LABELS[result], hitType ? HIT_TYPE_LABELS[hitType] : null, fielding?.position ?? null, scorebookNotation].filter(Boolean).join(" — ")
     );
-    // Addition 1: sac-fly/tag-up decision queue -- fly out or line out,
-    // at least one runner still on base, and this out didn't end the
-    // inning (outs *after* this one < 3 -- a dead inning has no more
-    // baserunning to ask about). Queue order is top base first (third,
-    // second, first), per spec.
-    if ((result === "flyout" || result === "lineout") && state.outs + 1 < 3) {
-      const order: Base[] = ["third", "second", "first"];
-      const queue = order.filter((b) => state.runners[b]);
-      if (queue.length > 0) setSacFlyQueue(queue);
-    }
-    // Addition 1: squeeze-play prompt -- see squeezePrompt's own comment
-    // above for why "single" never reaches this.
-    if (hitType === "bunt" && state.runners.third) setSqueezePrompt(true);
+    // Sacrifice-rules batch: the same per-runner outcome queue covers
+    // both a fly/line/foul out and a bunt out at first now -- see
+    // maybeStartRunnerOutcomeQueue's own comment for the exact trigger.
+    maybeStartRunnerOutcomeQueue({ atBatId, result, hitType, outsBeforePlay: state.outs, runnersBeforePlay: state.runners });
     // Fix 5 (baseball-logic-fixes batch): a plain caught strikeout (not
     // dropped-third-strike-safe, which already covers "the catcher
     // couldn't handle it" via its own Fix 2 prompt) with runners on base
@@ -1549,6 +1658,22 @@ export function OperatorConsole({
 
     dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
 
+    // Pitcher auto-default: a substitution can change who plays P too
+    // (the incoming player entering right at P, or an existing player
+    // getting moved there as part of the same chain) -- keep
+    // current_pitcher_id in sync with that the instant it happens,
+    // same reasoning as the end-of-inning default above. Only acts when
+    // this chain actually places someone new at P; a sub that leaves P
+    // untouched (the far more common case) is a no-op here.
+    const newPitcherId =
+      result.entryPosition === "P" ? result.incomingPlayerId : result.positionMoves.find((m) => m.position === "P")?.playerId ?? null;
+    if (newPitcherId && newPitcherId !== state.currentPitcherId) {
+      dispatch({ type: "SET_PITCHER", playerId: newPitcherId });
+      void withOfflineRetry(`subpitcher-${game.id}-${Date.now()}`, () =>
+        syncGameState(game.id, { current_pitcher_id: newPitcherId, pitch_count_for_current_pitcher: 0 })
+      );
+    }
+
     if (!result.outgoingPlayerId) return;
     const occupiedBase = (["first", "second", "third"] as Base[]).find(
       (b) => state.runners[b]?.type === "player" && state.runners[b]?.id === result.outgoingPlayerId
@@ -1584,6 +1709,26 @@ export function OperatorConsole({
     setLateArrivalOpen(false);
   }
 
+  // Bug fix (feature/lineup-drafts): shared by every ad-hoc (outside the
+  // at-bat review flow) path where a runner scores with no upcoming
+  // Confirm At-Bat to carry the run through -- the ad-hoc "Scored" tap
+  // (any ScoreMethod), a sac fly/squeeze decision, and now a stolen base
+  // from third (stealing home). Previously only the ad-hoc "Scored" tap
+  // had this; a steal of home went through a completely different early
+  // return in applyRunnerAction below that never bumped the score at
+  // all, on screen OR in the database. Dispatched once, synchronously,
+  // right at the call site -- not from adjustScore's own (fire-and-
+  // forget, no success callback) completion -- so it can't double count.
+  function bumpScoreAdHoc() {
+    if (state.awaitingResult) return;
+    dispatch({
+      type: "SET_SCORE",
+      ourScore: state.mode === "hitting" ? state.ourScore + 1 : state.ourScore,
+      opponentScore: state.mode === "pitching" ? state.opponentScore + 1 : state.opponentScore,
+    });
+    void withOfflineRetry(`score-${game.id}-${Date.now()}`, () => adjustScore(game.id, state.mode, 1));
+  }
+
   function applyRunnerAction(base: Base, action: RunnerQuickAction, scoreMethod?: ScoreMethod, forced?: boolean) {
     const runner = state.runners[base];
     if (!runner) return;
@@ -1606,6 +1751,37 @@ export function OperatorConsole({
       if (action === "stolen_base" && runner.type === "player" && runner.id) {
         void withOfflineRetry(`sb-${game.id}-${Date.now()}`, () => logStolenBase(game.id, runner.id!, state.inning));
       }
+      // Bug fix: advancing off third (a steal of home, or a plain
+      // "Advance" tapped on a runner already on third) means
+      // advanceOneRunner reports them scored -- see its own base ===
+      // "third" branch -- but this early return never used to check
+      // that at all. No RBI either way (advanceOneRunner's "scored" here
+      // carries no ScoreMethod/game_events concept -- stolen_base is
+      // already excluded from RBI eligibility, same as every other
+      // non-batted-ball way a runner reaches home).
+      //
+      // Run-attribution batch: also logs a runner_scored event with the
+      // scorer attributed, so this run (previously credited to the team
+      // score only) counts toward the player's own R too -- reuses
+      // bumpScoreAdHoc for the score bump itself (its own awaitingResult
+      // check is what keeps this from double-counting a run that's really
+      // part of an in-progress at-bat review, same reasoning as every
+      // other ad-hoc path below), so the score is bumped exactly once and
+      // the event is logged exactly once, never both or neither.
+      if (advanced.scored.length > 0 && !state.awaitingResult) {
+        const scorer = advanced.scored[0];
+        bumpScoreAdHoc();
+        void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+          logGameEvent(game.id, {
+            eventType: "runner_scored",
+            inning: state.inning,
+            inningHalf: state.inningHalf,
+            mode: state.mode,
+            runsScored: 1,
+            scorerPlayerId: scorer.type === "player" ? scorer.id : null,
+          })
+        );
+      }
       return;
     }
 
@@ -1620,10 +1796,48 @@ export function OperatorConsole({
     // scored
     syncRunners(nextRunners);
     const eventType = scoreMethod ? SCORE_METHOD_EVENT[scoreMethod] : undefined;
-    if (eventType) {
-      // wild_pitch/balk -> pitcher, passed_ball -> catcher; "error" (no
-      // picker in this sub-menu) is logged without a guessed fielder.
-      const fielder = eventType === "wild_pitch" || eventType === "balk" ? resolve("P") : eventType === "passed_ball" ? resolve("C") : null;
+    // wild_pitch/balk -> pitcher, passed_ball -> catcher; "error" (no
+    // picker in this sub-menu) is logged without a guessed fielder.
+    const fielder = eventType === "wild_pitch" || eventType === "balk" ? resolve("P") : eventType === "passed_ball" ? resolve("C") : null;
+
+    if (!state.awaitingResult) {
+      // Ad-hoc, outside the at-bat review flow -- confirmAtBat's runsScored
+      // already covers the in-review case (RBI included), so this only
+      // fires when there's no upcoming Confirm At-Bat to carry the run.
+      // RBI isn't attributed here -- there's no "current batter" in an
+      // ad-hoc context to credit it to. bumpScoreAdHoc's own awaitingResult
+      // check is what keeps this from double-counting a run that's really
+      // part of an in-progress at-bat review -- called exactly once here,
+      // never from the mid-review branch below.
+      bumpScoreAdHoc();
+      // Run-attribution batch: this ad-hoc case has no at_bats row anywhere
+      // that will ever carry this run, so it's the one place a missing
+      // game_events type would mean losing attribution entirely --
+      // "runner_scored" is the fallback for every scoreMethod with no more
+      // specific SCORE_METHOD_EVENT mapping (sac_fly, hit, forced_walk_hbp,
+      // obstruction), so every ad-hoc "Scored" tap now leaves an
+      // attributable record, not just the ones that already had a
+      // wild_pitch/balk/passed_ball/error/squeeze_play cause. Exactly one
+      // event logged per call, matching the exactly-one score bump above.
+      void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType: eventType ?? "runner_scored",
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          runsScored: 1,
+          scorerPlayerId: runner.type === "player" ? runner.id : null,
+          playerId: fielder?.playerId ?? null,
+          opponentPlayerId: fielder?.opponentPlayerId ?? null,
+        })
+      );
+    } else if (eventType) {
+      // Mid-review (an at-bat is still open): no scorer/runs attribution
+      // here, since CONFIRM_LOCAL is what will credit this run (onto the
+      // batter's own at_bats row, via scoredThisAtBat) once that at-bat
+      // confirms. Attributing it here too would double-count the same run
+      // under two different players -- so this branch and the one above
+      // are mutually exclusive, and together log the event exactly once.
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
         logGameEvent(game.id, {
           eventType,
@@ -1634,28 +1848,6 @@ export function OperatorConsole({
           opponentPlayerId: fielder?.opponentPlayerId ?? null,
         })
       );
-    }
-    if (!state.awaitingResult) {
-      // Ad-hoc, outside the at-bat review flow -- confirmAtBat's runsScored
-      // already covers the in-review case (RBI included), so this only
-      // fires when there's no upcoming Confirm At-Bat to carry the run.
-      // RBI isn't attributed here -- there's no "current batter" in an
-      // ad-hoc context to credit it to.
-      //
-      // Bug fix: this used to only call adjustScore (server), never
-      // bumping state.ourScore/opponentScore (what the screen actually
-      // renders) -- every Quick Mode sac fly/squeeze-play "Scored" tap,
-      // and this same ad-hoc path in Full Mode, credited the database
-      // but left the on-screen score exactly where it was. Dispatched
-      // once, synchronously, right here -- not from adjustScore's own
-      // (fire-and-forget, no success callback) completion -- so it can't
-      // double count.
-      dispatch({
-        type: "SET_SCORE",
-        ourScore: state.mode === "hitting" ? state.ourScore + 1 : state.ourScore,
-        opponentScore: state.mode === "pitching" ? state.opponentScore + 1 : state.opponentScore,
-      });
-      void withOfflineRetry(`score-${game.id}-${Date.now()}`, () => adjustScore(game.id, state.mode, 1));
     }
   }
 
@@ -1721,13 +1913,28 @@ export function OperatorConsole({
         );
         const advanced = advanceRunnerWithMethod(base, reason);
         const eventFielder = reason === "wild_pitch" ? resolve("P") : resolve("C");
+        // Run-attribution batch, corrected during the Nov 7 merge:
+        // advanceRunnerWithMethod dispatches APPLY_RUNNER_ACTION("advance"),
+        // which (per the reducer) always appends any scored runner to
+        // state.scoredThisAtBat regardless of whether an at-bat is
+        // currently open -- that entry is always picked up by a future
+        // CONFIRM_LOCAL (the currently-open at-bat in the normal case; the
+        // next batter's, in the rarer postStrikeoutWildPitch case below),
+        // which is what actually credits the run to both games.our_score
+        // and the crediting batter's own at_bats.runs_scored. Unlike the
+        // ad-hoc applyRunnerAction("scored")/stolen-base paths above (which
+        // call bumpScoreAdHoc immediately and so need their own
+        // attributed event to credit the real scorer), nothing here ever
+        // bumps the score directly -- so logging scorerPlayerId/runsScored
+        // on this event too would double-count the same run under two
+        // different players once that future at-bat confirms. No scorer
+        // attribution for this reason, same as before run-attribution.
         void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
           logGameEvent(game.id, {
             eventType: reason,
             inning: state.inning,
             inningHalf: state.inningHalf,
             mode: state.mode,
-            runsScored: advanced.scored.length,
             playerId: eventFielder?.playerId ?? null,
             opponentPlayerId: eventFielder?.opponentPlayerId ?? null,
           })
@@ -1739,15 +1946,16 @@ export function OperatorConsole({
       }
 
       setPostStrikeoutWildPitch(false);
-      const advanced = advanceRunnerWithMethod(base, reason);
+      advanceRunnerWithMethod(base, reason);
       const eventFielder = reason === "wild_pitch" ? resolve("P") : resolve("C");
+      // See the matching comment above -- same reasoning, same no-scorer-
+      // attribution fix.
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
         logGameEvent(game.id, {
           eventType: reason,
           inning: state.inning,
           inningHalf: state.inningHalf,
           mode: state.mode,
-          runsScored: advanced.scored.length,
           playerId: eventFielder?.playerId ?? null,
           opponentPlayerId: eventFielder?.opponentPlayerId ?? null,
         })
@@ -1757,16 +1965,17 @@ export function OperatorConsole({
 
     if (reason === "balk") {
       // Not a ball -- the count is untouched, only the runner moves.
-      const advanced = advanceRunnerWithMethod(base, "balk");
+      advanceRunnerWithMethod(base, "balk");
       setSummaryFlash("Balk — runner advances");
       const fielderP = resolve("P");
+      // See the wild-pitch/passed-ball comment above -- balk never bumps
+      // the score directly either, so no scorer attribution here.
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
         logGameEvent(game.id, {
           eventType: "balk",
           inning: state.inning,
           inningHalf: state.inningHalf,
           mode: state.mode,
-          runsScored: advanced.scored.length,
           playerId: fielderP?.playerId ?? null,
           opponentPlayerId: fielderP?.opponentPlayerId ?? null,
         })
@@ -1780,18 +1989,29 @@ export function OperatorConsole({
       // AdvanceReasonMenu routes here only after FieldingPositionPicker
       // has already resolved one.
       if (!fielder) return;
-      const advanced = advanceRunnerWithMethod(base, "error");
+      advanceRunnerWithMethod(base, "error");
+      // See the wild-pitch/passed-ball comment above -- same reasoning.
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
         logGameEvent(game.id, {
           eventType: "error",
           inning: state.inning,
           inningHalf: state.inningHalf,
           mode: state.mode,
-          runsScored: advanced.scored.length,
           playerId: fielder.playerId,
           opponentPlayerId: fielder.opponentPlayerId,
         })
       );
+      return;
+    }
+
+    // "Sac Bunt" -- a manual correction to a runner's position after a
+    // bunt play, for whenever the operator wants to adjust by hand
+    // instead of (or after) the runnerOutcomeQueue's own per-runner
+    // questions. RBI-eligible like sac_fly if it scores them, same
+    // "batter's own action drove the run in" logic; no separate
+    // game_events row, same as sac_fly/hit/forced_walk_hbp.
+    if (reason === "sac_bunt") {
+      advanceRunnerWithMethod(base, "sac_bunt");
       return;
     }
 
@@ -1863,80 +2083,118 @@ export function OperatorConsole({
     }
   }
 
-  // Addition 1: one runner's outcome on a fly out/line out with the
-  // inning still alive -- popped from sacFlyQueue regardless of which
-  // way it's decided. "Scored" and "advance" both go through the same
-  // applyRunnerAction path every other runner move already uses;
-  // "scored" passes scoreMethod "sac_fly" directly (already a real
-  // ScoreMethod, already RBI-eligible per SCORE_METHOD_AWARDS_RBI -- no
-  // schema change needed, exactly the mechanism CLAUDE.md already
-  // documents for why "Sacrifice Fly" was never its own AtBatResult
-  // button). "out_early" is handleTagUpViolation's own former body,
-  // moved here verbatim (reuses the same out-on-appeal path + the same
-  // tag_up_violation game_events row) rather than duplicated.
-  type SacFlyDecision = "scored" | "advance" | "held" | "out_early";
-  function handleSacFlyDecision(base: Base, decision: SacFlyDecision) {
+  // Sacrifice-rules batch: the single trigger for the per-runner outcome
+  // queue, called right after an at-bat confirms (from both handleConfirm
+  // and handleQuickPick) -- never before, since outcome-based sacrifice
+  // rules need the play's own result/hitType already decided. Fires for
+  // a fly/line/foul out (result "flyout"/"lineout" -- a foul out is
+  // stored as "flyout" too, see CLAUDE.md) or a bunt out at first
+  // (result "groundout" with hitType "bunt"), only when a runner is on
+  // base and outs are below 2 (the out just recorded would otherwise end
+  // the inning before any runner could legally do anything). Queue order
+  // is top base first (third, second, first), per spec.
+  function maybeStartRunnerOutcomeQueue(params: { atBatId: string; result: AtBatResult; hitType: HitType | null; outsBeforePlay: number; runnersBeforePlay: Runners }) {
+    if (params.outsBeforePlay >= 2) return;
+    const isFlyType = params.result === "flyout" || params.result === "lineout";
+    const isBuntOutAtFirst = params.result === "groundout" && params.hitType === "bunt";
+    if (!isFlyType && !isBuntOutAtFirst) return;
+    const order: Base[] = ["third", "second", "first"];
+    const queue = order.filter((b) => params.runnersBeforePlay[b]);
+    if (queue.length === 0) return;
+    setRunnerOutcomeKind(isFlyType ? "fly" : "bunt");
+    setRunnerOutcomeAtBatId(params.atBatId);
+    setRunnerOutcomeAnyScored(false);
+    setRunnerOutcomeAnyMoved(false);
+    setRunnerOutcomeAnyOut(false);
+    setRunnerOutcomeQueue(queue);
+  }
+
+  // One runner's outcome, popped from runnerOutcomeQueue regardless of
+  // which way it's decided. "Scored"/"Advanced" both go through the same
+  // applyRunnerAction path every other runner move already uses --
+  // "scored" passes a ScoreMethod that's already RBI-eligible per
+  // SCORE_METHOD_AWARDS_RBI (sac_fly for a fly/line/foul out; for a bunt,
+  // squeeze_play from third specifically -- same "breaking for home on
+  // the bunt" concept the old standalone squeeze prompt covered, now
+  // folded into this one question -- or sac_bunt from second/first).
+  // "Out" reuses handleTagUpViolation's own former body for the fly case
+  // (tag-up violation) and the plain runner-out path for the bunt case.
+  type RunnerOutcomeDecision = "scored" | "advanced" | "stayed" | "out";
+  function handleRunnerOutcomeDecision(base: Base, decision: RunnerOutcomeDecision) {
     const runner = state.runners[base];
-    setSacFlyQueue((q) => q.filter((b) => b !== base));
-    if (!runner) return;
-    if (decision === "held") return;
-    if (decision === "scored") {
-      applyRunnerAction(base, "scored", "sac_fly");
-      setSummaryFlash(`${runner.name} scores — sacrifice fly`);
-      // Incidental correctness fix (Quick Mode scorekeeper batch):
-      // applyRunnerAction's ad-hoc "scored" branch only ever bumps the
-      // team score (adjustScore) -- it never wrote the RBI onto the
-      // batter's own at_bats row, in EITHER mode, so a sac fly's RBI has
-      // never actually counted toward the batter's season stats. Safe to
-      // credit it directly here (unlike the generic ad-hoc path, which
-      // has no reliable "current batter" -- see its own comment) because
-      // this handler only ever fires immediately after that specific
-      // batter's at-bat just confirmed.
-      if (state.lastConfirmed) {
-        const atBatId = state.lastConfirmed.atBatId;
-        void withOfflineRetry(`sacfly-rbi-${atBatId}`, () => incrementAtBatRbi(game.id, atBatId, 1));
+    const kind = runnerOutcomeKind;
+    const atBatId = runnerOutcomeAtBatId;
+    setRunnerOutcomeQueue((q) => q.filter((b) => b !== base));
+    if (!runner || !kind) return;
+
+    if (decision === "stayed") return;
+
+    if (decision === "out") {
+      setRunnerOutcomeAnyOut(true);
+      applyRunnerAction(base, "out");
+      setSummaryFlash(kind === "fly" ? `${runner.name} — Out, left base early` : `${runner.name} — Out`);
+      if (kind === "fly") {
+        void withOfflineRetry(`tagup-${game.id}-${Date.now()}`, () =>
+          logGameEvent(game.id, { eventType: "tag_up_violation", inning: state.inning, inningHalf: state.inningHalf, mode: state.mode })
+        );
       }
       return;
     }
-    if (decision === "advance") {
-      applyRunnerAction(base, "advance");
-      setSummaryFlash(`${runner.name} advances to ${NEXT_BASE[base]}`);
+
+    if (decision === "scored") {
+      setRunnerOutcomeAnyScored(true);
+      setRunnerOutcomeAnyMoved(true);
+      const method: ScoreMethod = kind === "fly" ? "sac_fly" : base === "third" ? "squeeze_play" : "sac_bunt";
+      applyRunnerAction(base, "scored", method);
+      setSummaryFlash(`${runner.name} scores — ${method === "squeeze_play" ? "squeeze play" : SCORE_METHOD_LABELS[method].toLowerCase()}`);
+      // Incidental correctness fix (Quick Mode scorekeeper batch):
+      // applyRunnerAction's ad-hoc "scored" branch only ever bumps the
+      // team score (adjustScore) -- it never wrote the RBI onto the
+      // batter's own at_bats row, in EITHER mode. Safe to credit it
+      // directly here (unlike the generic ad-hoc path, which has no
+      // reliable "current batter" -- see its own comment) because this
+      // handler only ever fires immediately after that specific batter's
+      // at-bat just confirmed, and atBatId was captured at trigger time.
+      if (atBatId) {
+        void withOfflineRetry(`runout-rbi-${atBatId}-${base}`, () => incrementAtBatRbi(game.id, atBatId, 1));
+      }
       return;
     }
-    applyRunnerAction(base, "out");
-    setSummaryFlash(`${runner.name} — Out, left base early`);
-    void withOfflineRetry(`tagup-${game.id}-${Date.now()}`, () =>
-      logGameEvent(game.id, {
-        eventType: "tag_up_violation",
-        inning: state.inning,
-        inningHalf: state.inningHalf,
-        mode: state.mode,
-      })
-    );
+
+    // advanced
+    setRunnerOutcomeAnyMoved(true);
+    applyRunnerAction(base, "advance");
+    setSummaryFlash(`${runner.name} advances to ${NEXT_BASE[base]}`);
   }
 
-  // Addition 1: resolves the squeeze-play prompt. "Yes" reuses the exact
-  // same applyRunnerAction("scored", ...) path sac-fly's own "Scored"
-  // option uses -- squeeze_play is just another RBI-eligible ScoreMethod
-  // (SCORE_METHOD_AWARDS_RBI) that happens to also auto-log its own
-  // game_events row via SCORE_METHOD_EVENT, both already wired generically
-  // in applyRunnerAction, so no bespoke scoring/logging code was needed
-  // here beyond adding those two type-table entries. "No" leaves the
-  // bunt's own already-confirmed result (groundout/single/error/fc) as
-  // the complete record -- there's nothing left to do.
-  function handleSqueezeDecision(wasSqueeze: boolean) {
-    const runner = state.runners.third;
-    setSqueezePrompt(false);
-    if (!wasSqueeze || !runner) return;
-    applyRunnerAction("third", "scored", "squeeze_play");
-    setSummaryFlash(`${runner.name} scores — squeeze play`);
-    // See the matching comment in handleSacFlyDecision -- same RBI gap,
-    // same reasoning for why crediting it here specifically is safe.
-    if (state.lastConfirmed) {
-      const atBatId = state.lastConfirmed.atBatId;
-      void withOfflineRetry(`squeeze-rbi-${atBatId}`, () => incrementAtBatRbi(game.id, atBatId, 1));
+  // Once the queue fully drains, decide the sacrifice (if any) from the
+  // aggregate outcome -- never from which button was tapped. "fly":
+  // sacrifice iff at least one runner scored (a fly out with nobody
+  // scoring is just a plain out, same at-bat result either way). "bunt":
+  // sacrifice iff at least one runner advanced/scored AND nobody on the
+  // play was put out (a runner thrown out erasing the only base-runner
+  // benefit means this was never a sacrifice, just a regular bunt out --
+  // see at_bats.sacrifice_type's own migration comment). Nothing to flag
+  // when the aggregate says no sacrifice -- the at-bat's own already-
+  // confirmed result (a plain out, or hit_type: "bunt" for a bunt out)
+  // is already the complete, correct record.
+  useEffect(() => {
+    if (runnerOutcomeQueue.length > 0 || !runnerOutcomeKind || !runnerOutcomeAtBatId) return;
+    const kind = runnerOutcomeKind;
+    const atBatId = runnerOutcomeAtBatId;
+    const isSacrifice = kind === "fly" ? runnerOutcomeAnyScored : runnerOutcomeAnyMoved && !runnerOutcomeAnyOut;
+    if (isSacrifice) {
+      void withOfflineRetry(`sactype-${atBatId}`, () => setSacrificeType(game.id, atBatId, kind));
+      setBanner(
+        kind === "fly"
+          ? "Counted as a sacrifice fly: a run scored, so this is not an at-bat."
+          : "Counted as a sacrifice bunt: a runner moved up, so this is not an at-bat."
+      );
     }
-  }
+    setRunnerOutcomeKind(null);
+    setRunnerOutcomeAtBatId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnerOutcomeQueue.length, runnerOutcomeKind, runnerOutcomeAtBatId, runnerOutcomeAnyScored, runnerOutcomeAnyMoved, runnerOutcomeAnyOut]);
 
   // Fix 4: Intentional Walk. Deliberately bypasses ensureDraftAtBat/the
   // pitch popup entirely (per spec) -- the at_bats row is created already
@@ -1979,30 +2237,26 @@ export function OperatorConsole({
   }
 
   // Quick Mode batch: one tap, one already-confirmed at-bat -- no draft,
-  // no pitches. Scorekeeper redesign: the ask-queue this comment used to
-  // say Quick Mode deliberately skipped is now wired in after all --
-  // sacFlyQueue/squeezePrompt are the exact same shared state/UI full
-  // mode's handleConfirm drives (see the trigger conditions below, copied
-  // verbatim from there), so "runner on 3rd + sac fly = run scores" is
-  // handled by one real, reviewable decision instead of a guessed
-  // ScoreMethod. `isSac` no longer forces anything -- SAC FLY/SAC BUNT
-  // are just clearer button labels for the same flyout/bunt-groundout
-  // results a plain Fly Out/Ground Out already produces; the interactive
-  // queue is what actually decides whether anyone scored, for ANY
-  // flyout/lineout, not just ones tapped through the "sac" buttons.
+  // no pitches. Sacrifice-rules batch: nothing here moves runners by
+  // default any more, even for a bunt -- suggestRunnerAdvance's plain
+  // "groundout" case (no movement) now applies uniformly, and the
+  // runnerOutcomeQueue triggered below is what actually decides whether
+  // anyone scored/advanced, for ANY qualifying flyout/lineout/bunt-out,
+  // not just ones tapped through a since-removed "sac" button.
   async function handleQuickPick(
-    pick: { label: string; result: AtBatResult; hitType: HitType | null; isSac: boolean; scorebookNotation?: string },
+    pick: { label: string; result: AtBatResult; hitType: HitType | null; scorebookNotation?: string },
     fieldSpot: { x: number; y: number } | null
   ) {
     if (state.outs >= 3) return;
     setBanner(null);
     const batter = currentBatterRunner();
     const { runners: suggestion, scored } = suggestRunnerAdvance(state.runners, batter, pick.result);
-    const method = resultToScoreMethod(pick.result);
+    const method: ScoreMethod = resultToScoreMethod(pick.result);
     const runsScored = scored.length;
     const rbi = SCORE_METHOD_AWARDS_RBI[method] ? runsScored : 0;
     const outsRecorded = RESULT_IS_OUT[pick.result] ? 1 : 0;
     const runnersBeforeAtBat = state.runners;
+    const isBuntGroundout = pick.hitType === "bunt" && pick.result === "groundout";
 
     try {
       const { atBatId } = await logQuickAtBat({
@@ -2035,18 +2289,9 @@ export function OperatorConsole({
       });
       syncRunners(suggestion);
       setSummaryFlash(`${pick.label}${runsScored > 0 ? ` — ${runsScored} run${runsScored === 1 ? "" : "s"}` : ""}`);
+      setLastQuickPickWasSacBunt(isBuntGroundout);
 
-      // Sac-fly/tag-up decision queue -- identical trigger to full mode's
-      // handleConfirm (any flyout/lineout, runners on base, inning still
-      // alive), not gated on the SAC FLY button specifically, so a plain
-      // Fly Out with a runner on 3rd is asked about too.
-      if ((pick.result === "flyout" || pick.result === "lineout") && state.outs + outsRecorded < 3) {
-        const order: Base[] = ["third", "second", "first"];
-        const queue = order.filter((b) => state.runners[b]);
-        if (queue.length > 0) setSacFlyQueue(queue);
-      }
-      // Squeeze-play prompt -- identical trigger to full mode.
-      if (pick.hitType === "bunt" && state.runners.third) setSqueezePrompt(true);
+      maybeStartRunnerOutcomeQueue({ atBatId, result: pick.result, hitType: pick.hitType, outsBeforePlay: state.outs, runnersBeforePlay: state.runners });
     } catch (err) {
       setBanner(err instanceof Error ? err.message : "Failed to log at-bat -- check connection and try again");
     }
@@ -2079,6 +2324,25 @@ export function OperatorConsole({
     const pick = pendingFieldTapPick;
     setPendingFieldTapPick(null);
     void handleQuickPick(pick, null);
+  }
+
+  // Sacrifice-rules batch: Quick Mode's new standalone "Bunt" button asks
+  // how the play ended first (matching Full Mode's own bunt result step,
+  // see BUNT_RESULT_LABELS) instead of carrying a pre-decided result --
+  // the picked outcome then flows through the exact same startQuickPick
+  // pipeline (field-tap step included) every other ball-in-play result
+  // already uses.
+  function handleBuntOutcome(outcome: "out_at_first" | "safe" | "error" | "fc") {
+    setBuntOutcomePrompt(false);
+    const def: QuickModeButtonDef =
+      outcome === "out_at_first"
+        ? { label: "Bunt — Out at First", result: "groundout", hitType: "bunt" }
+        : outcome === "safe"
+          ? { label: "Bunt — Safe", result: "single", hitType: "bunt" }
+          : outcome === "error"
+            ? { label: "Bunt — Error", result: "error", hitType: "bunt" }
+            : { label: "Bunt — FC", result: "fc", hitType: "bunt" };
+    startQuickPick(def);
   }
 
   // Quick Mode scorekeeper batch: Double Play, entered by picking which
@@ -2137,6 +2401,9 @@ export function OperatorConsole({
     dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", runners: advanced, runsScored: scored.length });
     syncRunners(advanced);
     const fielder = eventType === "passed_ball" ? resolve("C") : resolve("P");
+    // Run-attribution batch: at most one runner ever scores here (only a
+    // runner starting from 3rd can cross home on a one-base advance).
+    const scorer = scored[0];
     void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
       logGameEvent(game.id, {
         eventType,
@@ -2144,6 +2411,7 @@ export function OperatorConsole({
         inningHalf: state.inningHalf,
         mode: state.mode,
         runsScored: scored.length,
+        scorerPlayerId: scorer?.type === "player" ? scorer.id : null,
         playerId: fielder?.playerId ?? null,
         opponentPlayerId: fielder?.opponentPlayerId ?? null,
       })
@@ -2211,8 +2479,22 @@ export function OperatorConsole({
     dispatch({ type: "END_INNING_LOCAL" });
     const nextHalf = state.inningHalf === "top" ? "bottom" : "top";
     const nextInning = state.inningHalf === "bottom" ? state.inning + 1 : state.inning;
-    const weAreHitting = (game.home_away === "home") === (nextHalf === "bottom");
-    dispatch({ type: "SET_MODE", mode: weAreHitting ? "hitting" : "pitching" });
+    const nextMode = correctModeForHalf(nextHalf);
+    dispatch({ type: "SET_MODE", mode: nextMode });
+
+    // Pitcher auto-default: nothing previously defaulted current_pitcher_id
+    // to anyone, so a half-inning logged start to finish without ever
+    // tapping the Pitcher Picker (a small, easy-to-miss "P: Select…" link)
+    // left every one of its at-bats with pitcher_id null -- not a picker
+    // bug (it always correctly wrote whatever was explicitly selected),
+    // just nothing ever selected anything on its own. The lineup's own
+    // position="P" starter is exactly who's actually pitching the instant
+    // a half-inning flips to pitching mode, so default to them here. An
+    // explicit mid-inning change still goes through the Pitcher Picker
+    // completely unchanged, and always overrides this afterward.
+    const defaultPitcher = nextMode === "pitching" ? liveLineup.find((l) => l.status === "starting" && l.position === "P") : null;
+    if (defaultPitcher) dispatch({ type: "SET_PITCHER", playerId: defaultPitcher.player_id });
+
     void withOfflineRetry(`endinning-${game.id}-${Date.now()}`, () =>
       syncGameState(game.id, {
         inning: nextInning,
@@ -2220,7 +2502,8 @@ export function OperatorConsole({
         outs: 0,
         runners: {},
         current_at_bat_id: null,
-        mode: weAreHitting ? "hitting" : "pitching",
+        mode: nextMode,
+        ...(defaultPitcher ? { current_pitcher_id: defaultPitcher.player_id, pitch_count_for_current_pitcher: 0 } : {}),
       })
     );
   }
@@ -2315,8 +2598,8 @@ export function OperatorConsole({
   type RightPanelMode =
     | "dropThird"
     | "wildPitchK"
-    | "sacFly"
-    | "squeeze"
+    | "runnerOutcome"
+    | "buntOutcome"
     | "quickRunnerPrompt"
     | "runnerPicker"
     | "runnerAction"
@@ -2330,10 +2613,10 @@ export function OperatorConsole({
     ? "dropThird"
     : wildPitchKPrompt
     ? "wildPitchK"
-    : sacFlyQueue.length > 0
-    ? "sacFly"
-    : squeezePrompt
-      ? "squeeze"
+    : runnerOutcomeQueue.length > 0
+    ? "runnerOutcome"
+    : buntOutcomePrompt
+      ? "buntOutcome"
       : quickRunnerPrompt
         ? "quickRunnerPrompt"
         : runnerPicker
@@ -2418,21 +2701,35 @@ export function OperatorConsole({
       {/* TOP BAR -- 52px, always visible */}
       <header className="z-10 flex h-[52px] shrink-0 items-center justify-between gap-2 border-b-2 border-accent-primary/40 bg-surface/90 px-3">
         <div className="flex rounded-md border border-border p-1 text-xs">
-          {(["hitting", "pitching"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => dispatch({ type: "SET_MODE", mode: m })}
-              className={`min-h-[36px] rounded px-3 font-heading font-semibold uppercase tracking-wide transition ${
-                state.mode === m
-                  ? m === "hitting"
-                    ? "bg-accent-green text-background"
-                    : "bg-accent-amber text-background"
-                  : "text-foreground/50"
-              }`}
-            >
-              {m}
-            </button>
-          ))}
+          {/* Bug fix (feature/lineup-drafts): which side bats is fully
+              determined by home_away + inning_half, never a free choice
+              -- the wrong mode's button is disabled rather than letting
+              a tap put the game in an invalid state (which is how our
+              own players ended up batting the top half of a home game).
+              The auto-correct effect above already keeps state.mode in
+              sync, so in practice only the correct button is ever
+              enabled; disabled here too as the actual enforcement, not
+              just a visual hint. */}
+          {(["hitting", "pitching"] as const).map((m) => {
+            const allowed = m === correctModeForHalf(state.inningHalf);
+            return (
+              <button
+                key={m}
+                disabled={!allowed}
+                title={!allowed ? `${game.home_away === "home" ? "Home" : "Away"} team bats the ${state.inningHalf} half -- this mode isn't available right now.` : undefined}
+                onClick={() => dispatch({ type: "SET_MODE", mode: m })}
+                className={`min-h-[36px] rounded px-3 font-heading font-semibold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-30 ${
+                  state.mode === m
+                    ? m === "hitting"
+                      ? "bg-accent-green text-background"
+                      : "bg-accent-amber text-background"
+                    : "text-foreground/50"
+                }`}
+              >
+                {m}
+              </button>
+            );
+          })}
         </div>
 
         {/* Addition 2 (two-additions batch): replaces the previous
@@ -2601,6 +2898,7 @@ export function OperatorConsole({
             onDoublePlay={() => setQuickRunnerPrompt("doublePlay")}
             onStolenBase={() => setQuickRunnerPrompt("stolenBase")}
             onIbb={() => setIbbConfirmOpen(true)}
+            onBunt={() => setBuntOutcomePrompt(true)}
             onWildPitch={() => handleQuickAllRunnersEvent("wild_pitch")}
             onPassedBall={() => handleQuickAllRunnersEvent("passed_ball")}
             onBalk={() => handleQuickAllRunnersEvent("balk")}
@@ -2919,33 +3217,17 @@ export function OperatorConsole({
               </div>
             )}
 
-            {rightPanelMode === "sacFly" && sacFlyQueue[0] && state.runners[sacFlyQueue[0]] && (
-              <SacFlyPanel
-                base={sacFlyQueue[0]}
-                runner={state.runners[sacFlyQueue[0]]!}
-                onDecide={(decision) => handleSacFlyDecision(sacFlyQueue[0], decision)}
+            {rightPanelMode === "runnerOutcome" && runnerOutcomeQueue[0] && state.runners[runnerOutcomeQueue[0]] && runnerOutcomeKind && (
+              <RunnerOutcomePanel
+                base={runnerOutcomeQueue[0]}
+                runner={state.runners[runnerOutcomeQueue[0]]!}
+                kind={runnerOutcomeKind}
+                onDecide={(decision) => handleRunnerOutcomeDecision(runnerOutcomeQueue[0], decision)}
               />
             )}
 
-            {rightPanelMode === "squeeze" && state.runners.third && (
-              <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3 text-center">
-                <p className="text-sm font-semibold text-white">Was this a squeeze play?</p>
-                <p className="mt-1 text-xs text-accent-amber">{state.runners.third.name} breaks for home on the bunt</p>
-                <div className="mt-2 flex gap-2">
-                  <button
-                    onClick={() => handleSqueezeDecision(true)}
-                    className="min-h-[44px] flex-1 rounded-md border border-accent-green/60 text-sm font-medium text-white hover:bg-accent-green/20"
-                  >
-                    Yes
-                  </button>
-                  <button
-                    onClick={() => handleSqueezeDecision(false)}
-                    className="min-h-[44px] flex-1 rounded-md border border-border text-sm font-medium text-white hover:border-accent-primary"
-                  >
-                    No
-                  </button>
-                </div>
-              </div>
+            {rightPanelMode === "buntOutcome" && (
+              <BuntOutcomePrompt onDecide={handleBuntOutcome} onCancel={() => setBuntOutcomePrompt(false)} />
             )}
 
             {rightPanelMode === "quickRunnerPrompt" && quickRunnerPrompt && (
@@ -3036,6 +3318,7 @@ export function OperatorConsole({
               <AdvanceReasonMenu
                 base={advanceReasonPrompt.base}
                 runner={advanceReasonPrompt.runner}
+                showSacBunt={lastQuickPickWasSacBunt}
                 onSelect={(reason) => {
                   if (reason === "error") {
                     setAdvanceErrorFielding(advanceReasonPrompt.base);
@@ -3146,13 +3429,27 @@ export function OperatorConsole({
                             // Infield: "remove HR from result options" -- an
                             // infield hit physically can't clear the wall.
                             .filter((r) => !(fieldZone === "infield" && r === "hr"))
+                            // Bug fix (feature/lineup-drafts): Fielder's
+                            // Choice needs a runner on base -- same rule
+                            // Quick Mode's own FC button now enforces (see
+                            // quick-mode-grid.tsx). Full Mode has no
+                            // separate Sac Fly/Sac Bunt buttons to fix here
+                            // -- those are Quick Mode-only labels for a
+                            // plain Fly Out/bunted Ground Out, which Full
+                            // Mode already represents as such.
+                            .filter((r) => !(r === "fc" && !anyRunnerOnBase()))
                             .map((r) => (
                               <button
                                 key={r}
                                 onClick={() => pickResult(r)}
                                 className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-foreground/70 transition hover:border-accent-gold hover:text-white"
                               >
-                                {RESULT_LABELS[r]}
+                                {/* Sacrifice-rules batch: the same four
+                                    underlying results (groundout/single/
+                                    error/fc) are relabeled in "how it
+                                    ended" terms for a bunt -- see
+                                    BUNT_RESULT_LABELS. */}
+                                {state.pendingHitType === "bunt" ? BUNT_RESULT_LABELS[r] ?? RESULT_LABELS[r] : RESULT_LABELS[r]}
                               </button>
                             ))}
                     </div>
@@ -3554,7 +3851,9 @@ export function OperatorConsole({
       {ibbConfirmOpen && (
         <ConfirmDialog
           title="Intentional Walk"
-          message={`Intentional walk — ${currentBatterRunner().name} awarded 1st base?`}
+          message={`Intentional walk — ${
+            state.mode === "hitting" ? battingPlayerInfo?.name ?? "Batter" : state.opponentBatterName || "the batter"
+          } awarded 1st base?`}
           confirmLabel="Confirm"
           onConfirm={() => {
             setIbbConfirmOpen(false);
@@ -3717,6 +4016,7 @@ function QuickModeLeftPanel({
   onDoublePlay,
   onStolenBase,
   onIbb,
+  onBunt,
   onWildPitch,
   onPassedBall,
   onBalk,
@@ -3735,6 +4035,7 @@ function QuickModeLeftPanel({
   onDoublePlay: () => void;
   onStolenBase: () => void;
   onIbb: () => void;
+  onBunt: () => void;
   onWildPitch: () => void;
   onPassedBall: () => void;
   onBalk: () => void;
@@ -3803,9 +4104,15 @@ function QuickModeLeftPanel({
             <dd>Hit by pitch</dd>
             <dt className="font-semibold text-white">FC</dt>
             <dd>Fielder&apos;s choice</dd>
-            <dt className="font-semibold text-white">SAC</dt>
-            <dd>Sacrifice</dd>
+            <dt className="font-semibold text-white">SF</dt>
+            <dd>Sacrifice fly — a run scored on a fly/line/foul out</dd>
+            <dt className="font-semibold text-white">SH</dt>
+            <dd>Sacrifice bunt — a runner moved up on a bunt out, nobody out</dd>
           </dl>
+          <p className="mt-1.5 text-foreground/50">
+            Fly Out, Line Out, Foul Out, and Bunt ask what happened to any runner on base (outs below 2) and mark SF/SH
+            on the scorebook automatically -- never a button you tap yourself.
+          </p>
         </div>
       )}
 
@@ -3867,20 +4174,17 @@ function QuickModeLeftPanel({
             onPick={onPick}
             onDoublePlay={onDoublePlay}
             onIbb={onIbb}
+            onBunt={onBunt}
             disabled={state.outs >= 3}
             dpDisabled={state.outs > 1 || !anyRunnerOnBase}
+            runners={state.runners}
+            outs={state.outs}
           />
           <p className="mb-1 mt-3 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">More</p>
           <div className="flex flex-wrap gap-3">
             <QuickButton
               label="Foul Out"
-              onClick={() => onPick({ label: "Foul Out", result: "flyout", hitType: null, isSac: false, scorebookNotation: "Foul Out" })}
-              disabled={state.outs >= 3}
-              className="flex-1"
-            />
-            <QuickButton
-              label="Sac Bunt"
-              onClick={() => onPick({ label: "Sac Bunt", result: "groundout", hitType: "bunt", isSac: true })}
+              onClick={() => onPick({ label: "Foul Out", result: "flyout", hitType: null, scorebookNotation: "Foul Out" })}
               disabled={state.outs >= 3}
               className="flex-1"
             />
@@ -3893,7 +4197,7 @@ function QuickModeLeftPanel({
 
         {/* Desktop/tablet: unchanged from before this batch. */}
         <div className="hidden sm:block">
-          <QuickModeGrid onPick={onPick} disabled={state.outs >= 3} />
+          <QuickModeGrid onPick={onPick} onBunt={onBunt} disabled={state.outs >= 3} runners={state.runners} outs={state.outs} />
 
           {/* Double Play needs a follow-up "which runner" pick (see
               quickRunnerPrompt in the shared right panel), so it isn't a
@@ -4373,53 +4677,106 @@ function RunnerQuickActionMenu({
   );
 }
 
-// Addition 1 (two-additions batch): one runner at a time from
-// sacFlyQueue, top base first. "Advanced to [next base]" is omitted for
-// a runner on third -- there's no base beyond third to advance to
-// without scoring, so only Scored/Held/Out-left-early make sense there.
-function SacFlyPanel({
+// Sacrifice-rules batch: one runner at a time from runnerOutcomeQueue,
+// top base first -- replaces SacFlyPanel (fly/line/foul outs only) and
+// the standalone squeeze-play yes/no prompt (bunts only, third base
+// only) with the one shared "Scored, Advanced, Stayed, Out" question the
+// spec asks for, labeled per kind. "Advanced" is omitted for a runner on
+// third -- there's no base beyond third to advance to without scoring.
+function RunnerOutcomePanel({
   base,
   runner,
+  kind,
   onDecide,
 }: {
   base: Base;
   runner: RunnerState;
-  onDecide: (decision: "scored" | "advance" | "held" | "out_early") => void;
+  kind: "fly" | "bunt";
+  onDecide: (decision: "scored" | "advanced" | "stayed" | "out") => void;
 }) {
   const nextBase = NEXT_BASE[base];
+  const prompt = kind === "fly" ? "was on {base} when the ball was caught -- what happened?" : "was on {base} on the bunt -- what happened?";
   return (
     <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
       <p className="text-xs text-accent-amber">
-        {runner.name} was on {base} when the ball was caught -- did they advance?
+        {runner.name} {prompt.replace("{base}", base)}
       </p>
       <div className="mt-2 flex flex-col gap-1.5">
         <button
           onClick={() => onDecide("scored")}
           className="min-h-[44px] rounded-md border border-accent-green/60 px-3 text-left text-sm font-medium text-white hover:bg-accent-green/20"
         >
-          Scored — RBI (sacrifice fly)
+          Scored — RBI ({kind === "fly" ? "sacrifice fly" : base === "third" ? "squeeze play" : "sacrifice bunt"})
         </button>
         {nextBase && (
           <button
-            onClick={() => onDecide("advance")}
+            onClick={() => onDecide("advanced")}
             className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
           >
             Advanced to {nextBase}
           </button>
         )}
         <button
-          onClick={() => onDecide("held")}
+          onClick={() => onDecide("stayed")}
           className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
         >
-          Held at {base}
+          Stayed at {base}
         </button>
         <button
-          onClick={() => onDecide("out_early")}
+          onClick={() => onDecide("out")}
           className="min-h-[44px] rounded-md border border-accent-red/60 px-3 text-left text-sm font-medium text-white hover:bg-accent-red/20"
         >
-          Out — left early (tag-up violation)
+          Out{kind === "fly" ? " — left early (tag-up violation)" : ""}
         </button>
       </div>
+    </div>
+  );
+}
+
+// Sacrifice-rules batch: the new standalone Quick Mode "Bunt" button's
+// first question -- how did the play end. "Out at First" is the only
+// outcome that can go on to become a sacrifice bunt (via
+// runnerOutcomeQueue); the other three always record normally with
+// hitType "bunt" and are never sacrifices, per spec.
+function BuntOutcomePrompt({
+  onDecide,
+  onCancel,
+}: {
+  onDecide: (outcome: "out_at_first" | "safe" | "error" | "fc") => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
+      <p className="text-sm font-semibold text-white">Bunt — how did it end?</p>
+      <div className="mt-2 flex flex-col gap-1.5">
+        <button
+          onClick={() => onDecide("out_at_first")}
+          className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
+        >
+          Out at First
+        </button>
+        <button
+          onClick={() => onDecide("safe")}
+          className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
+        >
+          Safe (Bunt Hit)
+        </button>
+        <button
+          onClick={() => onDecide("error")}
+          className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
+        >
+          Error
+        </button>
+        <button
+          onClick={() => onDecide("fc")}
+          className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
+        >
+          Fielder&apos;s Choice
+        </button>
+      </div>
+      <button onClick={onCancel} className="mt-3 text-xs text-foreground/40 hover:text-white">
+        Cancel
+      </button>
     </div>
   );
 }
@@ -4509,7 +4866,15 @@ function HitRunnerConfirmPanel({
   );
 }
 
+// Bug fix (feature/lineup-drafts): "Sac Bunt" was missing entirely --
+// the only one of these 7 that actually described what happened when a
+// runner advanced off the Sac Bunt button was "Passed on Hit" (the
+// generic catch-all), which is why it looked like "the only choice."
+// Listed first (not appended last) so it's the most visible option
+// right when it's actually relevant -- see showSacBunt below for when
+// that is.
 const ADVANCE_REASONS: { value: AdvanceReason; label: string }[] = [
+  { value: "sac_bunt", label: "Sac Bunt" },
   { value: "stolen_base", label: "Stolen Base" },
   { value: "wild_pitch", label: "Wild Pitch" },
   { value: "passed_ball", label: "Passed Ball" },
@@ -4522,14 +4887,24 @@ const ADVANCE_REASONS: { value: AdvanceReason; label: string }[] = [
 function AdvanceReasonMenu({
   base,
   runner,
+  showSacBunt,
   onSelect,
   onClose,
 }: {
   base: Base;
   runner: RunnerState;
+  // Bug fix (feature/lineup-drafts): "the right reasons for the play" --
+  // Sac Bunt only makes sense as a reason immediately after an actual
+  // Sac Bunt was just logged (lastQuickPickWasSacBunt in
+  // operator-console.tsx), not permanently alongside the other 6
+  // context-free reasons. The other 6 keep their existing always-shown
+  // behavior -- narrowing those too would be a much bigger change than
+  // this fix asked for.
+  showSacBunt: boolean;
   onSelect: (reason: AdvanceReason) => void;
   onClose: () => void;
 }) {
+  const reasons = showSacBunt ? ADVANCE_REASONS : ADVANCE_REASONS.filter((r) => r.value !== "sac_bunt");
   return (
     <div className="glossy w-full min-w-[200px] max-w-xs rounded-md border border-accent-primary/40 bg-background p-3">
       <p className="mb-2 text-xs text-foreground/50">
@@ -4537,7 +4912,7 @@ function AdvanceReasonMenu({
         {runner.name} on {base} advances — why?
       </p>
       <div className="grid grid-cols-2 gap-2">
-        {ADVANCE_REASONS.map((r) => (
+        {reasons.map((r) => (
           <button
             key={r.value}
             onClick={() => onSelect(r.value)}

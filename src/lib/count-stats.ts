@@ -1,4 +1,4 @@
-import type { AtBatResult, PitchOutcome, PitchType } from "@/lib/supabase/types";
+import type { AtBatResult, PitchOutcome, PitchType, SacrificeType } from "@/lib/supabase/types";
 import { HIT_RESULTS } from "@/lib/heat-map";
 
 export interface CountPitch {
@@ -88,6 +88,12 @@ const PRESSURE_NOT_AB_RESULTS = new Set<AtBatResult>(["walk", "intentional_walk"
 export interface PressureAtBat {
   result: AtBatResult;
   finalCount: CountState | null;
+  // Sacrifice-rules batch: this module re-derives its own AB count
+  // (independent of computeBattingLines) and needs the same exclusion --
+  // a sacrifice fly/bunt's result (flyout/lineout/groundout) isn't in
+  // PRESSURE_NOT_AB_RESULTS otherwise, so without this it would wrongly
+  // count as an AB here.
+  sacrificeType: SacrificeType | null;
 }
 
 export interface PressureSplits {
@@ -110,7 +116,7 @@ export function computePressureSplits(atBats: PressureAtBat[]): PressureSplits {
   let fullCountTotal = 0;
 
   for (const ab of atBats) {
-    const isAb = !PRESSURE_NOT_AB_RESULTS.has(ab.result);
+    const isAb = !PRESSURE_NOT_AB_RESULTS.has(ab.result) && !ab.sacrificeType;
     if (isAb) {
       seasonAb += 1;
       if (HIT_RESULTS.has(ab.result)) seasonH += 1;

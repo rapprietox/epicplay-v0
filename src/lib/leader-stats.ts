@@ -57,8 +57,13 @@ const BATTING_SPECS: Spec<BattingLine>[] = [
   { label: "Batting Average", get: (l) => l.avg, qualifies: (l) => l.ab > 0, format: formatAvg, rateQualification: "pa", metricFor: (l) => l.pa },
   { label: "Home Runs", get: (l) => l.hr, qualifies: (l) => l.ab > 0, format: (v) => String(v) },
   { label: "RBI", get: (l) => l.rbi, qualifies: () => true, format: (v) => String(v) },
-  { label: "OPS", get: (l) => l.ops, qualifies: (l) => l.ab + l.bb + l.hbp > 0, format: (v) => v.toFixed(3), rateQualification: "pa", metricFor: (l) => l.pa },
-  { label: "OBP", get: (l) => l.obp, qualifies: (l) => l.ab + l.bb + l.hbp > 0, format: (v) => formatAvg(v), rateQualification: "pa", metricFor: (l) => l.pa },
+  // Sacrifice-rules batch: was `l.ab + l.bb + l.hbp > 0`, a re-derivation
+  // that silently excluded sacrifices -- a player whose only PA was a
+  // sacrifice fly/bunt would fail OPS/OBP qualification despite having a
+  // real plate appearance. `l.pa` is now the correct, single source of
+  // truth for this (see computeBattingLines in src/lib/stats.ts).
+  { label: "OPS", get: (l) => l.ops, qualifies: (l) => l.pa > 0, format: (v) => v.toFixed(3), rateQualification: "pa", metricFor: (l) => l.pa },
+  { label: "OBP", get: (l) => l.obp, qualifies: (l) => l.pa > 0, format: (v) => formatAvg(v), rateQualification: "pa", metricFor: (l) => l.pa },
   { label: "SLG", get: (l) => l.slg, qualifies: (l) => l.ab > 0, format: (v) => formatAvg(v), rateQualification: "pa", metricFor: (l) => l.pa },
   { label: "Hits", get: (l) => l.h, qualifies: (l) => l.ab > 0, format: (v) => String(v) },
   { label: "Doubles", get: (l) => l.doubles, qualifies: (l) => l.ab > 0, format: (v) => String(v) },

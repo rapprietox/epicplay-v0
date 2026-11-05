@@ -4,12 +4,12 @@ import type { Database } from "@/lib/supabase/types";
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type Lineup = Database["public"]["Tables"]["lineup"]["Row"];
 type Substitution = Pick<Database["public"]["Tables"]["substitutions"]["Row"], "game_id" | "player_in_id" | "player_out_id">;
-type Game = Pick<Database["public"]["Tables"]["games"]["Row"], "id" | "game_date">;
+type Game = Pick<Database["public"]["Tables"]["games"]["Row"], "id" | "game_date" | "status" | "opponent_name">;
 type Player = Pick<Database["public"]["Tables"]["players"]["Row"], "id" | "name" | "jersey_number">;
 
 export type Rating = "green" | "amber" | "red" | "none";
 
-interface PlayerPerformanceStat {
+export interface PlayerPerformanceStat {
   playerId: string;
   playerName: string;
   playerJersey: number | null;
@@ -79,24 +79,66 @@ export function rateRisp(value: number | null, rispAb: number): Rating {
   return value >= 0.3 ? "green" : value >= 0.2 ? "amber" : "red";
 }
 
-// Feature 1: picks the most recent game that has a starting lineup on
-// record to define "slot -> player" -- a season's worth of games can
-// easily have used different batting orders (confirmed true for this
-// team's own Game 1 vs Game 2), so there's no single season-wide
-// "slot 3 player" otherwise. This is a judgment call, not something the
-// request specified -- flagged here since it determines whose stats
-// show in every row.
-export function findCurrentLineup(games: Game[], lineupRows: Lineup[]): { gameId: string; rows: Lineup[] } | null {
+export interface LineupGameOption {
+  id: string;
+  opponentName: string;
+  gameDate: string;
+  status: Game["status"];
+}
+
+// Lineup-analysis-fix batch: every game that actually has a slotted
+// starting lineup on record, for the game selector in
+// lineup-analysis-section.tsx -- a game still in setup with no lineup
+// entered yet has nothing for the grid to show, so it's never offered
+// as an option at all (not merely de-prioritized). Includes
+// not-yet-completed/test games (e.g. a lineup entered while trying out
+// the lineup builder) -- those are only ever shown if the coach
+// explicitly picks them, never by default; see findCurrentLineup below.
+export function listLineupGameOptions(games: Game[], lineupRows: Lineup[]): LineupGameOption[] {
+  const slotted = lineupRows.filter((r) => r.batting_order !== null);
+  const gameIdsWithLineup = new Set(slotted.map((r) => r.game_id));
+  return games
+    .filter((g) => gameIdsWithLineup.has(g.id))
+    .sort((a, b) => b.game_date.localeCompare(a.game_date))
+    .map((g) => ({ id: g.id, opponentName: g.opponent_name, gameDate: g.game_date, status: g.status }));
+}
+
+// Feature 1: picks the most recent COMPLETED game that has a starting
+// lineup on record to define "slot -> player" -- a season's worth of
+// games can easily have used different batting orders (confirmed true
+// for this team's own Game 1 vs Game 2), so there's no single
+// season-wide "slot 3 player" otherwise. This is a judgment call, not
+// something the original request specified -- flagged here since it
+// determines whose stats show in every row.
+//
+// Lineup-analysis-fix batch: restricted to status === 'completed' by
+// default -- a game still in `setup` (including a one-off test game
+// entered while trying out the lineup builder) has no real at-bats
+// behind it and was winning this pick purely because its game_date
+// happened to be later than the real season's last completed game.
+// Pass `selectedGameId` (from the new selector) to look at any specific
+// game instead, completed or not -- the status filter only applies to
+// the automatic default, never to an explicit choice.
+export function findCurrentLineup(games: Game[], lineupRows: Lineup[], selectedGameId?: string | null): { gameId: string; rows: Lineup[] } | null {
   // batting_order is nullable (a reserve/absent lineup row has none) --
   // only rows with a real slot number belong in this grid.
   const slotted = lineupRows.filter((r): r is Lineup & { batting_order: number } => r.batting_order !== null);
   const gameIdsWithLineup = new Set(slotted.map((r) => r.game_id));
   const candidates = games.filter((g) => gameIdsWithLineup.has(g.id));
   if (candidates.length === 0) return null;
-  const mostRecent = [...candidates].sort((a, b) => b.game_date.localeCompare(a.game_date))[0];
+
+  let target: Game | undefined;
+  if (selectedGameId) {
+    target = candidates.find((g) => g.id === selectedGameId);
+  } else {
+    const completed = candidates.filter((g) => g.status === "completed");
+    target = [...completed].sort((a, b) => b.game_date.localeCompare(a.game_date))[0];
+  }
+  if (!target) return null;
+
   return {
-    gameId: mostRecent.id,
-    rows: slotted.filter((r) => r.game_id === mostRecent.id).sort((a, b) => a.batting_order - b.batting_order),
+    gameId: target.id,
+    rows: slotted.filter((r) => r.game_id === target!.id).sort((a, b) => a.batting_order - b.batting_order),
   };
 }
 
@@ -185,6 +227,21 @@ export function findSubstitutesAndReserves(
       subbedIntoSlot,
     };
   });
+}
+
+// Lineup-analysis-fix batch: every roster player, unconditionally --
+// neither the starting grid (batting_order === null skipped) nor
+// Substitutes & Reserves (derived purely from who has at-bats in the
+// one selected game) is guaranteed to include everyone. A true reserve
+// with zero at-bats in whichever game is currently selected falls
+// through both, so this table exists purely to make sure nobody on the
+// roster is ever simply invisible. Same season-wide atBats convention
+// the other two tables already use (not scoped to the selected game).
+export function computeAllPlayersTable(players: Player[], atBats: AtBat[]): PlayerPerformanceStat[] {
+  const battingLines = computeBattingLines(atBats, []);
+  return [...players]
+    .sort((a, b) => (a.jersey_number ?? 999) - (b.jersey_number ?? 999))
+    .map((p) => performanceStatFor(p, atBats, battingLines));
 }
 
 // "2 or more consecutive slots are red in OBP" -- returns the set of

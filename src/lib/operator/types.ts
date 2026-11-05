@@ -38,13 +38,22 @@ export type ScoreMethod =
   // (it's the same "batter's own action drove the run in" logic) but
   // logs its own game_events row instead of being silently absorbed
   // into the at-bat's own result the way sac_fly/hit/forced_walk_hbp do.
-  | "squeeze_play";
+  | "squeeze_play"
+  // Sacrifice-rules batch: a runner advancing or scoring from second/
+  // first on a bunt out at first (runnerOutcomeQueue in operator-
+  // console.tsx), or by manual adjustment via the diamond's own Advance
+  // menu -- RBI-eligible like sac_fly for the same reason (the batter's
+  // own action drove the run in), but like hit/sac_fly/forced_walk_hbp
+  // it's explained entirely by the batter's own at-bat result (a bunted
+  // groundout), so it logs no separate game_events row either.
+  | "sac_bunt";
 
 export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
   hit: true,
   sac_fly: true,
   forced_walk_hbp: true,
   squeeze_play: true,
+  sac_bunt: true,
   wild_pitch: false,
   passed_ball: false,
   balk: false,
@@ -64,6 +73,7 @@ export const SCORE_METHOD_LABELS: Record<ScoreMethod, string> = {
   stolen_base: "Stolen base",
   obstruction: "Obstruction",
   squeeze_play: "Squeeze play",
+  sac_bunt: "Sacrifice bunt",
 };
 
 // wild_pitch/passed_ball/balk/error/squeeze_play map onto the existing
@@ -349,6 +359,21 @@ export const HIT_TYPE_RESULT_OPTIONS: Record<HitType, AtBatResult[]> = {
   popup: ["flyout", "single", "error", "fc"],
   bunt: ["groundout", "single", "error", "fc"],
   hr: ["hr"],
+};
+
+// Sacrifice-rules batch: relabels the same four bunt result buttons in
+// "how it ended" terms instead of the generic groundout/single/error/fc
+// wording -- the underlying AtBatResult values are unchanged (still just
+// a groundout/single/error/fc, per the HIT_TYPE_RESULT_OPTIONS.bunt list
+// above), only the button text changes when state.pendingHitType ===
+// "bunt". "groundout" (out at first) is also the one case that can turn
+// into a sacrifice bunt -- see maybeStartRunnerOutcomeQueue in
+// operator-console.tsx.
+export const BUNT_RESULT_LABELS: Partial<Record<AtBatResult, string>> = {
+  groundout: "Out at First",
+  single: "Safe (Bunt Hit)",
+  error: "Error",
+  fc: "Fielder's Choice",
 };
 
 export const PITCH_TYPE_LABELS: Record<PitchType, string> = {

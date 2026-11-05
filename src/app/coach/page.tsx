@@ -14,7 +14,6 @@ import { TeamAnalytics } from "./team-analytics";
 import { OpponentScoutingSection } from "./opponent-scouting-section";
 import { LineupAnalysisSection } from "./lineup-analysis-section";
 import { KairosWidget } from "./kairos-widget";
-import { findCurrentLineup } from "@/lib/lineup-analysis";
 import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import type { AtBatResult } from "@/lib/supabase/types";
 import { isViewSwitchEligible } from "@/lib/view-switch";
@@ -151,10 +150,13 @@ export default async function CoachPage({ searchParams }: { searchParams: { view
     });
 
   // Feature 1 (Lineup Analysis): a season can easily span more than one
-  // batting order (confirmed true for this team's own Game 1 vs Game 2),
-  // so "slot -> player" is defined by whichever game's starting lineup
-  // is most recent, not merged across every lineup the team has ever used.
-  const currentLineup = findCurrentLineup(allGames, lineupRows ?? []);
+  // batting order (confirmed true for this team's own Game 1 vs Game 2).
+  // Lineup-analysis-fix batch: which game's lineup to show is now an
+  // interactive choice (the game selector), so the raw, unfiltered
+  // lineupRows across every game go straight to the client component --
+  // it calls findCurrentLineup/listLineupGameOptions itself based on its
+  // own selector state, rather than this page pre-resolving one fixed
+  // game server-side.
   const hittingAtBatsForLineup = confirmedAtBats.filter((ab) => ab.mode === "hitting");
 
   return (
@@ -235,8 +237,7 @@ export default async function CoachPage({ searchParams }: { searchParams: { view
         />
 
         <LineupAnalysisSection
-          lineupRows={currentLineup?.rows ?? []}
-          currentGameId={currentLineup?.gameId ?? null}
+          allLineupRows={lineupRows ?? []}
           players={players ?? []}
           atBats={hittingAtBatsForLineup}
           substitutions={substitutions ?? []}

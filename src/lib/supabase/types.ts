@@ -72,8 +72,18 @@ export type GameEventType =
   // Feature 2 (lineup-status batch): a chain substitution's single
   // summary event -- see lib/substitution-chain.ts's own comment for why
   // one rich event beats one row per movement.
-  | "substitution";
+  | "substitution"
+  // Run-attribution batch: a generic ad-hoc "Scored" tap with no more
+  // specific cause already covered above (wild_pitch/passed_ball/balk/
+  // squeeze_play/stolen_base all keep using their own type).
+  | "runner_scored";
 export type OutType = "force" | "tag";
+// Sacrifice-rules batch: set only when the outcome-based rules in
+// operator-console.tsx actually produced a sacrifice -- a flyout/lineout
+// that scored a runner ("fly"), or a bunt-out-at-first that moved a
+// runner up with nobody put out ("bunt"). Never set from which button
+// the operator tapped; always derived from what happened to the runners.
+export type SacrificeType = "fly" | "bunt";
 export type FieldingPosition = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
 export type BattingHand = "L" | "R" | "S";
 export type ThrowingHand = "L" | "R";
@@ -89,6 +99,15 @@ export type GameAnalysisType = "post_game_loss" | "post_game_win" | "pre_game";
 // substitution -- late_arrival just keeps that history visible rather
 // than collapsing back into a plain "reserve").
 export type LineupStatus = "starting" | "reserve" | "absent" | "late_arrival";
+// feature/lineup-drafts: a draft's `slots` jsonb column holds exactly
+// this shape -- the same one LineupSlot (coach/games/[id]/setup/
+// actions.ts) already uses for saveLineupAndUmpire's payload.
+export interface LineupDraftSlot {
+  batting_order: number | null;
+  player_id: string;
+  position: string | null;
+  status: LineupStatus;
+}
 // "positions" (calibrate-field-tabs batch) shares the same
 // field_calibration table/unique(team_id, field_type) constraint as
 // "2d"/"3d" -- a third row per team, no schema change needed since the
@@ -340,6 +359,9 @@ export interface Database {
           // render and never changed after that -- see the migration.
           logging_mode: LoggingMode;
           created_at: string;
+          // feature/lineup-drafts: set once a coach locks a draft into
+          // this row's `lineup` rows -- see lockLineup (draft-actions.ts).
+          lineup_confirmed_at: string | null;
         };
         Insert: {
           id?: string;
@@ -365,6 +387,7 @@ export interface Database {
           time_limit_minutes?: number | null;
           new_inning_threshold_minutes?: number | null;
           created_at?: string;
+          lineup_confirmed_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["games"]["Insert"]>;
         Relationships: [];
@@ -432,6 +455,11 @@ export interface Database {
           // tracked for this row," never as "zero."
           outs_before: number | null;
           risp_before: boolean | null;
+          // Sacrifice-rules batch: null unless the outcome-based rules
+          // above actually produced a sacrifice. Drives computeBattingLines
+          // (PA but not AB, and only "fly" also widens OBP's denominator)
+          // and the scorebook's SF/SH notation.
+          sacrifice_type: SacrificeType | null;
           confirmed_at: string | null;
           created_at: string;
         };
@@ -459,6 +487,7 @@ export interface Database {
           opponent_pitcher_id?: string | null;
           outs_before?: number | null;
           risp_before?: boolean | null;
+          sacrifice_type?: SacrificeType | null;
           confirmed_at?: string | null;
           created_at?: string;
         };
@@ -668,6 +697,13 @@ export interface Database {
           note: string | null;
           player_id: string | null;
           opponent_player_id: string | null;
+          // Run-attribution batch: who (our own roster only) actually
+          // crossed the plate on this event, and how many runs it
+          // credited -- see the migration's own comment for why
+          // scorer_player_id has no opponent-side equivalent and why
+          // runs_scored defaults to 0, not 1.
+          scorer_player_id: string | null;
+          runs_scored: number;
           created_at: string;
         };
         Insert: {
@@ -679,6 +715,8 @@ export interface Database {
           note?: string | null;
           player_id?: string | null;
           opponent_player_id?: string | null;
+          scorer_player_id?: string | null;
+          runs_scored?: number;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["game_events"]["Insert"]>;
@@ -753,6 +791,40 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["game_analyses"]["Insert"]>;
+        Relationships: [];
+      };
+      // feature/lineup-drafts: named lineup plans, locked into `lineup`
+      // via lockLineup (draft-actions.ts) rather than written to it
+      // directly. `slots` mirrors LineupSlot (actions.ts) field-for-
+      // field; `analysis` mirrors FullLineupAnalysis
+      // (full-lineup-analysis-actions.ts) but stays loosely typed here
+      // (this file describes DB row shapes, not that action's own
+      // return type) -- cast at the call site, same as
+      // `calibration_points` already is elsewhere in this file.
+      lineup_drafts: {
+        Row: {
+          id: string;
+          game_id: string;
+          team_id: string;
+          name: string;
+          slots: LineupDraftSlot[];
+          analysis: Record<string, unknown> | null;
+          reliability: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          team_id: string;
+          name: string;
+          slots?: LineupDraftSlot[];
+          analysis?: Record<string, unknown> | null;
+          reliability?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["lineup_drafts"]["Insert"]>;
         Relationships: [];
       };
     };

@@ -4,8 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   computeLineupMatrix,
+  computeAllPlayersTable,
   detectLineupHoles,
+  findCurrentLineup,
   findSubstitutesAndReserves,
+  listLineupGameOptions,
   rateAvg,
   rateObp,
   rateSlg,
@@ -13,10 +16,12 @@ import {
   rateBbPct,
   rateRisp,
   RATING_BG,
+  type PlayerPerformanceStat,
   type Rating,
   type SubstituteStat,
 } from "@/lib/lineup-analysis";
 import { formatAvg } from "@/lib/stats";
+import { formatGameDate } from "@/lib/dates";
 import {
   DAY_TYPE_LABELS,
   TIME_OF_DAY_LABELS,
@@ -46,19 +51,18 @@ type Substitution = Pick<Database["public"]["Tables"]["substitutions"]["Row"], "
 // never reaches /coach at all), flagged rather than silently building a
 // redundant role check or changing middleware to let operators in.
 export function LineupAnalysisSection({
-  lineupRows,
-  currentGameId,
+  allLineupRows,
   players,
   atBats,
   substitutions,
   games,
   teamName,
 }: {
-  lineupRows: Lineup[];
-  // Update 3: the one game the starting lineup above is drawn from --
-  // substitutes/reserves are "who else batted in THIS game", not the
-  // whole season's bench.
-  currentGameId: string | null;
+  // Lineup-analysis-fix batch: every lineup row across every game, not
+  // pre-resolved to one game server-side -- the game selector below
+  // needs the full set to choose from, and findCurrentLineup/
+  // listLineupGameOptions are now called here, not in page.tsx.
+  allLineupRows: Lineup[];
   players: Player[];
   atBats: AtBat[];
   substitutions: Substitution[];
@@ -68,6 +72,17 @@ export function LineupAnalysisSection({
   const [gameType, setGameType] = useState<GameFacetFilter["gameType"]>("all");
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay | "all">("all");
   const [dayType, setDayType] = useState<DayType | "all">("all");
+  // null = default (latest completed game only); set by the game
+  // selector to look at any specific game, completed or not.
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+
+  const gameOptions = useMemo(() => listLineupGameOptions(games, allLineupRows), [games, allLineupRows]);
+  const currentLineup = useMemo(
+    () => findCurrentLineup(games, allLineupRows, selectedGameId),
+    [games, allLineupRows, selectedGameId]
+  );
+  const lineupRows = useMemo(() => currentLineup?.rows ?? [], [currentLineup]);
+  const currentGameId = currentLineup?.gameId ?? null;
 
   const filteredAtBats = useMemo(() => {
     if (gameType === "all" && timeOfDay === "all" && dayType === "all") return atBats;
@@ -88,7 +103,12 @@ export function LineupAnalysisSection({
     return findSubstitutesAndReserves(currentGameId, matrix, players, gameAtBats, filteredAtBats, substitutions);
   }, [currentGameId, atBats, matrix, players, filteredAtBats, substitutions]);
 
-  if (lineupRows.length === 0) {
+  // Lineup-analysis-fix batch: every roster player, unconditionally --
+  // see computeAllPlayersTable's own comment for why neither table above
+  // it is guaranteed to include everyone.
+  const allPlayers: PlayerPerformanceStat[] = useMemo(() => computeAllPlayersTable(players, filteredAtBats), [players, filteredAtBats]);
+
+  if (gameOptions.length === 0) {
     return (
       <section className="glossy rounded-lg border border-border bg-surface p-5">
         <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-white">Lineup Analysis</h2>
@@ -102,6 +122,24 @@ export function LineupAnalysisSection({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-white">Lineup Analysis</h2>
         <div className="flex flex-wrap items-center gap-2">
+          {/* Lineup-analysis-fix batch: which game's starting lineup the
+              grid shows. "Latest completed (default)" (selectedGameId
+              null) is what findCurrentLineup picks automatically -- a
+              game still in setup or a test game only ever shows up here
+              if explicitly chosen, never by default. */}
+          <select
+            value={selectedGameId ?? ""}
+            onChange={(e) => setSelectedGameId(e.target.value || null)}
+            className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-white outline-none focus:border-accent-primary"
+          >
+            <option value="">All games (latest completed)</option>
+            {gameOptions.map((g) => (
+              <option key={g.id} value={g.id}>
+                vs {g.opponentName} — {formatGameDate(g.gameDate)}
+                {g.status !== "completed" ? ` (${g.status})` : ""}
+              </option>
+            ))}
+          </select>
           <div className="flex gap-1 rounded-md border border-border p-1 text-xs">
             {(["all", "season", "playoff"] as GameFacetFilter["gameType"][]).map((f) => (
               <button
@@ -141,6 +179,12 @@ export function LineupAnalysisSection({
           </select>
         </div>
       </div>
+
+      {!currentLineup && (
+        <p className="mt-3 text-sm text-foreground/50">
+          No completed game has a lineup on record yet -- pick a game above to see its starting lineup anyway.
+        </p>
+      )}
 
       <div className="mt-4 overflow-x-auto">
         <table className="w-full min-w-[700px] border-collapse text-sm">
@@ -226,6 +270,52 @@ export function LineupAnalysisSection({
           </table>
         </div>
       )}
+
+      {/* Lineup-analysis-fix batch: every roster player, unconditionally
+          -- see computeAllPlayersTable's own comment. Always rendered
+          (not gated on length, since an empty roster is itself worth
+          seeing as "no players" rather than the section just vanishing). */}
+      <div className="mt-6 overflow-x-auto border-t border-border pt-5">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-foreground/50">All Players</h3>
+        <p className="mt-1 text-[11px] text-foreground/40">Every player on the roster, so nobody is ever missing from this page.</p>
+        <table className="mt-3 w-full min-w-[700px] border-collapse text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wide text-foreground/40">
+              <th className="pb-2 pr-3">Player</th>
+              <th className="pb-2 pr-3 text-center">AVG</th>
+              <th className="pb-2 pr-3 text-center">OBP</th>
+              <th className="pb-2 pr-3 text-center">SLG</th>
+              <th className="pb-2 pr-3 text-center">K%</th>
+              <th className="pb-2 pr-3 text-center">BB%</th>
+              <th className="pb-2 text-center">RISP AVG</th>
+            </tr>
+          </thead>
+          <tbody>
+            {allPlayers.map((row) => (
+              <tr key={row.playerId} className="border-t border-border">
+                <td className="py-2 pr-3">
+                  <Link href={`/coach/players/${row.playerId}`} className="text-white hover:text-accent-primary">
+                    <span className="text-accent-gold">#{row.playerJersey ?? "—"}</span> {row.playerName}
+                  </Link>
+                </td>
+                <Cell value={formatAvg(row.avg)} rating={rateAvg(row.avg, row.pa)} />
+                <Cell value={formatAvg(row.obp)} rating={rateObp(row.obp, row.pa)} />
+                <Cell value={formatAvg(row.slg)} rating={rateSlg(row.slg, row.pa)} />
+                <Cell value={`${Math.round(row.kPct * 100)}%`} rating={rateKPct(row.kPct, row.pa)} />
+                <Cell value={`${Math.round(row.bbPct * 100)}%`} rating={rateBbPct(row.bbPct, row.pa)} />
+                <Cell value={row.rispAvg !== null ? formatAvg(row.rispAvg) : "—"} rating={rateRisp(row.rispAvg, row.rispAb)} />
+              </tr>
+            ))}
+            {allPlayers.length === 0 && (
+              <tr>
+                <td colSpan={7} className="py-2 text-foreground/40">
+                  No players on the roster yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       <LineupInsightsPanel teamName={teamName} gameType={gameType} timeOfDay={timeOfDay} dayType={dayType} />
     </section>
