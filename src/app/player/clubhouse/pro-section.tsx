@@ -10,11 +10,14 @@ import { StrikeZoneHeatmap } from "@/app/coach/players/[id]/strike-zone-heatmap"
 import { ZoneAnalyticsRow } from "@/app/coach/players/[id]/zone-analytics-row";
 import { KeyInsights } from "@/app/coach/players/[id]/key-insights";
 import { PlayerSprayChart } from "./pro/player-spray-chart";
+import { FreePreviewSprayChart } from "./pro/free-preview-spray-chart";
+import { FreePreviewBanner } from "./pro/free-preview-banner";
 import { HitterExtendedStats } from "@/app/coach/players/[id]/hitter-extended-stats";
 import { PressurePerformance } from "./pro/pressure-performance";
 import { WalkupSongSelector } from "./pro/walkup-song-selector";
 import { CheckoutButton } from "./pro/checkout-button";
 import { PromoCodeForm } from "./pro/promo-code-form";
+import { WhatYouGet } from "./pro/what-you-get";
 import { KairosWidget } from "./pro/kairos-widget";
 import { InitialAssessment } from "./pro/initial-assessment";
 import { SituationalStats } from "./pro/situational-stats";
@@ -41,12 +44,14 @@ interface ZonePitch {
 // data.
 export function ProSection({
   unlocked,
+  freePreviewActive,
   playerId,
   battingAvgZoneLines,
   battingZoneAtBats,
   pitches,
   insights,
   sprayDots,
+  playerGames,
   fieldCalibration,
   hitterCountAtBats,
   hitterPitchTypeAtBats,
@@ -62,12 +67,17 @@ export function ProSection({
   milestones,
 }: {
   unlocked: boolean;
+  // Free preview batch: whether src/lib/free-preview.ts's
+  // isFreePreviewActive() is currently true -- only meaningful when
+  // !unlocked (a Pro player's view never changes because of it).
+  freePreviewActive: boolean;
   playerId: string;
   battingAvgZoneLines: ZoneBattingLine[];
   battingZoneAtBats: (AtBatWithZone & { gameType: GameType })[];
   pitches: ZonePitch[];
   insights: string[];
-  sprayDots: (SprayDot & { gameType: GameType })[];
+  sprayDots: (SprayDot & { gameType: GameType; gameId: string })[];
+  playerGames: { id: string; gameDate: string; opponentName: string }[];
   fieldCalibration: FieldCalibrationPoints | null;
   hitterCountAtBats: { result: AtBatResult; finalCount: CountState | null; sacrificeType: SacrificeType | null }[];
   hitterPitchTypeAtBats: { result: AtBatResult; pitchType: PitchType | null; sacrificeType: SacrificeType | null }[];
@@ -88,27 +98,54 @@ export function ProSection({
     const cutoff = teaser.split(/(?<=[.!?])\s/)[0] ?? teaser;
 
     return (
-      <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5">
-        <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-accent-gold">Clubhouse Pro</h2>
+      <div className="flex flex-col gap-4">
+        {freePreviewActive && <FreePreviewBanner />}
 
-        <div className="relative mt-4 overflow-hidden rounded-md">
-          <div className="pointer-events-none select-none blur-sm" aria-hidden="true">
-            <BlurredMapsPlaceholder />
-          </div>
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent to-background/95" />
-        </div>
-
-        {cutoff && (
-          <p className="mt-4 text-sm italic text-white/80">
-            &ldquo;{cutoff}&hellip;&rdquo;
-          </p>
+        {freePreviewActive && (
+          <section className="glossy rounded-lg border border-border bg-surface p-5">
+            <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">Spray Chart</h2>
+            <p className="mt-1 text-xs text-foreground/50">Free preview -- 2D dots only. Unlock Pro for 3D trajectories and heat maps.</p>
+            <div className="mt-3">
+              <FreePreviewSprayChart dots={sprayDots} games={playerGames} fieldCalibration={fieldCalibration} />
+            </div>
+          </section>
         )}
 
-        <div className="mt-6 flex flex-col items-center gap-4">
-          <CheckoutButton />
-          <PromoCodeForm />
-        </div>
-      </section>
+        {freePreviewActive && (
+          <section className="glossy rounded-lg border-l-4 p-3" style={{ background: "#0A1F0D", borderLeft: "4px solid #2ECC71" }}>
+            <h2 className="font-heading text-base font-bold" style={{ color: "#F0C060" }}>
+              KAIROS -- Free Preview
+            </h2>
+            <div className="mt-1.5">
+              <KairosWidget playerId={playerId} source="free_preview" />
+            </div>
+          </section>
+        )}
+
+        <section id="clubhouse-pro" className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5">
+          <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-accent-gold">Clubhouse Pro</h2>
+
+          <div className="relative mt-4 overflow-hidden rounded-md">
+            <div className="pointer-events-none select-none blur-sm" aria-hidden="true">
+              <BlurredMapsPlaceholder />
+            </div>
+            <div className="absolute inset-0 bg-gradient-to-b from-transparent to-background/95" />
+          </div>
+
+          {cutoff && (
+            <p className="mt-4 text-sm italic text-white/80">
+              &ldquo;{cutoff}&hellip;&rdquo;
+            </p>
+          )}
+
+          <WhatYouGet />
+
+          <div className="mt-6 flex flex-col items-center gap-4">
+            <CheckoutButton />
+            <PromoCodeForm />
+          </div>
+        </section>
+      </div>
     );
   }
 

@@ -3,10 +3,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { checkAndConsumeKairosCredit } from "@/lib/kairos-credits";
+import { checkAndConsumeKairosCredit, checkAndConsumeFreePreviewKairosCredit } from "@/lib/kairos-credits";
 import { ensureInitialAssessment, regenerateAssessment, type AssessmentZoneInputs } from "@/lib/kairos-assessment";
 import { computeBattingLines, formatAvg } from "@/lib/stats";
 import { computeZoneBattingLines, computeZoneWhiffLines, zoneIndexFromCoords, extendedZoneLabel, zoneLabel9, resultCategory } from "@/lib/heat-map";
+import { isFreePreviewActive, FREE_PREVIEW_KAIROS_MESSAGES } from "@/lib/free-preview";
 import type { AtBatResult, PitchOutcome } from "@/lib/supabase/types";
 
 // Clubhouse Pro enhancement, Part 3. Mirrors src/app/coach/kairos-actions.ts's
@@ -40,9 +41,17 @@ export interface KairosMessage {
   content: string;
 }
 
+// Free preview batch: "source" tells the UI which budget just got
+// charged, so the counter line can say "N of 20 this month" (Pro) vs
+// "N of 5 free messages left" (preview) without guessing from the
+// numbers alone. "locked" is a defense-in-depth reason -- the UI never
+// renders a KAIROS entry point for a locked player once the preview has
+// ended, but the server re-checks unlocked/preview status on every
+// request regardless of what the client thinks it can show.
 export type AskPlayerKairosResult =
-  | { ok: true; text: string; remaining: number }
-  | { ok: false; reason: "credits_exhausted"; resetDate: string }
+  | { ok: true; text: string; remaining: number; limit: number; source: "pro" | "free_preview" }
+  | { ok: false; reason: "credits_exhausted"; message: string; source: "pro" | "free_preview" }
+  | { ok: false; reason: "locked"; message: string }
   | { ok: false; reason: "error"; error: string };
 
 function extractText(message: Anthropic.Message): string {
@@ -52,7 +61,7 @@ function extractText(message: Anthropic.Message): string {
 
 async function fetchPlayerContext(supabase: ReturnType<typeof createClient>, teamId: string, playerId: string) {
   const [{ data: player }, { data: team }, { data: games }] = await Promise.all([
-    supabase.from("players").select("name, position").eq("id", playerId).single(),
+    supabase.from("players").select("name, position, clubhouse_unlocked").eq("id", playerId).single(),
     supabase.from("teams").select("name").eq("id", teamId).single(),
     supabase.from("games").select("*").eq("team_id", teamId),
   ]);
@@ -72,19 +81,56 @@ async function fetchPlayerContext(supabase: ReturnType<typeof createClient>, tea
     : { data: [] };
   const pitches = pitchRows ?? [];
 
-  return { player, team, allGames, gameById, confirmedAtBats, pitches };
+  // Fix: stolen bases were never fetched here either (same gap as
+  // coach/kairos-actions.ts) -- every computeBattingLines call below
+  // passed [] for stolenBases, so this player's own `sb` always computed
+  // to 0 regardless of real rows. Caught stealing only lives in
+  // game_events, no stolen_bases equivalent.
+  const { data: stolenBaseRows } = gameIds.length
+    ? await supabase.from("stolen_bases").select("player_id, game_id, inning").eq("player_id", playerId).in("game_id", gameIds)
+    : { data: [] };
+  const stolenBases = stolenBaseRows ?? [];
+  const { data: caughtStealingRows } = gameIds.length
+    ? await supabase.from("game_events").select("game_id").eq("player_id", playerId).in("game_id", gameIds).eq("event_type", "caught_stealing")
+    : { data: [] };
+  const caughtStealing = caughtStealingRows ?? [];
+
+  return { player, team, allGames, gameById, confirmedAtBats, pitches, stolenBases, caughtStealing };
 }
 
 async function buildPlayerSystemPrompt(supabase: ReturnType<typeof createClient>, teamId: string, playerId: string): Promise<string> {
-  const { player, team, gameById, confirmedAtBats, pitches } = await fetchPlayerContext(supabase, teamId, playerId);
+  const { player, team, gameById, confirmedAtBats, pitches, stolenBases, caughtStealing } = await fetchPlayerContext(supabase, teamId, playerId);
   const playerName = player?.name ?? "this player";
   const position = player?.position ?? "the field";
   const today = new Date().toISOString().slice(0, 10);
 
-  const battingLine = computeBattingLines(confirmedAtBats, []).get(playerId);
+  const battingLine = computeBattingLines(confirmedAtBats, stolenBases).get(playerId);
+  const sbText = battingLine && (battingLine.sb > 0 || caughtStealing.length > 0)
+    ? `, ${battingLine.sb} SB${caughtStealing.length > 0 ? `, ${caughtStealing.length} CS` : ""}`
+    : "";
   const statsSummary = battingLine
-    ? `${battingLine.ab} AB, ${formatAvg(battingLine.avg)} AVG, ${battingLine.hr} HR, ${battingLine.rbi} RBI, ${formatAvg(battingLine.obp)} OBP, ${formatAvg(battingLine.slg)} SLG, ${battingLine.ops.toFixed(3)} OPS`
+    ? `${battingLine.ab} AB, ${formatAvg(battingLine.avg)} AVG, ${battingLine.hr} HR, ${battingLine.rbi} RBI, ${formatAvg(battingLine.obp)} OBP, ${formatAvg(battingLine.slg)} SLG, ${battingLine.ops.toFixed(3)} OPS${sbText}`
     : "No at-bats logged yet.";
+
+  // No tool-calling loop here (see this file's own top comment), so a
+  // per-game breakdown has to be baked into the prompt directly rather
+  // than fetched lazily the way coach/kairos-actions.ts's query_team_stats
+  // does it -- this is this player's only chance to answer "how many
+  // steals per game."
+  const sbCountByGame = new Map<string, number>();
+  for (const sb of stolenBases) {
+    sbCountByGame.set(sb.game_id, (sbCountByGame.get(sb.game_id) ?? 0) + 1);
+  }
+  const stolenBasesByGame = Array.from(sbCountByGame.entries())
+    .map(([gameId, count]) => {
+      const g = gameById.get(gameId);
+      return g ? { gameDate: g.game_date, opponent: g.opponent_name, count } : null;
+    })
+    .filter((g): g is { gameDate: string; opponent: string; count: number } => g !== null)
+    .sort((a, b) => a.gameDate.localeCompare(b.gameDate));
+  const stolenBasesSummary = stolenBasesByGame.length
+    ? stolenBasesByGame.map((g) => `${g.gameDate} vs ${g.opponent}: ${g.count}`).join("; ")
+    : "No stolen bases logged yet.";
 
   const lastZoneByAtBat = new Map<string, number | null>();
   for (const ab of confirmedAtBats) {
@@ -165,7 +211,8 @@ Heat map (batting average by zone, min 3 AB): ${heatMapSummary}
 Weak zones: ${weakZones.length ? weakZones.join("; ") : "Not enough data yet."}
 Strong zones: ${strongZones.length ? strongZones.join("; ") : "Not enough data yet."}
 Recent form: ${recentForm}
-Spray chart breakdown: ${sprayChartSummary}`;
+Spray chart breakdown: ${sprayChartSummary}
+Stolen bases by game: ${stolenBasesSummary}`;
 }
 
 export async function askPlayerKairos(history: KairosMessage[], message: string): Promise<AskPlayerKairosResult> {
@@ -173,8 +220,39 @@ export async function askPlayerKairos(history: KairosMessage[], message: string)
     const { supabase, teamId, playerId } = await requirePlayer();
     const service = createServiceRoleClient();
 
-    const credit = await checkAndConsumeKairosCredit(service, playerId);
-    if (!credit.allowed) return { ok: false, reason: "credits_exhausted", resetDate: credit.resetDate };
+    // Free preview batch: re-derive unlocked/preview status server-side
+    // on every call, never trust the client -- the same "extra data only
+    // ever goes to this signed-in player, scoped by the server" rule the
+    // spray-chart/game-detail routes already follow. A locked player
+    // outside the preview window gets a plain refusal, no Anthropic call.
+    const { data: playerRow } = await supabase.from("players").select("clubhouse_unlocked").eq("id", playerId).single();
+    const unlocked = Boolean(playerRow?.clubhouse_unlocked);
+    const freePreview = !unlocked && isFreePreviewActive();
+
+    if (!unlocked && !freePreview) {
+      return { ok: false, reason: "locked", message: "Unlock Clubhouse Pro to use your personal KAIROS." };
+    }
+
+    const source: "pro" | "free_preview" = unlocked ? "pro" : "free_preview";
+    let remaining: number;
+    if (unlocked) {
+      const credit = await checkAndConsumeKairosCredit(service, playerId);
+      if (!credit.allowed) {
+        return { ok: false, reason: "credits_exhausted", message: `You've used all 20 messages this month. Credits reset on ${credit.resetDate}.`, source };
+      }
+      remaining = credit.remaining;
+    } else {
+      const credit = await checkAndConsumeFreePreviewKairosCredit(service, playerId);
+      if (!credit.allowed) {
+        return {
+          ok: false,
+          reason: "credits_exhausted",
+          message: `You've used all ${FREE_PREVIEW_KAIROS_MESSAGES} free preview messages. Unlock Clubhouse Pro to keep chatting with KAIROS.`,
+          source,
+        };
+      }
+      remaining = credit.remaining;
+    }
 
     const system = await buildPlayerSystemPrompt(supabase, teamId, playerId);
     const messages: Anthropic.MessageParam[] = [
@@ -184,7 +262,8 @@ export async function askPlayerKairos(history: KairosMessage[], message: string)
 
     const response = await client.messages.create({ model: MODEL, max_tokens: 1024, system, messages });
     const text = extractText(response) || "I couldn't come up with a response to that -- try rephrasing?";
-    return { ok: true, text, remaining: credit.remaining };
+    const limit = source === "pro" ? 20 : FREE_PREVIEW_KAIROS_MESSAGES;
+    return { ok: true, text, remaining, limit, source };
   } catch (err) {
     console.error("[askPlayerKairos] unexpected error", err);
     return { ok: false, reason: "error", error: err instanceof Error ? err.message : "KAIROS couldn't respond -- try again?" };
@@ -215,16 +294,16 @@ function zoneInputsFrom(
 // scope decision).
 export async function getOrCreateInitialAssessment(): Promise<string> {
   const { supabase, teamId, playerId } = await requirePlayer();
-  const { player, team, confirmedAtBats, pitches } = await fetchPlayerContext(supabase, teamId, playerId);
-  const battingLine = computeBattingLines(confirmedAtBats, []).get(playerId) ?? null;
+  const { player, team, confirmedAtBats, pitches, stolenBases } = await fetchPlayerContext(supabase, teamId, playerId);
+  const battingLine = computeBattingLines(confirmedAtBats, stolenBases).get(playerId) ?? null;
   const zoneInputs = zoneInputsFrom(confirmedAtBats, pitches);
   return ensureInitialAssessment(playerId, player?.name ?? "this player", player?.position ?? null, team?.name ?? "your team", battingLine, zoneInputs);
 }
 
 export async function regenerateInitialAssessment(): Promise<string> {
   const { supabase, teamId, playerId } = await requirePlayer();
-  const { player, team, confirmedAtBats, pitches } = await fetchPlayerContext(supabase, teamId, playerId);
-  const battingLine = computeBattingLines(confirmedAtBats, []).get(playerId) ?? null;
+  const { player, team, confirmedAtBats, pitches, stolenBases } = await fetchPlayerContext(supabase, teamId, playerId);
+  const battingLine = computeBattingLines(confirmedAtBats, stolenBases).get(playerId) ?? null;
   const zoneInputs = zoneInputsFrom(confirmedAtBats, pitches);
   return regenerateAssessment(playerId, player?.name ?? "this player", player?.position ?? null, team?.name ?? "your team", battingLine, zoneInputs);
 }

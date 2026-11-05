@@ -106,7 +106,18 @@ function parabolaPath(x1: number, y1: number, x2: number, y2: number, peakPct: n
   return { d: `M ${x1},${y1} Q ${midX},${midY} ${endX},${endY}`, endX, endY };
 }
 
-export function PlayerSprayChart({ dots, fieldCalibration }: { dots: Dot[]; fieldCalibration: FieldCalibrationPoints | null }) {
+export function PlayerSprayChart({
+  dots,
+  fieldCalibration,
+  allow3D = true,
+}: {
+  dots: Dot[];
+  fieldCalibration: FieldCalibrationPoints | null;
+  // Free preview batch: the free preview is "dots only, no 3D, no heat
+  // maps" per spec -- rather than fork this component, it just stops
+  // offering the 2D/3D toggle and is held on "2d" when false.
+  allow3D?: boolean;
+}) {
   const [view, setView] = useState<View>("2d");
   const [hitTypeFilter, setHitTypeFilter] = useState<HitTypeFilter>("all");
   const [gameTypeFilter, setGameTypeFilter] = useState<GameTypeFilter>("all");
@@ -154,7 +165,7 @@ export function PlayerSprayChart({ dots, fieldCalibration }: { dots: Dot[]; fiel
           <h2 className="font-heading text-lg font-semibold uppercase tracking-wide text-white">Spray Chart</h2>
           <p className="mt-1 text-xs text-foreground/50">Every ball in play this season, tap a mark for details</p>
         </div>
-        {fieldCalibration && (
+        {fieldCalibration && allow3D && (
           <div className="flex gap-1 text-xs">
             <button
               onClick={() => {

@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { createClubhouseCheckoutSession } from "../actions";
+import { PRO_PRICE_DISPLAY, PRO_VALID_UNTIL_LABEL, PRO_NEXT_PRICE_NOTE } from "@/lib/pricing";
 
 export function CheckoutButton() {
   const [error, setError] = useState<string | null>(null);
@@ -28,9 +29,10 @@ export function CheckoutButton() {
         className="glossy min-h-[52px] w-full max-w-xs rounded-lg px-6 text-base font-bold uppercase tracking-wide text-background transition disabled:opacity-50"
         style={{ backgroundColor: "#F0C060" }}
       >
-        {isPending ? "Loading…" : "Unlock Clubhouse Pro — $10"}
+        {isPending ? "Loading…" : `Unlock Clubhouse Pro — ${PRO_PRICE_DISPLAY}`}
       </button>
-      <p className="text-center text-xs text-foreground/50">One-time payment. Yours forever. No subscription.</p>
+      <p className="text-center text-xs text-foreground/50">One-time payment. Valid until {PRO_VALID_UNTIL_LABEL}. No subscription.</p>
+      <p className="text-center text-xs text-accent-gold/70">{PRO_NEXT_PRICE_NOTE}</p>
       {error && <p className="text-center text-xs text-accent-red">{error}</p>}
     </div>
   );

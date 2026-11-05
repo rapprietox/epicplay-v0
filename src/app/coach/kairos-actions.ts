@@ -101,16 +101,37 @@ async function buildSystemPrompt(supabase: SupabaseClient, teamId: string): Prom
     : { data: [] };
   const hittingAtBats = (atBats ?? []).filter((ab) => ab.mode === "hitting");
   const pitchingAtBats = (atBats ?? []).filter((ab) => ab.mode === "pitching");
-  const battingLines = computeBattingLines(hittingAtBats, []);
+  // Fix: stolen bases were never fetched here, so computeBattingLines was
+  // always called with [] for stolenBases -- every player's own `sb`
+  // silently computed to 0 regardless of what src/lib/stats.ts's own
+  // counter does with real rows (same function the Team Leaders card
+  // uses). Caught stealing only lives in game_events (no stolen_bases
+  // equivalent), tallied the same way coach/page.tsx's EPS fetch already
+  // does, so the two SB figures stay in sync with that card too.
+  const { data: stolenBases } = gameIds.length
+    ? await supabase.from("stolen_bases").select("player_id").in("game_id", gameIds)
+    : { data: [] };
+  const { data: caughtStealingEvents } = gameIds.length
+    ? await supabase.from("game_events").select("player_id").in("game_id", gameIds).eq("event_type", "caught_stealing")
+    : { data: [] };
+  const caughtStealingByPlayer = new Map<string, number>();
+  for (const ev of caughtStealingEvents ?? []) {
+    if (!ev.player_id) continue;
+    caughtStealingByPlayer.set(ev.player_id, (caughtStealingByPlayer.get(ev.player_id) ?? 0) + 1);
+  }
+  const battingLines = computeBattingLines(hittingAtBats, stolenBases ?? []);
   const pitchingLines = computePitchingLines(pitchingAtBats, seasonGames);
 
   const rosterStats = (players ?? [])
     .map((p) => {
       const b = battingLines.get(p.id);
       const pitch = pitchingLines.get(p.id);
+      const cs = caughtStealingByPlayer.get(p.id) ?? 0;
+      const sb = b?.sb ?? 0;
+      const sbText = sb > 0 || cs > 0 ? `, ${sb} SB${cs > 0 ? `, ${cs} CS` : ""}` : "";
       const battingText = b && b.ab > 0
-        ? `${b.ab} AB, ${formatAvg(b.avg)} AVG, ${b.hr} HR, ${b.rbi} RBI, ${formatAvg(b.obp)} OBP, ${formatAvg(b.slg)} SLG, ${b.ops.toFixed(3)} OPS`
-        : "no at-bats logged yet this season";
+        ? `${b.ab} AB, ${formatAvg(b.avg)} AVG, ${b.hr} HR, ${b.rbi} RBI, ${formatAvg(b.obp)} OBP, ${formatAvg(b.slg)} SLG, ${b.ops.toFixed(3)} OPS${sbText}`
+        : `no at-bats logged yet this season${sbText}`;
       const pitchingText = pitch && pitch.ip > 0 ? ` | Pitching: ${pitch.ipDisplay} IP, ${pitch.era?.toFixed(2) ?? "—"} ERA, ${pitch.whip?.toFixed(2) ?? "—"} WHIP, ${pitch.k} K` : "";
       return `#${p.jersey_number ?? "—"} ${p.name} (${p.position ?? "—"}): ${battingText}${pitchingText}`;
     })
@@ -177,12 +198,15 @@ For general "who's leading/struggling" questions, answer directly from the
 full roster stats above -- ranking or sorting that list yourself is fine and
 doesn't need a tool call. Exclude any player with 0 AB from a best/worst
 ranking (mention them separately, by name, only if specifically asked about
-them). Call query_team_stats only for something not already given above: a
-specific opponent's history, a lefty/righty split, or anything that needs a
-fresh query. Never guess or invent numbers not present in your data or a tool
-result. If a tool result shows no qualifying data for a specific split (for
-example, a lefty/righty breakdown with no games tagged that way yet), say so
-honestly instead of making something up.
+them). The roster line above includes each player's season SB (and CS, if
+any) total, so "who leads in steals" is also a direct read of that list, the
+same way an OPS-based "who's leading" question is. Call query_team_stats only
+for something not already given above: a specific opponent's history, a
+lefty/righty split, a player's stolen-base breakdown by game, or anything
+else that needs a fresh query. Never guess or invent numbers not present in
+your data or a tool result. If a tool result shows no qualifying data for a
+specific split (for example, a lefty/righty breakdown with no games tagged
+that way yet), say so honestly instead of making something up.
 
 When asked to import a pasted roster or schedule, always confirm with the
 user before executing -- show them what you found and ask "Should I add
@@ -286,7 +310,29 @@ async function executeQueryStats(supabase: SupabaseClient, teamId: string, input
       }
     }
 
-    const battingLine = computeBattingLines(hittingAtBats, []).get(player.id);
+    // Fix: this player's own stolen bases, same two sources the system
+    // prompt's roster line now also reads -- plus a per-game breakdown
+    // (game date, opponent, count), which the roster line has no room
+    // for but a direct "SB per game for [player]" question needs.
+    const { data: playerStolenBases } = gameIds.length
+      ? await supabase.from("stolen_bases").select("player_id, game_id, inning").eq("player_id", player.id).in("game_id", gameIds)
+      : { data: [] };
+    const { data: playerCaughtStealing } = gameIds.length
+      ? await supabase.from("game_events").select("game_id").eq("player_id", player.id).in("game_id", gameIds).eq("event_type", "caught_stealing")
+      : { data: [] };
+    const gameByIdForPlayer = new Map((games ?? []).map((g) => [g.id, g]));
+    const sbCountByGame = new Map<string, number>();
+    for (const sb of playerStolenBases ?? []) {
+      sbCountByGame.set(sb.game_id, (sbCountByGame.get(sb.game_id) ?? 0) + 1);
+    }
+    const stolenBasesPerGame = Array.from(sbCountByGame.entries())
+      .map(([gameId, count]) => {
+        const g = gameByIdForPlayer.get(gameId);
+        return { gameDate: g?.game_date ?? null, opponent: g?.opponent_name ?? null, count };
+      })
+      .sort((a, b) => (a.gameDate ?? "").localeCompare(b.gameDate ?? ""));
+
+    const battingLine = computeBattingLines(hittingAtBats, playerStolenBases ?? []).get(player.id);
     const pitchingLine = computePitchingLines(pitchingAtBats, games ?? []).get(player.id);
 
     return {
@@ -297,6 +343,11 @@ async function executeQueryStats(supabase: SupabaseClient, teamId: string, input
         ? { ab: battingLine.ab, h: battingLine.h, avg: formatAvg(battingLine.avg), hr: battingLine.hr, rbi: battingLine.rbi, obp: formatAvg(battingLine.obp), slg: formatAvg(battingLine.slg), ops: battingLine.ops.toFixed(3) }
         : null,
       pitching: pitchingLine && pitchingLine.ip > 0 ? { ip: pitchingLine.ipDisplay, era: pitchingLine.era?.toFixed(2), whip: pitchingLine.whip?.toFixed(2), k: pitchingLine.k } : null,
+      stolenBases: {
+        total: playerStolenBases?.length ?? 0,
+        caughtStealing: playerCaughtStealing?.length ?? 0,
+        perGame: stolenBasesPerGame,
+      },
     };
   }
 

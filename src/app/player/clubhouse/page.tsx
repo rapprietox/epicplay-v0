@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { computeBattingLines } from "@/lib/stats";
+import { computeBattingLines, computePitchingLines } from "@/lib/stats";
 import { computeZoneBattingLines, zoneIndexFromCoords, resultCategory } from "@/lib/heat-map";
 import { finalCountForAtBat, computePressureSplits } from "@/lib/count-stats";
 import { daysUntil } from "@/lib/dates";
@@ -13,12 +13,17 @@ import { recentGamesAvg, currentHitStreak, streakStatus } from "@/lib/streaks";
 import { computeHeadToHead } from "@/lib/head-to-head";
 import { computeMilestones } from "@/lib/milestones";
 import { computeEpsForPlayer } from "@/lib/eps";
+import { isFreePreviewActive } from "@/lib/free-preview";
 import { ClubhouseHeader } from "./header";
 import { ClubhouseNavBar } from "./clubhouse-nav-bar";
 import { PregameCard } from "./pregame-card";
 import { GameHistory } from "./game-history";
+import { SeasonStatsCard } from "./season-stats-card";
+import { TeamSection } from "./team-section";
 import { ProSection } from "./pro-section";
 import { UnlockingBanner } from "./pro/unlocking-banner";
+import { isViewSwitchEligible } from "@/lib/view-switch";
+import { disableViewAsPlayer } from "@/lib/view-switch-actions";
 import type { GameHistoryRow } from "./types";
 
 export default async function ClubhousePage({ searchParams }: { searchParams: { unlocked?: string } }) {
@@ -28,8 +33,16 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase.from("profiles").select("team_id, player_id").eq("id", user.id).single();
+  const { data: profile } = await supabase.from("profiles").select("role, team_id, player_id").eq("id", user.id).single();
   if (!profile?.team_id || !profile?.player_id) redirect("/player");
+
+  // "View as player" batch: reaching this page at all with a real
+  // profiles.role of "coach" is only possible via the toggle (a real
+  // player's role is already "player", and middleware would otherwise
+  // never let a coach-role user reach /player/*) -- so this check alone
+  // is enough to know it's the one eligible coach currently viewing as
+  // a player, no second cookie read needed here.
+  const viewingAsPlayer = isViewSwitchEligible(user.id, profile.role ?? null);
 
   const [{ data: player }, { data: team }] = await Promise.all([
     supabase.from("players").select("*").eq("id", profile.player_id).single(),
@@ -52,6 +65,28 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
   const { data: stolenBases } = gameIds.length
     ? await supabase.from("stolen_bases").select("*").eq("player_id", player.id).in("game_id", gameIds)
+    : { data: [] };
+
+  // Player team-view batch: this player's own pitching line (if they've
+  // pitched at all) for the season-stats card, plus the team-wide roster
+  // and team-wide at_bats/stolen_bases/caught-stealing for the new
+  // read-only Team section (Team Leaders board, same computations the
+  // coach dashboard uses). The team-wide fetches rely on the new
+  // "...: player selects team" RLS policies (see the migration this
+  // batch adds) -- until that migration is applied, RLS still narrows
+  // these to just this player's own rows, same as before.
+  const { data: pitchingAtBats } = gameIds.length
+    ? await supabase.from("at_bats").select("*").eq("pitcher_id", player.id).in("game_id", gameIds).not("confirmed_at", "is", null)
+    : { data: [] };
+  const pitchingLine = computePitchingLines(pitchingAtBats ?? [], allGames).get(player.id);
+
+  const { data: teamPlayers } = await supabase.from("players").select("*").eq("team_id", profile.team_id);
+  const { data: teamAtBats } = gameIds.length
+    ? await supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null)
+    : { data: [] };
+  const { data: teamStolenBases } = gameIds.length ? await supabase.from("stolen_bases").select("*").in("game_id", gameIds) : { data: [] };
+  const { data: teamCaughtStealing } = gameIds.length
+    ? await supabase.from("game_events").select("event_type, player_id, game_id").in("game_id", gameIds).eq("event_type", "caught_stealing")
     : { data: [] };
 
   // EPS batch: SB_success_rate needs caught-stealing counts, only in
@@ -77,6 +112,9 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   const seasonLine = computeBattingLines(confirmedAtBats, stolenBases ?? []).get(player.id);
   // Feature 3 (EPS): Clubhouse Pro only, per the request's own scoping.
   const eps = player.clubhouse_unlocked ? computeEpsForPlayer(player.id, confirmedAtBats, caughtStealingEvents ?? []) : null;
+  // Free preview batch: only meaningful for a still-locked player -- a
+  // Pro player's view never changes because of it.
+  const freePreviewActive = !player.clubhouse_unlocked && isFreePreviewActive();
 
   // Zone data for the mini Map 1 panel + ZoneAnalyticsRow, mirroring the
   // same "last pitch of the at-bat is the zone" derivation the coach's
@@ -122,6 +160,7 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
         opponentName: g?.opponent_name ?? "Unknown",
         hitType: ab.hit_type,
         gameType: (g?.game_type ?? "friendly") as GameType,
+        gameId: ab.game_id,
       };
     });
 
@@ -213,24 +252,47 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
   return (
     <main className="min-h-screen bg-background">
+      {viewingAsPlayer && (
+        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-accent-gold/40 bg-surface px-4 py-2 shadow-lg">
+          <span className="text-xs text-foreground/70">Viewing as player</span>
+          <form action={disableViewAsPlayer}>
+            <button type="submit" className="text-xs font-semibold text-accent-gold underline-offset-2 hover:underline">
+              Switch to coach view
+            </button>
+          </form>
+        </div>
+      )}
       <ClubhouseNavBar />
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6">
         <ClubhouseHeader player={player} teamName={team?.name ?? "Team"} line={seasonLine} eps={eps} />
+
+        <SeasonStatsCard battingLine={seasonLine} pitchingLine={pitchingLine} />
 
         <PregameCard todaysGame={todaysGame} message={pregameMessage} lastGame={gameHistoryRows[0] ?? null} />
 
         <GameHistory rows={gameHistoryRows} />
 
+        <TeamSection
+          games={allGames}
+          players={teamPlayers ?? []}
+          atBats={teamAtBats ?? []}
+          stolenBases={teamStolenBases ?? []}
+          gameEvents={teamCaughtStealing ?? []}
+          viewerPlayerId={player.id}
+        />
+
         {searchParams.unlocked === "1" && !player.clubhouse_unlocked && <UnlockingBanner />}
 
         <ProSection
           unlocked={player.clubhouse_unlocked}
+          freePreviewActive={freePreviewActive}
           playerId={player.id}
           battingAvgZoneLines={battingAvgZoneLines}
           battingZoneAtBats={battingZoneAtBats}
           pitches={batterPitches}
           insights={insights}
           sprayDots={sprayDots}
+          playerGames={playerGames.map((g) => ({ id: g.id, gameDate: g.game_date, opponentName: g.opponent_name }))}
           fieldCalibration={fieldCalibration}
           hitterCountAtBats={hitterCountAtBats}
           hitterPitchTypeAtBats={hitterPitchTypeAtBats}
