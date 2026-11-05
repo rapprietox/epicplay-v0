@@ -566,6 +566,22 @@ export function OperatorConsole({
   // machinery than a plain timeout needs.
   const [inningEndCelebrating, setInningEndCelebrating] = useState(false);
   const toastIdRef = useRef(0);
+  // Bug fix: an opposing batter with no name typed (the free-text
+  // "Opposing batter…" field, see opponent-batters datalist above) fell
+  // back to the literal string "Batter" -- fine for one runner, but with
+  // two nameless opponents on base at once (e.g. a walk following an
+  // earlier un-named single) both dots on the diamond read "•Batter,"
+  // indistinguishable. This ref counts up across the whole game, every
+  // time currentBatterRunner() actually resolves a nameless opponent
+  // batter (its five one-shot handler call sites -- pickResult, the
+  // hit-runner-confirm drain effect, handleIntentionalWalk,
+  // handleQuickPick, handleQuickDoublePlay -- each fires exactly once per
+  // real batter), so each nameless opponent gets its own "Opp #N" instead
+  // of colliding on one shared label. Deliberately NOT consumed by the
+  // IBB confirm dialog's own preview text (see ibbConfirmOpen below),
+  // which is a render-time JSX read that would otherwise burn through
+  // numbers on every re-render while the dialog stays open.
+  const opponentBatterSeqRef = useRef(0);
 
   // durationMs is the toast's total on-screen time including its 250ms
   // slide-in and 300ms slide-out (per spec, "stays 2s, slides out" etc.
@@ -660,6 +676,28 @@ export function OperatorConsole({
     void withOfflineRetry(`mode-autocorrect-${game.id}-${Date.now()}`, () => syncGameState(game.id, { mode: correct }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.inningHalf, game.home_away]);
+
+  // Pitcher auto-default, the general-purpose catch-all: covers both "the
+  // game starts in pitching mode" (a home game's very first half-inning,
+  // before confirmEndInning's own default ever gets a chance to run) and
+  // "the page loads/reloads with no pitcher set while already in pitching
+  // mode" (a stale snapshot, a different device, or game_state predating
+  // this feature) -- any case where mode is pitching and currentPitcherId
+  // is still null, regardless of how that state was reached. Runs on
+  // mount and whenever mode/currentPitcherId/the lineup change, so it
+  // also catches a reload that lands mid-inning with no pitcher. A no-op
+  // once a pitcher is set, from here or anywhere else (confirmEndInning,
+  // the Pitcher Picker, or the substitution default in handleChainResolved).
+  useEffect(() => {
+    if (state.mode !== "pitching" || state.currentPitcherId) return;
+    const defaultPitcher = liveLineup.find((l) => l.status === "starting" && l.position === "P");
+    if (!defaultPitcher) return;
+    dispatch({ type: "SET_PITCHER", playerId: defaultPitcher.player_id });
+    void withOfflineRetry(`pitcher-autodefault-${game.id}-${Date.now()}`, () =>
+      syncGameState(game.id, { current_pitcher_id: defaultPitcher.player_id, pitch_count_for_current_pitcher: 0 })
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.mode, state.currentPitcherId, liveLineup]);
 
   // Fix 6 (baseball-logic-fixes batch): who's currently on the field for
   // our team, and who's already been used up this game -- derived from
@@ -820,7 +858,9 @@ export function OperatorConsole({
         jersey: battingPlayerInfo?.jersey_number ? String(battingPlayerInfo.jersey_number) : null,
       };
     }
-    return { type: "opponent", id: null, name: state.opponentBatterName || "Batter" };
+    if (state.opponentBatterName) return { type: "opponent", id: null, name: state.opponentBatterName };
+    opponentBatterSeqRef.current += 1;
+    return { type: "opponent", id: null, name: `Opp #${opponentBatterSeqRef.current}` };
   }
 
   function syncRunners(next: Runners) {
@@ -1617,6 +1657,22 @@ export function OperatorConsole({
     );
 
     dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
+
+    // Pitcher auto-default: a substitution can change who plays P too
+    // (the incoming player entering right at P, or an existing player
+    // getting moved there as part of the same chain) -- keep
+    // current_pitcher_id in sync with that the instant it happens,
+    // same reasoning as the end-of-inning default above. Only acts when
+    // this chain actually places someone new at P; a sub that leaves P
+    // untouched (the far more common case) is a no-op here.
+    const newPitcherId =
+      result.entryPosition === "P" ? result.incomingPlayerId : result.positionMoves.find((m) => m.position === "P")?.playerId ?? null;
+    if (newPitcherId && newPitcherId !== state.currentPitcherId) {
+      dispatch({ type: "SET_PITCHER", playerId: newPitcherId });
+      void withOfflineRetry(`subpitcher-${game.id}-${Date.now()}`, () =>
+        syncGameState(game.id, { current_pitcher_id: newPitcherId, pitch_count_for_current_pitcher: 0 })
+      );
+    }
 
     if (!result.outgoingPlayerId) return;
     const occupiedBase = (["first", "second", "third"] as Base[]).find(
@@ -3722,7 +3778,9 @@ export function OperatorConsole({
       {ibbConfirmOpen && (
         <ConfirmDialog
           title="Intentional Walk"
-          message={`Intentional walk — ${currentBatterRunner().name} awarded 1st base?`}
+          message={`Intentional walk — ${
+            state.mode === "hitting" ? battingPlayerInfo?.name ?? "Batter" : state.opponentBatterName || "the batter"
+          } awarded 1st base?`}
           confirmLabel="Confirm"
           onConfirm={() => {
             setIbbConfirmOpen(false);
