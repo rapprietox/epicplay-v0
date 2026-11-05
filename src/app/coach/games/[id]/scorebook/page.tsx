@@ -78,7 +78,7 @@ export default async function ScorebookPage({ params }: { params: { id: string }
   }
 
   const allAtBatIds = [...(hittingAtBats ?? []), ...(pitchingAtBats ?? [])].map((ab) => ab.id);
-  const [{ data: pitches }, { data: stolenBases }, { data: gameEvents }] = await Promise.all([
+  const [{ data: pitches }, { data: stolenBases }, { data: gameEvents }, { data: scoringEvents }] = await Promise.all([
     allAtBatIds.length
       ? supabase.from("pitches").select("at_bat_id, pitch_number, swing").in("at_bat_id", allAtBatIds)
       : Promise.resolve({ data: [] }),
@@ -88,6 +88,12 @@ export default async function ScorebookPage({ params }: { params: { id: string }
       .select("event_type, inning, player_id")
       .eq("game_id", game.id)
       .in("event_type", ["caught_stealing", "pickoff_out", "rundown_out", "out_at_next_base", "tag_up_violation"]),
+    // Run-attribution batch: a separate, lightweight query rather than
+    // widening the one above -- that one's own event_type filter serves a
+    // different purpose (out-reason cells/LOB) and mixing concerns there
+    // would make both harder to read. Any event with a scorer_player_id
+    // is, by construction, a run that happened outside an at-bat.
+    supabase.from("game_events").select("inning, scorer_player_id, runs_scored").eq("game_id", game.id).not("scorer_player_id", "is", null),
   ]);
 
   const playerById = new Map((players ?? []).map((p) => [p.id, p]));
@@ -132,8 +138,21 @@ export default async function ScorebookPage({ params }: { params: { id: string }
     runnerOutsByInning.set(ev.inning, (runnerOutsByInning.get(ev.inning) ?? 0) + 1);
   }
 
-  const battingLines = computeBattingLines(hittingAtBats ?? [], stolenBases ?? []);
+  const battingLines = computeBattingLines(hittingAtBats ?? [], stolenBases ?? [], scoringEvents ?? []);
   const pitchingLines = computePitchingLines(pitchingAtBats ?? [], [game]);
+
+  // Run-attribution batch: runs credited via a game_events row (a wild
+  // pitch/passed ball/balk/steal/ad-hoc "Scored" tap, none of which
+  // produce an at_bats row) grouped by inning, so the per-inning R box
+  // below includes them too -- otherwise a run like this would show in
+  // a player's own season total (via battingLines above) but silently
+  // vanish from the inning-by-inning breakdown, leaving the box total
+  // short of the game's real final score.
+  const scoringEventRunsByInning = new Map<number, number>();
+  for (const ev of scoringEvents ?? []) {
+    if (!ev.scorer_player_id || !ev.runs_scored) continue;
+    scoringEventRunsByInning.set(ev.inning, (scoringEventRunsByInning.get(ev.inning) ?? 0) + ev.runs_scored);
+  }
 
   // Bottom totals row (R/H/E/LOB) per inning -- R and H come straight
   // from the at-bats logged that inning; E is errors WE committed while
@@ -146,7 +165,7 @@ export default async function ScorebookPage({ params }: { params: { id: string }
   const inningTotals = innings.map((inning) => {
     const hitting = (hittingAtBats ?? []).filter((ab) => ab.inning === inning);
     const pitching = (pitchingAtBats ?? []).filter((ab) => ab.inning === inning);
-    const r = hitting.reduce((sum, ab) => sum + ab.runs_scored, 0);
+    const r = hitting.reduce((sum, ab) => sum + ab.runs_scored, 0) + (scoringEventRunsByInning.get(inning) ?? 0);
     const h = hitting.filter((ab) => ab.result && ["single", "double", "triple", "hr", "ground_rule_double"].includes(ab.result)).length;
     const e = pitching.filter((ab) => ab.result === "error").length;
     const baserunnersCreated = hitting.filter(

@@ -1759,7 +1759,29 @@ export function OperatorConsole({
       // carries no ScoreMethod/game_events concept -- stolen_base is
       // already excluded from RBI eligibility, same as every other
       // non-batted-ball way a runner reaches home).
-      if (advanced.scored.length > 0) bumpScoreAdHoc();
+      //
+      // Run-attribution batch: also logs a runner_scored event with the
+      // scorer attributed, so this run (previously credited to the team
+      // score only) counts toward the player's own R too -- reuses
+      // bumpScoreAdHoc for the score bump itself (its own awaitingResult
+      // check is what keeps this from double-counting a run that's really
+      // part of an in-progress at-bat review, same reasoning as every
+      // other ad-hoc path below), so the score is bumped exactly once and
+      // the event is logged exactly once, never both or neither.
+      if (advanced.scored.length > 0 && !state.awaitingResult) {
+        const scorer = advanced.scored[0];
+        bumpScoreAdHoc();
+        void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+          logGameEvent(game.id, {
+            eventType: "runner_scored",
+            inning: state.inning,
+            inningHalf: state.inningHalf,
+            mode: state.mode,
+            runsScored: 1,
+            scorerPlayerId: scorer.type === "player" ? scorer.id : null,
+          })
+        );
+      }
       return;
     }
 
@@ -1774,10 +1796,48 @@ export function OperatorConsole({
     // scored
     syncRunners(nextRunners);
     const eventType = scoreMethod ? SCORE_METHOD_EVENT[scoreMethod] : undefined;
-    if (eventType) {
-      // wild_pitch/balk -> pitcher, passed_ball -> catcher; "error" (no
-      // picker in this sub-menu) is logged without a guessed fielder.
-      const fielder = eventType === "wild_pitch" || eventType === "balk" ? resolve("P") : eventType === "passed_ball" ? resolve("C") : null;
+    // wild_pitch/balk -> pitcher, passed_ball -> catcher; "error" (no
+    // picker in this sub-menu) is logged without a guessed fielder.
+    const fielder = eventType === "wild_pitch" || eventType === "balk" ? resolve("P") : eventType === "passed_ball" ? resolve("C") : null;
+
+    if (!state.awaitingResult) {
+      // Ad-hoc, outside the at-bat review flow -- confirmAtBat's runsScored
+      // already covers the in-review case (RBI included), so this only
+      // fires when there's no upcoming Confirm At-Bat to carry the run.
+      // RBI isn't attributed here -- there's no "current batter" in an
+      // ad-hoc context to credit it to. bumpScoreAdHoc's own awaitingResult
+      // check is what keeps this from double-counting a run that's really
+      // part of an in-progress at-bat review -- called exactly once here,
+      // never from the mid-review branch below.
+      bumpScoreAdHoc();
+      // Run-attribution batch: this ad-hoc case has no at_bats row anywhere
+      // that will ever carry this run, so it's the one place a missing
+      // game_events type would mean losing attribution entirely --
+      // "runner_scored" is the fallback for every scoreMethod with no more
+      // specific SCORE_METHOD_EVENT mapping (sac_fly, hit, forced_walk_hbp,
+      // obstruction), so every ad-hoc "Scored" tap now leaves an
+      // attributable record, not just the ones that already had a
+      // wild_pitch/balk/passed_ball/error/squeeze_play cause. Exactly one
+      // event logged per call, matching the exactly-one score bump above.
+      void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
+        logGameEvent(game.id, {
+          eventType: eventType ?? "runner_scored",
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          mode: state.mode,
+          runsScored: 1,
+          scorerPlayerId: runner.type === "player" ? runner.id : null,
+          playerId: fielder?.playerId ?? null,
+          opponentPlayerId: fielder?.opponentPlayerId ?? null,
+        })
+      );
+    } else if (eventType) {
+      // Mid-review (an at-bat is still open): no scorer/runs attribution
+      // here, since CONFIRM_LOCAL is what will credit this run (onto the
+      // batter's own at_bats row, via scoredThisAtBat) once that at-bat
+      // confirms. Attributing it here too would double-count the same run
+      // under two different players -- so this branch and the one above
+      // are mutually exclusive, and together log the event exactly once.
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
         logGameEvent(game.id, {
           eventType,
@@ -1789,14 +1849,6 @@ export function OperatorConsole({
         })
       );
     }
-    // Ad-hoc, outside the at-bat review flow -- confirmAtBat's runsScored
-    // already covers the in-review case (RBI included), so this only
-    // fires when there's no upcoming Confirm At-Bat to carry the run.
-    // RBI isn't attributed here -- there's no "current batter" in an
-    // ad-hoc context to credit it to. bumpScoreAdHoc's own awaitingResult
-    // check is what keeps this from double-counting a run that's really
-    // part of an in-progress at-bat review.
-    bumpScoreAdHoc();
   }
 
   // Shared by every AdvanceReason branch below -- dispatches the same
@@ -1861,13 +1913,28 @@ export function OperatorConsole({
         );
         const advanced = advanceRunnerWithMethod(base, reason);
         const eventFielder = reason === "wild_pitch" ? resolve("P") : resolve("C");
+        // Run-attribution batch, corrected during the Nov 7 merge:
+        // advanceRunnerWithMethod dispatches APPLY_RUNNER_ACTION("advance"),
+        // which (per the reducer) always appends any scored runner to
+        // state.scoredThisAtBat regardless of whether an at-bat is
+        // currently open -- that entry is always picked up by a future
+        // CONFIRM_LOCAL (the currently-open at-bat in the normal case; the
+        // next batter's, in the rarer postStrikeoutWildPitch case below),
+        // which is what actually credits the run to both games.our_score
+        // and the crediting batter's own at_bats.runs_scored. Unlike the
+        // ad-hoc applyRunnerAction("scored")/stolen-base paths above (which
+        // call bumpScoreAdHoc immediately and so need their own
+        // attributed event to credit the real scorer), nothing here ever
+        // bumps the score directly -- so logging scorerPlayerId/runsScored
+        // on this event too would double-count the same run under two
+        // different players once that future at-bat confirms. No scorer
+        // attribution for this reason, same as before run-attribution.
         void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
           logGameEvent(game.id, {
             eventType: reason,
             inning: state.inning,
             inningHalf: state.inningHalf,
             mode: state.mode,
-            runsScored: advanced.scored.length,
             playerId: eventFielder?.playerId ?? null,
             opponentPlayerId: eventFielder?.opponentPlayerId ?? null,
           })
@@ -1881,13 +1948,14 @@ export function OperatorConsole({
       setPostStrikeoutWildPitch(false);
       const advanced = advanceRunnerWithMethod(base, reason);
       const eventFielder = reason === "wild_pitch" ? resolve("P") : resolve("C");
+      // See the matching comment above -- same reasoning, same no-scorer-
+      // attribution fix.
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
         logGameEvent(game.id, {
           eventType: reason,
           inning: state.inning,
           inningHalf: state.inningHalf,
           mode: state.mode,
-          runsScored: advanced.scored.length,
           playerId: eventFielder?.playerId ?? null,
           opponentPlayerId: eventFielder?.opponentPlayerId ?? null,
         })
@@ -1897,16 +1965,17 @@ export function OperatorConsole({
 
     if (reason === "balk") {
       // Not a ball -- the count is untouched, only the runner moves.
-      const advanced = advanceRunnerWithMethod(base, "balk");
+      advanceRunnerWithMethod(base, "balk");
       setSummaryFlash("Balk — runner advances");
       const fielderP = resolve("P");
+      // See the wild-pitch/passed-ball comment above -- balk never bumps
+      // the score directly either, so no scorer attribution here.
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
         logGameEvent(game.id, {
           eventType: "balk",
           inning: state.inning,
           inningHalf: state.inningHalf,
           mode: state.mode,
-          runsScored: advanced.scored.length,
           playerId: fielderP?.playerId ?? null,
           opponentPlayerId: fielderP?.opponentPlayerId ?? null,
         })
@@ -1920,14 +1989,14 @@ export function OperatorConsole({
       // AdvanceReasonMenu routes here only after FieldingPositionPicker
       // has already resolved one.
       if (!fielder) return;
-      const advanced = advanceRunnerWithMethod(base, "error");
+      advanceRunnerWithMethod(base, "error");
+      // See the wild-pitch/passed-ball comment above -- same reasoning.
       void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
         logGameEvent(game.id, {
           eventType: "error",
           inning: state.inning,
           inningHalf: state.inningHalf,
           mode: state.mode,
-          runsScored: advanced.scored.length,
           playerId: fielder.playerId,
           opponentPlayerId: fielder.opponentPlayerId,
         })
@@ -2332,6 +2401,9 @@ export function OperatorConsole({
     dispatch({ type: "ADVANCE_ALL_RUNNERS_LOCAL", runners: advanced, runsScored: scored.length });
     syncRunners(advanced);
     const fielder = eventType === "passed_ball" ? resolve("C") : resolve("P");
+    // Run-attribution batch: at most one runner ever scores here (only a
+    // runner starting from 3rd can cross home on a one-base advance).
+    const scorer = scored[0];
     void withOfflineRetry(`event-${game.id}-${Date.now()}`, () =>
       logGameEvent(game.id, {
         eventType,
@@ -2339,6 +2411,7 @@ export function OperatorConsole({
         inningHalf: state.inningHalf,
         mode: state.mode,
         runsScored: scored.length,
+        scorerPlayerId: scorer?.type === "player" ? scorer.id : null,
         playerId: fielder?.playerId ?? null,
         opponentPlayerId: fielder?.opponentPlayerId ?? null,
       })
