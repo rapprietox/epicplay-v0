@@ -1946,7 +1946,7 @@ export function OperatorConsole({
       }
 
       setPostStrikeoutWildPitch(false);
-      const advanced = advanceRunnerWithMethod(base, reason);
+      advanceRunnerWithMethod(base, reason);
       const eventFielder = reason === "wild_pitch" ? resolve("P") : resolve("C");
       // See the matching comment above -- same reasoning, same no-scorer-
       // attribution fix.
