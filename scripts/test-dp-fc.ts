@@ -100,5 +100,74 @@ console.log("\n=== 6. Bases loaded, 2 outs, ground out, force at home ===");
   expect("ended on force", r6.inningEndedOnForce, true);
 }
 
+// --- Bug-fix follow-up replay (two wiring bugs found testing the
+// practice game: Quick Mode's Fielder's Choice button never reached
+// the wizard at all, and a runner marked "Out" on a Fly/Line/Foul Out
+// never persisted as a real extra out). Both bugs were in
+// operator-console.tsx's wiring, not in these pure functions -- every
+// scenario below already passed before the fix too, which is exactly
+// how the diagnosis found that the math was never the problem.
+
+console.log("\n=== 7. Runner on 1st, 0 outs, FC, runner out at 2nd ===");
+{
+  const runners: Runners = { first: player("R1"), second: null, third: null };
+  const fc = resolveFieldersChoice({ runnersBeforePlay: runners, outBase: "first", outsBeforePlay: 0 }, player("Batter"));
+  console.log("outsAdded:", fc.outsAdded, "| runners after:", fc.runnersAfter);
+  expect("outs added", fc.outsAdded, 1);
+  expect("batter on first", fc.runnersAfter.first?.name, "Batter");
+  expect("second empty", fc.runnersAfter.second, null);
+  expect("third empty", fc.runnersAfter.third, null);
+}
+
+console.log("\n=== 8. Runners on 1st and 2nd, 0 outs, FC, runner on 2nd out ===");
+{
+  const runners: Runners = { first: player("R1"), second: player("R2"), third: null };
+  const fc = resolveFieldersChoice({ runnersBeforePlay: runners, outBase: "second", outsBeforePlay: 0 }, player("Batter"));
+  console.log("outsAdded:", fc.outsAdded, "| runners after:", fc.runnersAfter);
+  expect("outs added", fc.outsAdded, 1);
+  expect("batter on first", fc.runnersAfter.first?.name, "Batter");
+  // R2 was on 2nd and chosen out -> removed from wherever the cascade
+  // would have placed them (third); R1 still cascades 1st -> 2nd
+  // regardless, since the force existed whether or not the defense
+  // converted it into a putout.
+  expect("R1 moves to second", fc.runnersAfter.second?.name, "R1");
+  expect("third empty (R2 was out, not safe there)", fc.runnersAfter.third, null);
+}
+
+console.log("\n=== 9. Runner on 1st, 1 out, Line Out, runner out ===");
+{
+  const r9 = resolveBattedBallPlay({ result: "lineout", outsBeforePlay: 1, decisions: { first: "out" } });
+  console.log("outs:", r9.totalOutsAfter, "| label:", r9.resultLabel);
+  expect("label", r9.resultLabel, "Double Play");
+  expect("total outs (inning ends)", r9.totalOutsAfter, 3);
+}
+
+console.log("\n=== 10. Runner on 1st, 1 out, Ground Out, runner out ===");
+{
+  const r10 = resolveBattedBallPlay({ result: "groundout", outsBeforePlay: 1, decisions: { first: "out" } });
+  console.log("outs:", r10.totalOutsAfter, "| label:", r10.resultLabel);
+  expect("label", r10.resultLabel, "Double Play");
+  expect("total outs (inning ends)", r10.totalOutsAfter, 3);
+}
+
+console.log("\n=== 11. Runner on 2nd, 0 outs, Fly Out, runner doubled off ===");
+{
+  const r11 = resolveBattedBallPlay({ result: "flyout", outsBeforePlay: 0, decisions: { second: "out" } });
+  console.log("outs:", r11.totalOutsAfter, "| label:", r11.resultLabel);
+  expect("label", r11.resultLabel, "Double Play");
+  expect("total outs", r11.totalOutsAfter, 2);
+}
+
+console.log(
+  "\n=== 12. Undo-in-one-tap (architectural, not simulated here) ===\n" +
+    "Every extra out above (FC's logExtraOut row, or the double/triple play's\n" +
+    "confirmDoublePlay row(s)) is merged into the SAME state.lastConfirmed the\n" +
+    "batter's own row already set, via APPEND_EXTRA_OUT (reducer.ts) setting\n" +
+    "secondAtBatId/thirdAtBatId on it. handleUndo already deletes atBatId +\n" +
+    "secondAtBatId + thirdAtBatId together in one undoAtBat call -- unchanged\n" +
+    "by this fix, and not re-simulated here since it's the same single\n" +
+    "lastConfirmed object either way, just with one or two more ids on it."
+);
+
 console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);

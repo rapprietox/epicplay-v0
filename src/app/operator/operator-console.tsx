@@ -1147,6 +1147,15 @@ export function OperatorConsole({
   // wizard never has an error branch, so that half is always true).
   function resolveFc(outBase: Base | null) {
     setFcPrompt(false);
+    // Bug 1 fix: Quick Mode has no draft/confirm at-bat lifecycle at all
+    // (logQuickAtBat inserts one already-confirmed row in a single
+    // call) -- the dispatch-SET_RESULT-then-wait-for-handleConfirm shape
+    // below only works for Full Mode's pitch-by-pitch flow. See
+    // resolveFcQuick for Quick Mode's one-shot equivalent.
+    if (game.logging_mode === "quick") {
+      void resolveFcQuick(outBase);
+      return;
+    }
     const batter = currentBatterRunner();
     const fc = resolveFieldersChoice({ runnersBeforePlay: state.runners, outBase, outsBeforePlay: state.outs }, batter);
     setFcOutRunner(outBase ? state.runners[outBase] ?? null : null);
@@ -1156,6 +1165,74 @@ export function OperatorConsole({
       : [];
     dispatch({ type: "SET_RESULT", result: "fc", suggestion: fc.runnersAfter, scored, hasMovement: true });
     syncRunners(fc.runnersAfter);
+  }
+
+  // Bug 1 fix: Quick Mode's one-shot equivalent of resolveFc above --
+  // logs the batter's own (never-out) fc row and, if a runner was
+  // chosen as out, a second row for them via logExtraOut, merged into
+  // the same lastConfirmed (APPEND_EXTRA_OUT) so Undo removes both at
+  // once, exactly like Full Mode's handleConfirm does for its own fc
+  // extra-out case.
+  async function resolveFcQuick(outBase: Base | null) {
+    const batter = currentBatterRunner();
+    const runnersBeforeAtBat = state.runners;
+    const fc = resolveFieldersChoice({ runnersBeforePlay: state.runners, outBase, outsBeforePlay: state.outs }, batter);
+    const outRunner = outBase ? state.runners[outBase] ?? null : null;
+    const scoredRunner = fc.scoredRunnerBase ? state.runners[fc.scoredRunnerBase] : null;
+    const scored: ScoredRunner[] = scoredRunner
+      ? [{ runner: scoredRunner, method: (fc.rbi > 0 ? "fielders_choice" : "fielders_choice_2out") as ScoreMethod }]
+      : [];
+    try {
+      const { atBatId } = await logQuickAtBat({
+        gameId: game.id,
+        mode: state.mode,
+        playerId: state.mode === "hitting" ? (battingPlayer?.player_id ?? null) : null,
+        pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        battingOrderPosition: state.mode === "hitting" ? state.battingOrderPosition : null,
+        result: "fc",
+        hitType: null,
+        rbi: fc.rbi,
+        runsScored: fc.runsScored,
+        opponentPitcherId: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
+        outsBefore: state.outs,
+        rispBefore: Boolean(state.runners.second || state.runners.third),
+        fieldX: null,
+        fieldY: null,
+      });
+      dispatch({
+        type: "QUICK_CONFIRM_LOCAL",
+        atBatId,
+        result: "fc",
+        runners: fc.runnersAfter,
+        scored,
+        outsRecorded: 0,
+        runnersBeforeAtBat,
+      });
+      syncRunners(fc.runnersAfter);
+
+      if (outRunner) {
+        const { atBatId: extraAtBatId } = await logExtraOut({
+          gameId: game.id,
+          mode: state.mode,
+          playerId: outRunner.type === "player" ? outRunner.id : null,
+          pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          result: "fc",
+        });
+        dispatch({ type: "APPEND_EXTRA_OUT", atBatId: extraAtBatId });
+        setSummaryFlash(`Fielder's Choice — ${outRunner.name} out`);
+        void withOfflineRetry(`fc-state-${game.id}-${Date.now()}`, () =>
+          syncGameState(game.id, { outs: Math.min(3, state.outs + 1) })
+        );
+      } else {
+        setSummaryFlash("Fielder's Choice");
+      }
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Failed to log at-bat -- check connection and try again");
+    }
   }
 
   // Feature 1 (fielding-play logging batch): Step 1's "who fielded it?"
@@ -2105,6 +2182,18 @@ export function OperatorConsole({
   // Every "scored" decision's score bump/RBI/game_events, and every
   // "out" decision's real at_bats row, happens exactly once, right here
   // -- nothing was applied optimistically while the queue was still open.
+  // Bug 2 fix (fix/dp-fc follow-up): this used to `return` right after
+  // the fly/bunt sacrifice check, before ever reaching the outBases
+  // persistence block below -- so a runner marked "Out" on a Fly
+  // Out/Line Out/Foul Out (or a bunt) was removed from the diamond
+  // locally (handleRunnerOutcomeDecision's SET_RUNNER) but the extra
+  // out was never actually logged: no second at_bats row, no
+  // APPEND_EXTRA_OUT, no outs bump, no double-play relabeling. "ground"
+  // was never affected -- it already fell through to the persistence
+  // block unconditionally. Restructured so sacrifice determination
+  // (fly/bunt-only) and outs/labeling/third-out-rule/persistence (every
+  // kind) are two independent steps instead of one early-returning
+  // branch.
   async function finalizeRunnerOutcomeQueue() {
     const kind = runnerOutcomeKind;
     const atBatId = runnerOutcomeAtBatId;
@@ -2127,16 +2216,17 @@ export function OperatorConsole({
             : "Counted as a sacrifice bunt: a runner moved up, so this is not an at-bat."
         );
       }
-      for (const { base, runner } of scoredBases) {
-        const method: ScoreMethod = kind === "fly" ? "sac_fly" : base === "third" ? "squeeze_play" : "sac_bunt";
-        void creditAdHocRun(atBatId, runner, method);
-      }
-      return;
     }
 
-    // kind === "ground"
+    // Outs/labeling/third-out rule, shared by every kind. A fly/line out
+    // is never a force (isGroundoutForce only cares whether the result
+    // is literally "groundout"), so "flyout" is a safe stand-in for
+    // kind "fly" here -- resolveBattedBallPlay never distinguishes
+    // flyout from lineout beyond that, and the single-out label it
+    // would otherwise pick was already shown by handleConfirm/
+    // handleQuickPick before this queue even started.
     const play = resolveBattedBallPlay({
-      result: "groundout",
+      result: kind === "fly" ? "flyout" : "groundout",
       outsBeforePlay: runnerOutcomeOutsBeforePlay,
       decisions: Object.fromEntries([...outBases.map((o) => [o.base, "out"]), ...scoredBases.map((s) => [s.base, "scored"])]),
     });
@@ -2144,8 +2234,9 @@ export function OperatorConsole({
     if (play.inningEndedOnForce && scoredBases.length > 0) {
       setBanner(`${scoredBases.length > 1 ? "Runs" : "Run"} did not count — the 3rd out was a force play (rule 5.09)`);
     } else {
-      for (const { runner } of scoredBases) {
-        void creditAdHocRun(atBatId, runner, "hit");
+      for (const { base, runner } of scoredBases) {
+        const method: ScoreMethod = kind === "fly" ? "sac_fly" : kind === "bunt" ? (base === "third" ? "squeeze_play" : "sac_bunt") : "hit";
+        void creditAdHocRun(atBatId, runner, method);
       }
     }
 
@@ -2320,8 +2411,24 @@ export function OperatorConsole({
   // it, instead of logging immediately on the grid tap. "Skip" (or
   // tapping nothing) still logs the at-bat -- field_x/field_y just stay
   // null, same as any other at-bat nobody tapped a location for.
+  //
+  // Bug 1 fix (fix/dp-fc follow-up): "Fielder's Choice" from either
+  // Quick Mode grid (desktop or mobile), in either hitting or pitching
+  // mode, used to fall straight through to the generic handleQuickPick
+  // path below -- the same auto-force-cascade "fc" has always used,
+  // with no "which runner was put out" question at all. The wizard
+  // (fcPrompt/resolveFc) only ever got wired into Full Mode's
+  // pickResult. Intercepted here, the same way pickResult already
+  // intercepts it for Full Mode, so both grids and both modes now reach
+  // the same wizard -- resolveFc itself branches on game.logging_mode
+  // to persist through logQuickAtBat instead of the draft/confirm
+  // lifecycle Quick Mode doesn't have.
   function startQuickPick(def: QuickModeButtonDef) {
     if (state.outs >= 3) return;
+    if (def.result === "fc" && anyRunnerOnBase()) {
+      setFcPrompt(true);
+      return;
+    }
     if (NO_FIELD_TAP_RESULTS.has(def.result)) {
       void handleQuickPick(def, null);
       return;
