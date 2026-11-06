@@ -93,6 +93,7 @@ import { ChainSubstitutionModal, type ChainResult } from "./chain-substitution-m
 import { PitchCountModal } from "./pitch-count-modal";
 import { PostGameSummary } from "./post-game-summary";
 import { StadiumBackground } from "@/components/stadium-background";
+import { resetPracticeGame } from "@/app/practice-actions";
 
 // Urgent mobile fixes, Fix 5: the only Quick Mode results with no
 // landing spot to tap -- a strikeout/walk/HBP never puts the ball in
@@ -201,6 +202,7 @@ export function OperatorConsole({
   fieldCalibration2d,
   fieldPositionsCalibration,
   season,
+  isPracticeTeam,
 }: {
   game: Game;
   players: Player[];
@@ -241,6 +243,12 @@ export function OperatorConsole({
   // season_id (a manual/friendly game) -- resolveGameRules treats that
   // the same as "season has no rules set," i.e. no limits at all.
   season: Season | null;
+  // feature/practice-reset: only true when profile.team_id ===
+  // PRACTICE_TEAM_ID (checked server-side in page.tsx) -- gates whether
+  // the "Reset practice game" quick action renders at all.
+  // resetPracticeGame itself re-checks this server-side regardless, so
+  // this prop only controls visibility, never the real authorization.
+  isPracticeTeam: boolean;
 }) {
   const router = useRouter();
   // Fix 3: was a Link rendered by page.tsx as a `fixed left-3 top-3`
@@ -251,6 +259,9 @@ export function OperatorConsole({
   // with anything else near that corner, and gained a confirmation dialog
   // it never had (a stray tap could previously leave the game instantly).
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  // feature/practice-reset
+  const [practiceResetConfirmOpen, setPracticeResetConfirmOpen] = useState(false);
+  const [practiceResetPending, setPracticeResetPending] = useState(false);
   // Deterministic on both server and client -- must never read localStorage
   // here. This function is Next.js's SSR pass for the initial HTML AND the
   // client's first render before hydration; if it returned a localStorage
@@ -2635,6 +2646,23 @@ export function OperatorConsole({
 
   const battingHandBadge = atBatBattingHand ?? battingPlayerInfo?.batting_hand ?? "R";
 
+  // feature/practice-reset -- only reachable when isPracticeTeam (see
+  // the QuickButton below); resetPracticeGame re-verifies server-side
+  // regardless, so this can't do anything on a non-practice game even
+  // if isPracticeTeam were ever wrong.
+  async function handlePracticeReset() {
+    setPracticeResetPending(true);
+    try {
+      await resetPracticeGame(game.id);
+      setPracticeResetConfirmOpen(false);
+      router.push(`/coach/games/${game.id}/setup`);
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Reset failed");
+    } finally {
+      setPracticeResetPending(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden text-foreground">
       <StadiumBackground />
@@ -3601,6 +3629,13 @@ export function OperatorConsole({
               onClick={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: true })}
               className="glossy flex-1 justify-start border-l-4 border-l-accent-gold pl-3 text-left"
             />
+            {isPracticeTeam && (
+              <QuickButton
+                label="Reset practice game"
+                onClick={() => setPracticeResetConfirmOpen(true)}
+                className="glossy flex-1 justify-start border-l-4 border-l-accent-red pl-3 text-left"
+              />
+            )}
           </div>
         </div>
       </div>
@@ -3873,6 +3908,18 @@ export function OperatorConsole({
             router.push("/coach");
           }}
           onCancel={() => setLeaveConfirmOpen(false)}
+        />
+      )}
+
+      {practiceResetConfirmOpen && (
+        <ConfirmDialog
+          title="Reset the practice game?"
+          message="Everything logged will be deleted."
+          confirmLabel={practiceResetPending ? "Resetting…" : "Reset"}
+          onConfirm={() => {
+            if (!practiceResetPending) void handlePracticeReset();
+          }}
+          onCancel={() => setPracticeResetConfirmOpen(false)}
         />
       )}
 

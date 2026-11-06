@@ -3,6 +3,8 @@ import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { formatGameDate } from "@/lib/dates";
 import type { PlayerPositionCalibration } from "@/lib/supabase/types";
+import { PRACTICE_TEAM_ID } from "@/lib/practice";
+import { PracticeResetButton } from "@/components/practice-reset-button";
 import { LineupBuilder } from "./lineup-builder";
 import { OpponentPhotoImport } from "./opponent-photo-import";
 import { GameRulesOverride } from "./game-rules-override";
@@ -65,17 +67,20 @@ export default async function GameSetupPage({ params }: { params: { id: string }
         &larr; Back to dashboard
       </Link>
 
-      <header className="mt-4 border-b border-border pb-4">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-amber">
-          Pre-Game Setup
-        </p>
-        <h1 className="font-heading mt-1 text-3xl font-bold text-white">
-          vs {game.opponent_name}
-        </h1>
-        <p className="mt-1 text-sm text-foreground/60">
-          {formatGameDate(game.game_date)}
-          {game.game_time ? ` · ${game.game_time}` : ""} · <span className="capitalize">{game.home_away}</span>
-        </p>
+      <header className="mt-4 flex items-start justify-between gap-4 border-b border-border pb-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-amber">
+            Pre-Game Setup
+          </p>
+          <h1 className="font-heading mt-1 text-3xl font-bold text-white">
+            vs {game.opponent_name}
+          </h1>
+          <p className="mt-1 text-sm text-foreground/60">
+            {formatGameDate(game.game_date)}
+            {game.game_time ? ` · ${game.game_time}` : ""} · <span className="capitalize">{game.home_away}</span>
+          </p>
+        </div>
+        {profile.team_id === PRACTICE_TEAM_ID && <PracticeResetButton gameId={game.id} />}
       </header>
 
       <div className="mx-auto mt-6 flex max-w-4xl flex-col gap-6">

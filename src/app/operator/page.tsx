@@ -6,6 +6,7 @@ import { getOrCreateGameState } from "./actions";
 import { OperatorConsole } from "./operator-console";
 import { computeBattingLines } from "@/lib/stats";
 import { normalizeLineupBattingOrder } from "@/lib/operator/batting-order";
+import { PRACTICE_TEAM_ID } from "@/lib/practice";
 
 export default async function OperatorPage({
   searchParams,
@@ -157,6 +158,7 @@ export default async function OperatorPage({
       fieldCalibration2d={(fieldCalibrationRow?.calibration_points as FieldCalibrationPoints | undefined) ?? null}
       fieldPositionsCalibration={(positionsCalibrationRow?.calibration_points as PlayerPositionCalibration | undefined) ?? null}
       season={season ?? null}
+      isPracticeTeam={teamId === PRACTICE_TEAM_ID}
     />
   );
 }
