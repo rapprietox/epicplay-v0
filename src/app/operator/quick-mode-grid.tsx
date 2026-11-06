@@ -96,7 +96,13 @@ const ROWS: QuickModeRow[] = [
 // disappearing -- "no scrolling for any common play" implies the
 // uncommon ones can still cost a scroll, not that anything is actually
 // removed from Quick Mode.
-type MobileCell = { kind: "pick"; def: QuickModeButtonDef } | { kind: "dp" } | { kind: "ibb" } | { kind: "bunt" };
+// fix/dp-fc: the standalone "DP" cell is gone -- a double play is now
+// always derived from the per-runner outcome queue that already
+// follows Ground Out/Fly Out/Line Out/Foul Out (see
+// maybeStartRunnerOutcomeQueue in operator-console.tsx and
+// resolveBattedBallPlay in src/lib/operator/runner-outcomes.ts), never
+// a direct pick.
+type MobileCell = { kind: "pick"; def: QuickModeButtonDef } | { kind: "ibb" } | { kind: "bunt" };
 
 const MOBILE_GRID: MobileCell[] = [
   { kind: "pick", def: { label: "1B", result: "single", hitType: null } },
@@ -110,7 +116,6 @@ const MOBILE_GRID: MobileCell[] = [
   { kind: "pick", def: { label: "BB", result: "walk", hitType: null } },
   { kind: "pick", def: { label: "HBP", result: "hbp", hitType: null } },
   { kind: "pick", def: { label: "LO", result: "lineout", hitType: null } },
-  { kind: "dp" },
   { kind: "pick", def: { label: "E", result: "error", hitType: null } },
   { kind: "pick", def: { label: "FC", result: "fc", hitType: null, isVisible: ({ runners }) => hasRunnerOnBase(runners) } },
   // Sacrifice-rules batch: replaces the old "SAC" cell (which used to be
@@ -123,20 +128,16 @@ const MOBILE_GRID: MobileCell[] = [
 
 export function MobileQuickModeGrid({
   onPick,
-  onDoublePlay,
   onIbb,
   onBunt,
   disabled,
-  dpDisabled,
   runners,
   outs,
 }: {
   onPick: (def: QuickModeButtonDef) => void;
-  onDoublePlay: () => void;
   onIbb: () => void;
   onBunt: () => void;
   disabled: boolean;
-  dpDisabled: boolean;
   runners: Runners;
   outs: number;
 }) {
@@ -145,19 +146,6 @@ export function MobileQuickModeGrid({
     // have real breathing room between them, not just within each one.
     <div className="grid grid-cols-4 gap-3">
       {MOBILE_GRID.filter((cell) => cell.kind !== "pick" || !cell.def.isVisible || cell.def.isVisible({ runners, outs })).map((cell, i) => {
-        if (cell.kind === "dp") {
-          return (
-            <button
-              key={i}
-              type="button"
-              disabled={dpDisabled}
-              onClick={onDoublePlay}
-              className="glossy min-h-[64px] rounded-md border-2 border-accent-amber px-1 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-accent-amber/20 disabled:cursor-not-allowed disabled:opacity-30"
-            >
-              DP
-            </button>
-          );
-        }
         if (cell.kind === "ibb") {
           return (
             <button

@@ -46,7 +46,21 @@ export type ScoreMethod =
   // own action drove the run in), but like hit/sac_fly/forced_walk_hbp
   // it's explained entirely by the batter's own at-bat result (a bunted
   // groundout), so it logs no separate game_events row either.
-  | "sac_bunt";
+  | "sac_bunt"
+  // fix/dp-fc: a runner scoring from third on a fielder's choice --
+  // RBI-eligible (the batter's own ball in play drove them in, same
+  // reasoning as "hit") but only ever attached when outsBeforePlay < 2;
+  // see "fielders_choice_2out" below for the other case. Never maps to
+  // a game_events type -- like hit/sac_fly/forced_walk_hbp, it's fully
+  // explained by the batter's own (already-logged) at-bat result.
+  | "fielders_choice"
+  // fix/dp-fc: the same scoring runner, but with 2 outs already on the
+  // board when the play started -- the run still counts (runsScored),
+  // it just doesn't earn an RBI. A second, honestly-named value instead
+  // of reusing "error" (no error happened) or "obstruction" (nothing
+  // was obstructed) -- both would mislabel this if their
+  // SCORE_METHOD_LABELS text were ever shown anywhere.
+  | "fielders_choice_2out";
 
 export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
   hit: true,
@@ -54,12 +68,14 @@ export const SCORE_METHOD_AWARDS_RBI: Record<ScoreMethod, boolean> = {
   forced_walk_hbp: true,
   squeeze_play: true,
   sac_bunt: true,
+  fielders_choice: true,
   wild_pitch: false,
   passed_ball: false,
   balk: false,
   error: false,
   stolen_base: false,
   obstruction: false,
+  fielders_choice_2out: false,
 };
 
 export const SCORE_METHOD_LABELS: Record<ScoreMethod, string> = {
@@ -74,6 +90,8 @@ export const SCORE_METHOD_LABELS: Record<ScoreMethod, string> = {
   obstruction: "Obstruction",
   squeeze_play: "Squeeze play",
   sac_bunt: "Sacrifice bunt",
+  fielders_choice: "Fielder's choice",
+  fielders_choice_2out: "Fielder's choice (2 out, no RBI)",
 };
 
 // wild_pitch/passed_ball/balk/error/squeeze_play map onto the existing
@@ -348,8 +366,17 @@ export const RESULT_BUTTON_ORDER: AtBatResult[] = [
 // bunt aren't named in the original spec (only ground ball/fly ball/line
 // drive were) -- these two lists are a reasonable extrapolation of the
 // same "what can this batted ball actually become" logic.
+// fix/dp-fc: "double_play" removed from every hit type's own result
+// list -- it's no longer a directly-pickable result anywhere. A double/
+// triple play is now always *derived*, never chosen: pick the plain
+// out (groundout/flyout/lineout), and if the per-runner outcome queue
+// that follows (operator-console.tsx) marks 1 or 2 extra runners "Out,"
+// the play relabels itself automatically (see resolveBattedBallPlay in
+// src/lib/operator/runner-outcomes.ts). "double_play" the AtBatResult
+// value itself is unchanged -- it's still written to at_bats.result,
+// just only ever by that derived path now, never by a direct pick.
 export const HIT_TYPE_RESULT_OPTIONS: Record<HitType, AtBatResult[]> = {
-  groundball: ["groundout", "single", "double", "error", "fc", "double_play"],
+  groundball: ["groundout", "single", "double", "error", "fc"],
   // Fix 9 (baseball-logic-fixes batch, minor tier): "Ground Rule Double" on
   // fly ball/line drive only -- realistically always a deep fly that
   // bounces over the fence, occasionally a hard-hit liner; never a

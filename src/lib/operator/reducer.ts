@@ -97,17 +97,6 @@ export type OperatorAction =
   | { type: "CONFIRM_RUNNERS_SUGGESTION" }
   | { type: "APPLY_RUNNER_ACTION"; base: Base; action: RunnerQuickAction; scoreMethod?: ScoreMethod; forced?: boolean }
   | { type: "CONFIRM_LOCAL"; atBatId: string; outsRecorded: number; accuracyRatio: number; voidRuns?: boolean }
-  | {
-      type: "CONFIRM_DOUBLE_PLAY";
-      atBatId: string;
-      secondAtBatId: string;
-      removedBase: Base;
-      accuracyRatio: number;
-      // Fix 8 (baseball-logic-fixes batch, minor tier): present only for a
-      // triple play -- both undefined/null together, or both set together.
-      thirdAtBatId?: string | null;
-      thirdRemovedBase?: Base | null;
-    }
   | { type: "CONFIRM_INTENTIONAL_WALK"; atBatId: string; runners: Runners; runsScored: number; runnersBeforeAtBat: Runners }
   // Quick Mode batch: one tap, one already-confirmed at-bat, no draft and
   // no pitches -- same "bypasses pitch logging entirely" shape as
@@ -115,16 +104,17 @@ export type OperatorAction =
   // accuracy tracking is skipped), generalized to any result instead of
   // just a walk.
   | { type: "QUICK_CONFIRM_LOCAL"; atBatId: string; result: AtBatResult; runners: Runners; scored: ScoredRunner[]; outsRecorded: number; runnersBeforeAtBat: Runners }
-  // Quick Mode scorekeeper batch: mirrors CONFIRM_DOUBLE_PLAY (batter's
-  // own out + one runner's out, two rows, 2 outs recorded at once) but
-  // skips the accuracy-ratio bookkeeping and pendingHitType/fieldTap
-  // reset that CONFIRM_DOUBLE_PLAY does -- same reasoning as
-  // QUICK_CONFIRM_LOCAL/CONFIRM_INTENTIONAL_WALK: Quick Mode never
-  // populates those fields to begin with, and folding a 0-pitch play into
-  // the running "Logging: N% accurate" average would unfairly ding the
-  // operator for something never meant to be pitch-logged. No triple-play
-  // variant -- deliberately out of scope for Quick Mode's simpler flow.
-  | { type: "QUICK_DOUBLE_PLAY_LOCAL"; atBatId: string; secondAtBatId: string; removedBase: Base; runnersBeforeAtBat: Runners }
+  // fix/dp-fc: a second (or third) at_bats row logged AFTER the batter's
+  // own at-bat already confirmed -- the per-runner outcome queue
+  // (operator-console.tsx) only knows whether anyone else was put out
+  // once it fully drains, which is always after CONFIRM_LOCAL has
+  // already run. One extra out, one more dispatch -- a triple play is
+  // just this fired twice. Replaces the old CONFIRM_DOUBLE_PLAY/
+  // QUICK_DOUBLE_PLAY_LOCAL actions, which bundled the batter's own
+  // confirm and the extra out into one dispatch; that bundling doesn't
+  // fit this flow, since the extra out is never known until after the
+  // batter's own at-bat already confirmed.
+  | { type: "APPEND_EXTRA_OUT"; atBatId: string }
   // Quick Mode scorekeeper batch: the standalone all-runners Wild
   // Pitch/Passed Ball/Balk buttons (reintroduced for Quick Mode only --
   // full mode deliberately replaced these with a per-runner reason menu,
@@ -441,66 +431,27 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
       };
     }
 
-    case "CONFIRM_DOUBLE_PLAY": {
-      const nextBattingOrder =
-        state.mode === "hitting" ? nextBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition) : state.battingOrderPosition;
-      const nextAccuracySum = state.accuracyRatioSum + action.accuracyRatio;
-      const nextAccuracyCount = state.accuracyAtBatCount + 1;
-      const prevBoxScore = {
-        hitsThisInning: state.hitsThisInning,
-        runsThisInning: state.runsThisInning,
-        errorsThisInning: state.errorsThisInning,
-        kThisInning: state.kThisInning,
-        hitsGame: state.hitsGame,
-        runsGame: state.runsGame,
-        errorsGame: state.errorsGame,
-        kGame: state.kGame,
-      };
-      // Fix 8 (baseball-logic-fixes batch, minor tier): a triple play is
-      // this same confirm with one more out folded in -- outsRecorded/
-      // runners both scale with whether a third out was actually logged.
-      const outsRecorded = action.thirdAtBatId ? 3 : 2;
+    // fix/dp-fc: a second (or third, fired twice) at_bats row logged
+    // after the batter's own at-bat already confirmed -- see the
+    // Action type's own comment for why this replaces the old
+    // CONFIRM_DOUBLE_PLAY/QUICK_DOUBLE_PLAY_LOCAL bundling. `runners`
+    // is deliberately untouched here: whichever runner this out belongs
+    // to was already removed locally (SET_RUNNER) the moment the
+    // operator picked "Out"/the fielder's-choice runner, well before
+    // this DB-confirmed id comes back. Only the bookkeeping -- the outs
+    // count and lastConfirmed, so Undo reverses this and the batter's
+    // own row as one play -- happens here.
+    case "APPEND_EXTRA_OUT": {
+      if (!state.lastConfirmed) return state;
+      const isSecond = state.lastConfirmed.secondAtBatId === null;
       return {
         ...state,
-        outs: Math.min(3, state.outs + outsRecorded),
-        runners: {
-          ...state.runners,
-          [action.removedBase]: null,
-          ...(action.thirdRemovedBase ? { [action.thirdRemovedBase]: null } : {}),
-        },
-        battingOrderPosition: nextBattingOrder,
-        currentAtBatId: null,
-        runnersAtAtBatStart: null,
-        currentPlayForceOuts: [],
-        balls: 0,
-        strikes: 0,
-        pendingPitches: [],
-        selectedPitchType: null,
-        selectedZone: null,
-        awaitingResult: false,
-        suggestedResult: null,
-        fieldTap: null,
-        pendingFielding: null,
-        pendingRbi: 0,
-        pendingHitType: null,
-        scoredThisAtBat: [],
-        runnersPendingConfirmation: false,
-        accuracyRatioSum: nextAccuracySum,
-        accuracyAtBatCount: nextAccuracyCount,
-        showLowAccuracyWarning: runningAccuracy(nextAccuracySum, nextAccuracyCount) < RUNNING_ACCURACY_WARNING_THRESHOLD,
+        outs: Math.min(3, state.outs + 1),
         lastConfirmed: {
-          atBatId: action.atBatId,
-          secondAtBatId: action.secondAtBatId,
-          thirdAtBatId: action.thirdAtBatId ?? null,
-          mode: state.mode,
-          runsScored: 0,
-          outsRecorded,
-          pitchesThisAtBat: state.pendingPitches.length,
-          runnersBeforeAtBat: state.runnersAtAtBatStart ?? {},
-          prevAccuracyRatioSum: state.accuracyRatioSum,
-          prevAccuracyAtBatCount: state.accuracyAtBatCount,
-          prevBoxScore,
-          deadline: Date.now() + UNDO_WINDOW_MS,
+          ...state.lastConfirmed,
+          secondAtBatId: isSecond ? action.atBatId : state.lastConfirmed.secondAtBatId,
+          thirdAtBatId: isSecond ? state.lastConfirmed.thirdAtBatId : action.atBatId,
+          outsRecorded: state.lastConfirmed.outsRecorded + 1,
         },
         dirty: true,
       };
@@ -603,44 +554,6 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           mode: state.mode,
           runsScored,
           outsRecorded: action.outsRecorded,
-          pitchesThisAtBat: 0,
-          runnersBeforeAtBat: action.runnersBeforeAtBat,
-          prevAccuracyRatioSum: state.accuracyRatioSum,
-          prevAccuracyAtBatCount: state.accuracyAtBatCount,
-          prevBoxScore,
-          deadline: Date.now() + UNDO_WINDOW_MS,
-        },
-        dirty: true,
-      };
-    }
-
-    case "QUICK_DOUBLE_PLAY_LOCAL": {
-      const nextBattingOrder =
-        state.mode === "hitting" ? nextBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition) : state.battingOrderPosition;
-      const prevBoxScore = {
-        hitsThisInning: state.hitsThisInning,
-        runsThisInning: state.runsThisInning,
-        errorsThisInning: state.errorsThisInning,
-        kThisInning: state.kThisInning,
-        hitsGame: state.hitsGame,
-        runsGame: state.runsGame,
-        errorsGame: state.errorsGame,
-        kGame: state.kGame,
-      };
-      return {
-        ...state,
-        runners: { ...state.runners, [action.removedBase]: null },
-        outs: Math.min(3, state.outs + 2),
-        battingOrderPosition: nextBattingOrder,
-        runnersPendingConfirmation: false,
-        currentPlayForceOuts: [],
-        lastConfirmed: {
-          atBatId: action.atBatId,
-          secondAtBatId: action.secondAtBatId,
-          thirdAtBatId: null,
-          mode: state.mode,
-          runsScored: 0,
-          outsRecorded: 2,
           pitchesThisAtBat: 0,
           runnersBeforeAtBat: action.runnersBeforeAtBat,
           prevAccuracyRatioSum: state.accuracyRatioSum,
