@@ -6,12 +6,7 @@
 //
 // Usage: npx tsx scripts/test-dp-fc.ts
 
-import { resolveBattedBallPlay, resolveFieldersChoice } from "../src/lib/operator/runner-outcomes";
-import type { RunnerState, Runners } from "../src/lib/supabase/types";
-
-function player(name: string): RunnerState {
-  return { type: "player", id: name, name };
-}
+import { resolveBattedBallPlay, resolveGroundBallWithRunners } from "../src/lib/operator/runner-outcomes";
 
 let failures = 0;
 function expect(label: string, actual: unknown, expected: unknown) {
@@ -48,15 +43,23 @@ console.log("\n=== 2. Runner on 1st, ground out, runner out at second, batter ou
   expect("total outs", r2.totalOutsAfter, 2);
 }
 
-console.log("\n=== 3. Runner on 1st, fielder's choice, runner out at second ===");
+// Make-FC-implicit batch: resolveFieldersChoice (the old deterministic
+// "which runner was put out, or No one out" wizard) is gone --
+// resolveGroundBallWithRunners (batterOut: false) replaces it, driven by
+// the same per-runner Scored/Advanced/Stayed/Out decisions Ground Out/
+// Fly Out/Line Out already share, not a single outBase pick. It only
+// decides outs/label/RBI-eligibility, not runner positions (those are
+// now whatever the operator answered per runner, applied directly to
+// `runners` as each decision comes in -- see scripts/test-implicit-fc.ts
+// for the full replay, including runner positions, through the real
+// reducer).
+console.log("\n=== 3. Runner on 1st, batter safe, runner out at second: fielder's choice ===");
 {
-  const runners: Runners = { first: player("R1"), second: null, third: null };
-  const fc = resolveFieldersChoice({ runnersBeforePlay: runners, outBase: "first", outsBeforePlay: 0 }, player("Batter"));
-  console.log("outsAdded:", fc.outsAdded, "| runners after:", fc.runnersAfter);
-  expect("outs added", fc.outsAdded, 1);
-  expect("batter ends on first", fc.runnersAfter.first?.name, "Batter");
-  expect("second base empty", fc.runnersAfter.second, null);
-  expect("third base empty", fc.runnersAfter.third, null);
+  const r3 = resolveGroundBallWithRunners({ batterOut: false, outsBeforePlay: 0, decisions: { first: "out" } });
+  console.log("outsAdded:", r3.outsAddedThisPlay, "| label:", r3.resultLabel, "| isFieldersChoice:", r3.isFieldersChoice);
+  expect("is a fielder's choice", r3.isFieldersChoice, true);
+  expect("label", r3.resultLabel, "Fielder's Choice");
+  expect("1 out added (batter safe, only the runner is out)", r3.outsAddedThisPlay, 1);
 }
 
 console.log("\n=== 4. Runner on 2nd, fly out, runner doubled off ===");
@@ -108,30 +111,20 @@ console.log("\n=== 6. Bases loaded, 2 outs, ground out, force at home ===");
 // scenario below already passed before the fix too, which is exactly
 // how the diagnosis found that the math was never the problem.
 
-console.log("\n=== 7. Runner on 1st, 0 outs, FC, runner out at 2nd ===");
+console.log("\n=== 7. Runner on 1st, 0 outs, batter safe, runner out at 2nd: fielder's choice ===");
 {
-  const runners: Runners = { first: player("R1"), second: null, third: null };
-  const fc = resolveFieldersChoice({ runnersBeforePlay: runners, outBase: "first", outsBeforePlay: 0 }, player("Batter"));
-  console.log("outsAdded:", fc.outsAdded, "| runners after:", fc.runnersAfter);
-  expect("outs added", fc.outsAdded, 1);
-  expect("batter on first", fc.runnersAfter.first?.name, "Batter");
-  expect("second empty", fc.runnersAfter.second, null);
-  expect("third empty", fc.runnersAfter.third, null);
+  const r7 = resolveGroundBallWithRunners({ batterOut: false, outsBeforePlay: 0, decisions: { first: "out" } });
+  console.log("outsAdded:", r7.outsAddedThisPlay, "| label:", r7.resultLabel);
+  expect("is a fielder's choice", r7.isFieldersChoice, true);
+  expect("outs added", r7.outsAddedThisPlay, 1);
 }
 
-console.log("\n=== 8. Runners on 1st and 2nd, 0 outs, FC, runner on 2nd out ===");
+console.log("\n=== 8. Runners on 1st and 2nd, 0 outs, batter safe, runner on 2nd out: fielder's choice ===");
 {
-  const runners: Runners = { first: player("R1"), second: player("R2"), third: null };
-  const fc = resolveFieldersChoice({ runnersBeforePlay: runners, outBase: "second", outsBeforePlay: 0 }, player("Batter"));
-  console.log("outsAdded:", fc.outsAdded, "| runners after:", fc.runnersAfter);
-  expect("outs added", fc.outsAdded, 1);
-  expect("batter on first", fc.runnersAfter.first?.name, "Batter");
-  // R2 was on 2nd and chosen out -> removed from wherever the cascade
-  // would have placed them (third); R1 still cascades 1st -> 2nd
-  // regardless, since the force existed whether or not the defense
-  // converted it into a putout.
-  expect("R1 moves to second", fc.runnersAfter.second?.name, "R1");
-  expect("third empty (R2 was out, not safe there)", fc.runnersAfter.third, null);
+  const r8 = resolveGroundBallWithRunners({ batterOut: false, outsBeforePlay: 0, decisions: { second: "out" } });
+  console.log("outsAdded:", r8.outsAddedThisPlay, "| label:", r8.resultLabel);
+  expect("is a fielder's choice", r8.isFieldersChoice, true);
+  expect("outs added", r8.outsAddedThisPlay, 1);
 }
 
 console.log("\n=== 9. Runner on 1st, 1 out, Line Out, runner out ===");

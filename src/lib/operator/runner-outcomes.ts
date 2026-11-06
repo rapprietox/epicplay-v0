@@ -1,5 +1,4 @@
 import type { Base } from "@/lib/operator/types";
-import type { RunnerState, Runners } from "@/lib/supabase/types";
 
 // Shared by the per-runner outcome queue (operator-console.tsx) for
 // Ground Out/Fly Out/Line Out/Foul Out (Foul Out is just "flyout" with a
@@ -94,57 +93,89 @@ export function resolveBattedBallPlay(input: BattedBallPlayInput): BattedBallPla
   };
 }
 
-export interface FieldersChoiceInput {
-  runnersBeforePlay: Runners;
-  // Which occupied base's runner was put out, or null for "No one out."
-  outBase: Base | null;
+// Implicit-FC batch: replaces the old deterministic "which runner was
+// put out, or No one out" wizard (resolveFieldersChoice, removed) --
+// Fielder's Choice is no longer its own directly-pickable result. A
+// plain Ground Out now always asks "Was the batter put out?" first
+// (when a runner is on base and outs are below 2), then the SAME
+// per-runner Scored/Advanced/Stayed/Out queue Fly Out/Line Out/a bunt
+// out already use (see RunnerOutcomeDecision above) -- "scored"/"out"
+// decisions here drive this function; "advanced"/"stayed" only ever
+// move a runner locally (operator-console.tsx), so they don't need to
+// appear in `decisions` at all. This is the one place that decides,
+// from batterOut plus those decisions, whether the play is a plain
+// ground out, a derived double/triple play, a derived fielder's choice,
+// or (batter safe, nobody out) nothing worth recording at all -- kept
+// pure and DB/React-free for the same reason resolveBattedBallPlay is:
+// the real UI and the proof scripts can never disagree about the rule.
+export interface GroundBallWithRunnersInput {
+  // Whether the BATTER was put out on this play -- answered explicitly
+  // by the operator before the per-runner queue starts (or already
+  // known, for a bunt's own "Out at First"/"Safe" choice).
+  batterOut: boolean;
   outsBeforePlay: number;
+  decisions: Partial<Record<Base, RunnerOutcomeDecision>>;
 }
 
-export interface FieldersChoiceResult {
-  runnersAfter: Runners;
-  // 0 or 1 -- an FC can put out at most one baserunner; the batter is
-  // always safe at first by definition.
-  outsAdded: number;
-  // 0 or 1 -- only the runner who started on third can score on this
-  // simplified force-cascade model (same cascade a single already uses).
-  runsScored: number;
-  // RBI only when there were fewer than 2 outs before the play and (by
-  // construction -- this wizard has no error branch) no error was
-  // involved. The run still counts toward runsScored either way; only
-  // the RBI is conditional.
-  rbi: number;
-  scoredRunnerBase: "third" | null;
+export interface GroundBallWithRunnersResult {
+  // Bases whose runner was marked "out" -- 0, 1, or 2 of them.
+  extraOutBases: Base[];
+  // Bases whose runner was marked "scored" -- before the third-out rule
+  // (inningEndedOnForce) is applied.
+  scoredBases: Base[];
+  // (batterOut ? 1 : 0) plus one per extra out.
+  outsAddedThisPlay: number;
+  totalOutsAfter: number;
+  // batterOut && exactly 1 extra out.
+  isDoublePlay: boolean;
+  // batterOut && 2 extra outs.
+  isTriplePlay: boolean;
+  // !batterOut && at least 1 extra out -- the batter reached because a
+  // runner was put out instead. Always an at-bat, never a hit.
+  isFieldersChoice: boolean;
+  // !batterOut && no extra out -- nothing legitimately happened here;
+  // this was a hit or an error, not a fielder's choice, and the caller
+  // must record nothing and ask the operator to pick Single/Error instead.
+  recordNothing: boolean;
+  resultLabel: "Ground Out" | "Double Play" | "Triple Play" | "Fielder's Choice";
+  // Same rule as resolveBattedBallPlay's own field: a run cannot score on
+  // the play that records the 3rd out of the half-inning if that out was
+  // a force (rule 5.09(b)/4.09(b)). The batter's own out on a ground ball
+  // is always a force at first; so is any extra out recorded on the same
+  // ground ball, whether or not the batter personally was the one retired
+  // (a fielder's choice is still a ground ball, just one where the
+  // defense chose a different forced runner over the sure out at first).
+  inningEndedOnForce: boolean;
 }
 
-// Force cascade: batter always takes first; every other occupied base
-// is pushed up by exactly one (same math a single/error uses -- see
-// suggestRunnerAdvance's "fc" case). The chosen "out" runner is then
-// removed from wherever that cascade would have placed them (not their
-// original base), since the force existed regardless of whether the
-// defense converted it into a putout or let the runner advance.
-export function resolveFieldersChoice(input: FieldersChoiceInput, batter: RunnerState): FieldersChoiceResult {
-  const { runnersBeforePlay: r, outBase, outsBeforePlay } = input;
+export function resolveGroundBallWithRunners(input: GroundBallWithRunnersInput): GroundBallWithRunnersResult {
+  const { batterOut, outsBeforePlay, decisions } = input;
+  const bases: Base[] = ["third", "second", "first"];
+  const extraOutBases = bases.filter((b) => decisions[b] === "out");
+  const scoredBases = bases.filter((b) => decisions[b] === "scored");
 
-  let runnersAfter: Runners = {
-    first: batter,
-    second: r.first ?? null,
-    third: r.second ?? null,
-  };
-  let scoredRunner: RunnerState | null = r.third ?? null;
+  const outsAddedThisPlay = (batterOut ? 1 : 0) + extraOutBases.length;
+  const totalOutsAfter = Math.min(3, outsBeforePlay + outsAddedThisPlay);
 
-  if (outBase === "first") runnersAfter = { ...runnersAfter, second: null };
-  else if (outBase === "second") runnersAfter = { ...runnersAfter, third: null };
-  else if (outBase === "third") scoredRunner = null;
+  const isDoublePlay = batterOut && extraOutBases.length === 1;
+  const isTriplePlay = batterOut && extraOutBases.length >= 2;
+  const isFieldersChoice = !batterOut && extraOutBases.length > 0;
+  const recordNothing = !batterOut && extraOutBases.length === 0;
 
-  const runsScored = scoredRunner ? 1 : 0;
-  const rbi = runsScored > 0 && outsBeforePlay < 2 ? 1 : 0;
+  const resultLabel = isTriplePlay ? "Triple Play" : isDoublePlay ? "Double Play" : isFieldersChoice ? "Fielder's Choice" : "Ground Out";
+
+  const inningEndedOnForce = totalOutsAfter >= 3 && (batterOut || extraOutBases.length > 0);
 
   return {
-    runnersAfter,
-    outsAdded: outBase ? 1 : 0,
-    runsScored,
-    rbi,
-    scoredRunnerBase: scoredRunner ? "third" : null,
+    extraOutBases,
+    scoredBases,
+    outsAddedThisPlay,
+    totalOutsAfter,
+    isDoublePlay,
+    isTriplePlay,
+    isFieldersChoice,
+    recordNothing,
+    resultLabel,
+    inningEndedOnForce,
   };
 }
