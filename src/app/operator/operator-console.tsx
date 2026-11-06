@@ -2830,7 +2830,16 @@ export function OperatorConsole({
   }
 
   const undoRemaining = state.lastConfirmed ? Math.max(0, state.lastConfirmed.deadline - now) : 0;
-  const undoActive = state.lastConfirmed !== null && undoRemaining > 0 && !state.currentAtBatId;
+  // Safety change (pre-main-merge): a play that appended an extra out
+  // (double play, triple play, fielder's choice -- the one thing these
+  // three share is a non-null secondAtBatId, set by APPEND_EXTRA_OUT)
+  // can Undo-skip a batter, a known issue accepted for now rather than
+  // fixed here. Narrowest possible mitigation: just don't offer Undo for
+  // that specific play, so the broken path can't be taken -- Undo for
+  // every other play, and Undo after the 3rd out, are untouched.
+  const undoHasExtraOut = state.lastConfirmed !== null && state.lastConfirmed.secondAtBatId !== null;
+  const undoActive = state.lastConfirmed !== null && undoRemaining > 0 && !state.currentAtBatId && !undoHasExtraOut;
+  const undoBlockedForExtraOut = state.lastConfirmed !== null && undoRemaining > 0 && !state.currentAtBatId && undoHasExtraOut;
 
   const pitchCountColor =
     state.mode === "pitching"
@@ -3861,6 +3870,7 @@ export function OperatorConsole({
               <span className="relative">Undo ({Math.ceil(undoRemaining / 1000)}s)</span>
             </button>
           )}
+          {undoBlockedForExtraOut && <span className="text-[11px] text-accent-amber">To fix this play, tell the coach.</span>}
           <button
             onClick={() => dispatch({ type: "SET_PANEL", panel: "endGame", open: true })}
             className="min-h-[40px] rounded-md bg-accent-red px-3 text-xs font-semibold text-white"
@@ -4089,6 +4099,7 @@ export function OperatorConsole({
           undoActive={undoActive}
           undoRemaining={undoRemaining}
           onUndo={handleUndo}
+          undoBlockedForExtraOut={undoBlockedForExtraOut}
         />
       )}
 
@@ -5315,6 +5326,7 @@ function ThreeOutsModal({
   undoActive,
   undoRemaining,
   onUndo,
+  undoBlockedForExtraOut,
 }: {
   hits: number;
   runs: number;
@@ -5329,6 +5341,12 @@ function ThreeOutsModal({
   undoActive: boolean;
   undoRemaining: number;
   onUndo: () => void;
+  // Safety change (pre-main-merge): same undoBlockedForExtraOut the
+  // bottom bar computes -- this modal's own Undo button needs the same
+  // "not for a double/triple play or fielder's choice" restriction, or
+  // the 3rd-out overlay would reopen the exact skip-a-batter path the
+  // bottom bar was just closed off from.
+  undoBlockedForExtraOut: boolean;
 }) {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#030A06]/95 p-4">
@@ -5359,6 +5377,7 @@ function ThreeOutsModal({
             Undo last play ({Math.ceil(undoRemaining / 1000)}s)
           </button>
         )}
+        {undoBlockedForExtraOut && <p className="mt-4 text-xs text-accent-amber">To fix this play, tell the coach.</p>}
         <button
           onClick={onEndInning}
           className="mt-3 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-background"
