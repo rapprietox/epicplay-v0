@@ -2,12 +2,6 @@
 
 import type { AtBatResult, HitType, Runners } from "@/lib/supabase/types";
 
-// Operator-screen bug fixes (feature/lineup-drafts): Fielder's Choice was
-// always rendered, even for the first batter of a half-inning with the
-// bases empty -- it can't legitimately happen with nobody on. Hidden
-// outright when the condition fails (never just greyed out) -- see
-// isVisible below and its use in QuickModeGrid/MobileQuickModeGrid.
-//
 // Sacrifice-rules batch: Sac Fly and Sac Bunt are gone as their own
 // buttons -- a sacrifice is no longer decided by which button the
 // operator taps, only by what actually happens to the runners (see
@@ -16,9 +10,16 @@ import type { AtBatResult, HitType, Runners } from "@/lib/supabase/types";
 // the new standalone "Bunt" button below replaces Sac Bunt and asks a
 // first how-did-it-end question before the same per-runner queue can
 // apply to a bunt out at first.
-function hasRunnerOnBase(runners: Runners): boolean {
-  return Boolean(runners.first || runners.second || runners.third);
-}
+//
+// Implicit-FC batch: the standalone "Fielder's Choice"/"FC" button (both
+// grids) is gone the same way the earlier "DP" cell went -- a fielder's
+// choice is now always derived, never a direct pick. Tapping "Ground
+// Out" (or Bunt's "Out at First") with a runner on base and outs below 2
+// now asks "Was the batter put out?" first; answering "Safe" there opens
+// the same per-runner Scored/Advanced/Stayed/Out queue, and a runner
+// marked "Out" is what derives a fielder's choice (see beginImplicitFcFlow
+// in operator-console.tsx and resolveGroundBallWithRunners in
+// src/lib/operator/runner-outcomes.ts).
 
 export interface QuickModeButtonDef {
   label: string;
@@ -29,9 +30,10 @@ export interface QuickModeButtonDef {
   // looking) and "Foul Out" both reuse an existing result this way (see
   // logQuickAtBat's own comment).
   scorebookNotation?: string;
-  // Bug fix (feature/lineup-drafts): only set on Fielder's Choice --
-  // every other button has no base/outs precondition and is always
-  // visible, same as before this fix.
+  // Bug fix (feature/lineup-drafts): no button currently uses this any
+  // more (it was only ever set on the now-removed Fielder's Choice
+  // button), kept on the type in case a future button needs a base/outs
+  // precondition again.
   isVisible?: (ctx: { runners: Runners; outs: number }) => boolean;
 }
 
@@ -80,7 +82,6 @@ const ROWS: QuickModeRow[] = [
       { label: "Walk (BB)", result: "walk", hitType: null },
       { label: "HBP", result: "hbp", hitType: null },
       { label: "Error", result: "error", hitType: null },
-      { label: "Fielder's Choice", result: "fc", hitType: null, isVisible: ({ runners }) => hasRunnerOnBase(runners) },
     ],
   },
 ];
@@ -96,7 +97,13 @@ const ROWS: QuickModeRow[] = [
 // disappearing -- "no scrolling for any common play" implies the
 // uncommon ones can still cost a scroll, not that anything is actually
 // removed from Quick Mode.
-type MobileCell = { kind: "pick"; def: QuickModeButtonDef } | { kind: "dp" } | { kind: "ibb" } | { kind: "bunt" };
+// fix/dp-fc: the standalone "DP" cell is gone -- a double play is now
+// always derived from the per-runner outcome queue that already
+// follows Ground Out/Fly Out/Line Out/Foul Out (see
+// maybeStartRunnerOutcomeQueue in operator-console.tsx and
+// resolveBattedBallPlay in src/lib/operator/runner-outcomes.ts), never
+// a direct pick.
+type MobileCell = { kind: "pick"; def: QuickModeButtonDef } | { kind: "ibb" } | { kind: "bunt" };
 
 const MOBILE_GRID: MobileCell[] = [
   { kind: "pick", def: { label: "1B", result: "single", hitType: null } },
@@ -110,9 +117,7 @@ const MOBILE_GRID: MobileCell[] = [
   { kind: "pick", def: { label: "BB", result: "walk", hitType: null } },
   { kind: "pick", def: { label: "HBP", result: "hbp", hitType: null } },
   { kind: "pick", def: { label: "LO", result: "lineout", hitType: null } },
-  { kind: "dp" },
   { kind: "pick", def: { label: "E", result: "error", hitType: null } },
-  { kind: "pick", def: { label: "FC", result: "fc", hitType: null, isVisible: ({ runners }) => hasRunnerOnBase(runners) } },
   // Sacrifice-rules batch: replaces the old "SAC" cell (which used to be
   // a pre-decided Sac Fly tap) -- Bunt now always asks how the play ended
   // first (see onBunt/BuntOutcomePrompt in operator-console.tsx) before
@@ -123,20 +128,16 @@ const MOBILE_GRID: MobileCell[] = [
 
 export function MobileQuickModeGrid({
   onPick,
-  onDoublePlay,
   onIbb,
   onBunt,
   disabled,
-  dpDisabled,
   runners,
   outs,
 }: {
   onPick: (def: QuickModeButtonDef) => void;
-  onDoublePlay: () => void;
   onIbb: () => void;
   onBunt: () => void;
   disabled: boolean;
-  dpDisabled: boolean;
   runners: Runners;
   outs: number;
 }) {
@@ -145,19 +146,6 @@ export function MobileQuickModeGrid({
     // have real breathing room between them, not just within each one.
     <div className="grid grid-cols-4 gap-3">
       {MOBILE_GRID.filter((cell) => cell.kind !== "pick" || !cell.def.isVisible || cell.def.isVisible({ runners, outs })).map((cell, i) => {
-        if (cell.kind === "dp") {
-          return (
-            <button
-              key={i}
-              type="button"
-              disabled={dpDisabled}
-              onClick={onDoublePlay}
-              className="glossy min-h-[64px] rounded-md border-2 border-accent-amber px-1 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-accent-amber/20 disabled:cursor-not-allowed disabled:opacity-30"
-            >
-              DP
-            </button>
-          );
-        }
         if (cell.kind === "ibb") {
           return (
             <button

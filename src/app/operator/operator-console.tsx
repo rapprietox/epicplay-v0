@@ -13,13 +13,11 @@ import type {
   GameEventType,
   HitType,
   InningHalf,
-  OutType,
   PitchOutcome,
   PitchType,
   PlayerPositionCalibration,
   RunnerState,
   Runners,
-  SacrificeType,
 } from "@/lib/supabase/types";
 import {
   FIELDER_NUMBER_TO_POSITION,
@@ -35,6 +33,7 @@ import {
 } from "@/lib/field-zones";
 import { operatorReducer, UNDO_WINDOW_MS } from "@/lib/operator/reducer";
 import { advanceAllRunnersOneBase, advanceOneRunner, isForced, suggestRunnerAdvance } from "@/lib/operator/runner-advance";
+import { resolveBattedBallPlay, resolveGroundBallWithRunners } from "@/lib/operator/runner-outcomes";
 import { resolveFielder, type ResolvedFielder } from "@/lib/operator/fielding";
 import {
   RESULT_IS_OUT,
@@ -72,8 +71,8 @@ import {
   incrementAtBatRbi,
   logGameEvent,
   logPitch,
+  logExtraOut,
   logQuickAtBat,
-  logQuickDoublePlay,
   logStolenBase,
   markLateArrival,
   setSacrificeType,
@@ -136,38 +135,6 @@ const FIELD_ZONE_LABEL: Partial<Record<FieldZone, string>> = {
   outfield: "📍 Outfield",
   homerun: "📍 Beyond the wall — Home Run?",
 };
-
-interface DpWizardState {
-  step:
-    | "initialFielding"
-    | "runner"
-    | "type"
-    | "fielding1"
-    | "fielding2"
-    | "thirdOutAsk"
-    | "thirdOutRunner"
-    | "thirdOutType"
-    | "thirdOutFielding";
-  base?: Base;
-  outType: OutType;
-  firstFielding?: ResolvedFielder;
-  // Fix 8 (baseball-logic-fixes batch, minor tier): held onto once known
-  // so it can be passed to handleConfirmDoublePlay only once the wizard
-  // fully resolves -- confirming used to happen immediately after this
-  // was picked, before there was a "was there a third out?" step to defer
-  // past.
-  secondFielding?: ResolvedFielder;
-  thirdBase?: Base;
-  thirdOutType?: OutType;
-  // Feature 1 (fielding-play logging batch): who fielded the batted ball
-  // originally -- the scorebook chain's first number. Asked as the
-  // wizard's own first step when "Double Play" is picked directly (skips
-  // straight past the field-tap auto-suggest that normally captures
-  // this); pre-filled instead when the wizard is entered via the new
-  // dynamic "was there another out?" upgrade from a plain groundout,
-  // which already collected it.
-  initialFielding?: ResolvedFielder;
-}
 
 // Runner-actions consolidation: the reasons behind "Advance", replacing
 // the standalone Wild Pitch/Passed Ball/Balk/Error (all-runners) buttons
@@ -401,12 +368,13 @@ export function OperatorConsole({
   // steps 2-3 (Step 1 -- "who fielded it" -- reuses the existing
   // pendingFielding/SET_FIELDING plumbing, just with a zone-derived
   // suggestion now). Only entered for hitType groundball/bunt with a
-  // plain (not yet double_play) groundout result -- flyouts/lineouts/
-  // errors never need a base tap, the catch/error itself is the whole
-  // play. "secondOutAsk" answered yes hands off entirely to the existing
-  // double-play/triple-play wizard (dpWizard) rather than duplicating its
-  // runner/type/fielding machinery here.
-  const [groundOutSubStep, setGroundOutSubStep] = useState<"location" | "confirmFielder" | "secondOutAsk" | null>(null);
+  // plain groundout result -- flyouts/lineouts/errors never need a base
+  // tap, the catch/error itself is the whole play. fix/dp-fc: there is
+  // no "secondOutAsk" step any more -- a second (or third) out on this
+  // same play is now always decided by the per-runner outcome queue
+  // that follows every confirmed groundout/flyout/lineout, never by a
+  // dedicated yes/no question handed off to a separate wizard.
+  const [groundOutSubStep, setGroundOutSubStep] = useState<"location" | "confirmFielder" | null>(null);
   const [groundOutInitialFielder, setGroundOutInitialFielder] = useState<ResolvedFielder | null>(null);
   const [groundOutBatterFielder, setGroundOutBatterFielder] = useState<ResolvedFielder | null>(null);
   const [groundOutPendingBase, setGroundOutPendingBase] = useState<OutBase | null>(null);
@@ -417,7 +385,6 @@ export function OperatorConsole({
   const [pendingNotation, setPendingNotation] = useState<string | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [opponentPitcherPickerOpen, setOpponentPitcherPickerOpen] = useState(false);
-  const [dpWizard, setDpWizard] = useState<DpWizardState | null>(null);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
   // from the quick-actions panel -- separate from the existing per-base
   // "Picked Off" runner quick-action (tap an occupied base -> its menu),
@@ -425,29 +392,67 @@ export function OperatorConsole({
   // game_events row (see CLAUDE.md). This one always does, and adds the
   // "attempted, runner safe" outcome that quick-action never had.
   const [pickoffWizard, setPickoffWizard] = useState<{ step: "base" | "result"; base?: Base } | null>(null);
-  // Sacrifice-rules batch: shown after a fly/line/foul out OR a bunt out
-  // at first confirms with runners on base and outs below 2 -- asks what
-  // happened to each runner on the play, top base first (queue order:
-  // third, second, first). Replaces the old, narrower sacFlyQueue
-  // (fly/line outs only, always assumed "sac fly" if anyone scored) AND
-  // the standalone squeezePrompt (bunt only, third base only, yes/no) --
-  // both are now the same per-runner ask (Scored / Advanced / Stayed /
-  // Out), just with runnerOutcomeKind distinguishing which sacrifice type
-  // applies if the aggregate outcome ends up being one. See
-  // maybeStartRunnerOutcomeQueue (the single trigger, called from both
-  // handleConfirm and handleQuickPick) and handleRunnerOutcomeDecision.
+  // Sacrifice-rules batch, extended by fix/dp-fc: shown after a
+  // confirmed Ground Out/Fly Out/Line Out/Foul Out OR a bunt out at
+  // first, with runners on base and outs below 2 -- asks what happened
+  // to each runner on the play, top base first (queue order: third,
+  // second, first). "fly"/"bunt" still decide the existing sac-fly/
+  // sac-bunt rule exactly as before; "ground" is new (fix/dp-fc) and
+  // never produces a sacrifice -- its only job is feeding
+  // resolveBattedBallPlay (src/lib/operator/runner-outcomes.ts) so a
+  // second or third "Out" decision relabels the play as a double/triple
+  // play. See maybeStartRunnerOutcomeQueue (the single trigger, called
+  // from both handleConfirm and handleQuickPick) and
+  // handleRunnerOutcomeDecision/finalizeRunnerOutcomeQueue below.
   // Cleared automatically once the queue drains or the next batter's
   // first pitch starts a new draft at-bat.
+  //
+  // Implicit-FC batch: "groundSafe" is a FOURTH kind, started by
+  // beginImplicitFcFlow once the operator answers "Safe" to "Was the
+  // batter put out?" -- unlike the other three, the batter's own at-bat
+  // row may not exist yet when this queue starts (Quick Mode has no
+  // draft row at all), so runnerOutcomeAtBatId is allowed to be null for
+  // this one kind (see the drain effect below); finalizeRunnerOutcomeQueue
+  // creates/updates whatever row is needed once the full picture is known.
+  type RunnerOutcomeKind = "fly" | "bunt" | "ground" | "groundSafe";
   const [runnerOutcomeQueue, setRunnerOutcomeQueue] = useState<Base[]>([]);
-  const [runnerOutcomeKind, setRunnerOutcomeKind] = useState<SacrificeType | null>(null);
+  const [runnerOutcomeKind, setRunnerOutcomeKind] = useState<RunnerOutcomeKind | null>(null);
   const [runnerOutcomeAtBatId, setRunnerOutcomeAtBatId] = useState<string | null>(null);
-  // Aggregate outcome across the whole queue, read once it drains to
-  // decide the sacrifice_type (if any) -- see the finalize effect below.
-  // "fly": sacrifice iff at least one runner scored. "bunt": sacrifice
-  // iff at least one runner advanced/scored AND nobody was put out.
-  const [runnerOutcomeAnyScored, setRunnerOutcomeAnyScored] = useState(false);
+  // fix/dp-fc: outs recorded in the half-inning BEFORE this play's own
+  // batter-out -- captured at trigger time (maybeStartRunnerOutcomeQueue
+  // already requires this to be < 2) so finalizeRunnerOutcomeQueue can
+  // tell whether an extra "Out" decision brings the half-inning to 3.
+  const [runnerOutcomeOutsBeforePlay, setRunnerOutcomeOutsBeforePlay] = useState(0);
+  // Implicit-FC batch: only meaningful for kind "groundSafe" -- the hit
+  // type (groundball/bunt) the play started as, needed at finalize time
+  // to persist the right hitType on the batter's own at_bats row. Full
+  // Mode could read state.pendingHitType directly instead, but Quick
+  // Mode has no such state (its hitType always comes from the tapped
+  // button), so this is captured once at queue-start for both.
+  const [runnerOutcomeHitType, setRunnerOutcomeHitType] = useState<HitType | null>(null);
+  // Implicit-FC batch: only meaningful for kind "groundSafe" -- a
+  // snapshot of `runners` taken when the queue started, so finalize can
+  // revert every local SET_RUNNER/advance the operator made while
+  // answering if the final decision turns out to be "record nothing"
+  // (batter safe, nobody out -- see resolveGroundBallWithRunners).
+  const [runnerOutcomeRunnersBeforePlay, setRunnerOutcomeRunnersBeforePlay] = useState<Runners | null>(null);
+  // fix/dp-fc: every decision is collected here, not applied immediately
+  // -- the DB-side effects (score bump + RBI + game_events for a scored
+  // runner, a real extra at_bats row for an out) only ever fire once the
+  // whole queue drains and the FINAL out count for the play is known.
+  // That's what lets the third-out rule ("a run only counts if the out
+  // that ended the inning wasn't a force") apply correctly regardless of
+  // which base was asked about first -- nothing is scored, then
+  // un-scored; it's decided once, with the full picture. `runners` in
+  // local state still updates immediately per decision (removed either
+  // way) so the diamond stays responsive while the queue is still open.
+  const [runnerOutcomeOutBases, setRunnerOutcomeOutBases] = useState<{ base: Base; runner: RunnerState }[]>([]);
+  const [runnerOutcomeScoredBases, setRunnerOutcomeScoredBases] = useState<{ base: Base; runner: RunnerState }[]>([]);
+  // "bunt" sacrifice iff at least one runner advanced/scored AND nobody
+  // was put out -- still needs "did anything move" separately from "did
+  // anything score," since a scoreless-but-advanced bunt can still be a
+  // sac bunt.
   const [runnerOutcomeAnyMoved, setRunnerOutcomeAnyMoved] = useState(false);
-  const [runnerOutcomeAnyOut, setRunnerOutcomeAnyOut] = useState(false);
   // Bug fix (feature/lineup-drafts): whether the most recently confirmed
   // Quick Mode play was a bunted groundout -- plain UI state, not
   // threaded through the shared reducer. Drives AdvanceReasonMenu's own
@@ -462,13 +467,35 @@ export function OperatorConsole({
   // asks how the play ended before anything is logged -- see onBunt/
   // handleBuntOutcome and BuntOutcomePrompt below.
   const [buntOutcomePrompt, setBuntOutcomePrompt] = useState(false);
-  // Quick Mode scorekeeper batch: "which runner" pickers for the two
-  // Quick-Mode-only actions that need a follow-up base pick before they
-  // can apply (Double Play, and Stolen Base as a direct button rather
-  // than going through the per-runner action menu). Mirrors the
-  // runnerPicker/runnerActionMenu pattern already used elsewhere rather
-  // than inventing a new shape.
-  const [quickRunnerPrompt, setQuickRunnerPrompt] = useState<"stolenBase" | "doublePlay" | null>(null);
+  // Quick Mode scorekeeper batch: "which runner" picker for Stolen Base
+  // as a direct button rather than going through the per-runner action
+  // menu. Mirrors the runnerPicker/runnerActionMenu pattern already used
+  // elsewhere rather than inventing a new shape. fix/dp-fc: the
+  // "doublePlay" variant is gone -- Quick Mode double plays are now
+  // derived the same way Full Mode's are, via the per-runner outcome
+  // queue after a confirmed Ground Out, not a dedicated base picker.
+  const [quickRunnerPrompt, setQuickRunnerPrompt] = useState<"stolenBase" | null>(null);
+  // Implicit-FC batch: "Was the batter put out?" -- the new preliminary
+  // question asked whenever a plain Ground Out (or a bunt's "Out at
+  // First"/"Safe") is picked with a runner on base and outs below 2,
+  // before anything is dispatched or persisted. "Out at First" just
+  // continues exactly what used to happen unconditionally (see
+  // finishPickResult / proceedQuickGroundOutAsOut); "Safe" opens the
+  // per-runner queue (kind "groundSafe") that derives a fielder's choice.
+  // groundOutQuickPendingDef carries the originating Quick Mode button
+  // (null in Full Mode, which has no equivalent -- state.pendingHitType
+  // already has everything Full Mode needs) across the question.
+  const [groundOutBatterPromptOpen, setGroundOutBatterPromptOpen] = useState(false);
+  const [groundOutQuickPendingDef, setGroundOutQuickPendingDef] = useState<QuickModeButtonDef | null>(null);
+  // Implicit-FC batch: replaces the old single fcOutRunner -- the
+  // per-runner queue can mark up to 2 runners "Out" even with the batter
+  // safe (same two-extra-outs ceiling confirmDoublePlay already supports
+  // for a triple play), each becoming its own logExtraOut row merged
+  // into the same lastConfirmed via APPEND_EXTRA_OUT. Captured here
+  // (Full Mode only -- Quick Mode's groundSafe finalize persists
+  // directly, never going through handleConfirm) since the runners are
+  // already removed from state.runners by the time Confirm At-Bat runs.
+  const [fcOutRunners, setFcOutRunners] = useState<RunnerState[]>([]);
   // Quick Mode scorekeeper batch: which batting-order slots have already
   // batted this half-inning, for the lineup strip's "completed" marker --
   // derived locally from battingOrderPosition transitions (there's no
@@ -1078,16 +1105,23 @@ export function OperatorConsole({
   // resulting walk's force-cascade on top of runners already moved by the
   // wild pitch's own one-base advance -- a snapshot state.runners hasn't
   // caught up to yet within the same synchronous handler.
+  // Implicit-FC batch: a plain Ground Out is no longer automatically "the
+  // batter is out" -- with a runner on base and outs below 2, the defense
+  // might instead have let the batter reach while retiring a runner (a
+  // fielder's choice), so "Was the batter put out?" has to be answered
+  // first (see resolveGroundOutBatterPrompt/beginImplicitFcFlow below)
+  // before anything is dispatched. Bases empty or 2 outs: nobody to make
+  // a choice about, so this falls straight through to finishPickResult,
+  // unchanged from before this batch.
   function pickResult(result: AtBatResult, baseRunners: Runners = state.runners) {
-    if (result === "double_play") {
-      // Feature 1 (fielding-play logging batch): the wizard now starts by
-      // asking who fielded the ball (auto-suggested from the field tap),
-      // the scorebook chain's first number -- previously skipped straight
-      // to "which runner was out" with no record of who fielded it at all.
-      setDpWizard({ step: "initialFielding", outType: "force" });
+    if (result === "groundout" && anyRunnerOnBase() && state.outs < 2) {
+      setGroundOutBatterPromptOpen(true);
       return;
     }
+    finishPickResult(result, baseRunners);
+  }
 
+  function finishPickResult(result: AtBatResult, baseRunners: Runners = state.runners) {
     if (HIT_RESULTS_NEED_RUNNER_CONFIRM.has(result)) {
       const preExisting = (["third", "second", "first"] as Base[]).filter((b) => baseRunners[b]);
       if (preExisting.length > 0) {
@@ -1140,6 +1174,53 @@ export function OperatorConsole({
     if (hasMovement) syncRunners(suggestion);
   }
 
+  // Implicit-FC batch: resolves "Was the batter put out?" -- "Out at
+  // First" just continues exactly what an unconditional Ground Out pick
+  // used to do (finishPickResult in Full Mode, or the old unconditional
+  // startQuickPick behavior in Quick Mode); "Safe" opens the per-runner
+  // queue that derives a fielder's choice (or nothing) from what happens
+  // to the runners. wasOut's two branches are symmetric across both
+  // modes -- which mode we're in only matters for HOW the eventual
+  // result gets persisted (see beginImplicitFcFlow/finalizeRunnerOutcomeQueue).
+  function resolveGroundOutBatterPrompt(wasOut: boolean) {
+    setGroundOutBatterPromptOpen(false);
+    const quickDef = groundOutQuickPendingDef;
+    setGroundOutQuickPendingDef(null);
+    if (wasOut) {
+      if (game.logging_mode === "quick") {
+        if (quickDef) proceedQuickGroundOutAsOut(quickDef);
+        return;
+      }
+      finishPickResult("groundout", state.runners);
+      return;
+    }
+    const hitType = game.logging_mode === "quick" ? quickDef?.hitType ?? null : state.pendingHitType;
+    beginImplicitFcFlow(hitType);
+  }
+
+  // Implicit-FC batch: starts the per-runner Scored/Advanced/Stayed/Out
+  // queue for a ground ball where the batter is already known to be
+  // SAFE (either just answered in the prompt above, or already known
+  // from Bunt's own "Safe" button) -- reuses the exact same queue/UI
+  // every Ground Out/Fly Out/Line Out/bunt-out already shares, just
+  // under the new "groundSafe" kind, which finalizeRunnerOutcomeQueue
+  // below knows means "nothing has been persisted yet; decide fielder's
+  // choice vs. nothing once every runner has an answer."
+  function beginImplicitFcFlow(hitType: HitType | null) {
+    const order: Base[] = ["third", "second", "first"];
+    const queue = order.filter((b) => state.runners[b]);
+    if (queue.length === 0) return;
+    setRunnerOutcomeKind("groundSafe");
+    setRunnerOutcomeAtBatId(game.logging_mode === "quick" ? null : state.currentAtBatId);
+    setRunnerOutcomeHitType(hitType);
+    setRunnerOutcomeOutsBeforePlay(state.outs);
+    setRunnerOutcomeRunnersBeforePlay(state.runners);
+    setRunnerOutcomeOutBases([]);
+    setRunnerOutcomeScoredBases([]);
+    setRunnerOutcomeAnyMoved(false);
+    setRunnerOutcomeQueue(queue);
+  }
+
   // Feature 1 (fielding-play logging batch): Step 1's "who fielded it?"
   // confirm -- replaces the old bare FieldingPositionPicker call site.
   // Still just SET_FIELDING for every result (flyout/lineout/error keep
@@ -1184,12 +1265,16 @@ export function OperatorConsole({
   // Step 2's fielder confirm (who's credited with the putout at that
   // base) -- either finalizes a plain groundout right here, or (if
   // runners are on base with fewer than 2 outs) asks Step 3.
+  // fix/dp-fc: always finalizes the plain groundout notation immediately
+  // -- there's no more "was there another out?" branch here. A second
+  // (or third) out on this same play is now entirely the per-runner
+  // outcome queue's job, asked after this at-bat confirms (see
+  // maybeStartRunnerOutcomeQueue), same as it already was for fly/line
+  // outs. extraOutFielders stays an empty array unconditionally: the new
+  // queue doesn't collect a fielder for an extra out (no fielding chain
+  // question any more), only who was out.
   function handleGroundOutFielderConfirmed(f: ResolvedFielder) {
     setGroundOutBatterFielder(f);
-    if (anyRunnerOnBase() && state.outs < 2) {
-      setGroundOutSubStep("secondOutAsk");
-      return;
-    }
     finalizeGroundOutNotation(f, []);
   }
 
@@ -1203,28 +1288,6 @@ export function OperatorConsole({
       })
     );
     setGroundOutSubStep(null);
-  }
-
-  // Step 3/4 "was there another out?" answered yes -- from here on, the
-  // existing double-play/triple-play wizard (dpWizard) takes over
-  // entirely (same "which runner" -> "force/tag" -> "who covered it" ->
-  // "was there a third out?" steps it already has for a directly-picked
-  // Double Play result), pre-seeded with what this flow already
-  // collected so it doesn't ask about the batter's own out a second time.
-  function handleAnotherOutYes() {
-    if (!groundOutInitialFielder || !groundOutBatterFielder) return;
-    setGroundOutSubStep(null);
-    setDpWizard({
-      step: "runner",
-      outType: "force",
-      initialFielding: groundOutInitialFielder,
-      firstFielding: groundOutBatterFielder,
-    });
-  }
-
-  function handleAnotherOutNo() {
-    if (!groundOutBatterFielder) return;
-    finalizeGroundOutNotation(groundOutBatterFielder, []);
   }
 
   // Fix 3: undo a single auto-scored runner within their 3s window --
@@ -1449,6 +1512,14 @@ export function OperatorConsole({
       setWildPitchKPrompt(true);
     }
 
+    // Implicit-FC batch: captured before clearing it for the next at-bat
+    // -- fcOutRunners isn't touched by CONFIRM_LOCAL itself, so it's
+    // still exactly what beginImplicitFcFlow/finalizeRunnerOutcomeQueue
+    // set once the per-runner queue decided who (0, 1, or 2 runners)
+    // was put out.
+    const fcExtraOutRunners = result === "fc" ? fcOutRunners : [];
+    setFcOutRunners([]);
+
     void withOfflineRetry(`confirm-${atBatId}`, async () => {
       await confirmAtBat({
         gameId: game.id,
@@ -1466,108 +1537,40 @@ export function OperatorConsole({
         fieldedByOpponentPlayerId: fielding?.opponentPlayerId ?? null,
         scorebookNotation,
       });
+
+      // Implicit-FC batch: the batter's own fc row never carries these
+      // outs (the batter is always safe at first) -- a separate at_bats
+      // row per runner who WAS put out (0, 1, or 2), exactly the same
+      // per-out-row shape confirmDoublePlay already uses for a double/
+      // triple play, just without relabeling the batter's own result.
+      for (const runner of fcExtraOutRunners) {
+        const { atBatId: extraAtBatId } = await logExtraOut({
+          gameId: game.id,
+          mode,
+          playerId: runner.type === "player" ? runner.id : null,
+          pitcherId: mode === "pitching" ? state.currentPitcherId : null,
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          result: "fc",
+        });
+        dispatch({ type: "APPEND_EXTRA_OUT", atBatId: extraAtBatId });
+      }
+      if (fcExtraOutRunners.length > 0) {
+        setSummaryFlash(`Fielder's Choice — ${fcExtraOutRunners.map((r) => r.name).join(", ")} out`);
+        void withOfflineRetry(`fc-state-${game.id}-${Date.now()}`, () =>
+          syncGameState(game.id, { outs: Math.min(3, state.outs + fcExtraOutRunners.length) })
+        );
+      } else if (result === "fc") {
+        setSummaryFlash("Fielder's Choice");
+      }
     });
   }
 
-  async function handleConfirmDoublePlay(input: {
-    base: Base;
-    runner: RunnerState;
-    outType: OutType;
-    batterFielding: ResolvedFielder;
-    secondFielding: ResolvedFielder;
-    // Fix 8 (baseball-logic-fixes batch, minor tier): present only when
-    // the wizard's "was there a third out?" step was answered yes.
-    thirdOut?: { base: Base; runner: RunnerState; outType: OutType; fielding: ResolvedFielder };
-    // Feature 1 (fielding-play logging batch): who fielded the ball
-    // originally -- the scorebook chain's first number, either just
-    // answered fresh (wizard entered via "Double Play" picked directly)
-    // or carried over from the plain-groundout flow that upgraded into
-    // this wizard.
-    initialFielding: ResolvedFielder;
-  }) {
-    const atBatId = state.currentAtBatId;
-    if (!atBatId) return;
-    setDpWizard(null);
-    setBanner(null);
-    // Feature 1: real double/triple plays almost always retire the lead
-    // runner(s) first and relay back to first for the batter last (that's
-    // why it's a "double play" via the pivot, not two separate unrelated
-    // outs) -- see computeGroundBallNotation's own comment for why the
-    // batter's fielder goes at the end of the chain, not the start.
-    const scorebookNotation = computeGroundBallNotation({
-      initialFielder: FIELDING_POSITION_TO_NUMBER[input.initialFielding.position],
-      batterOutFielder: FIELDING_POSITION_TO_NUMBER[input.batterFielding.position],
-      extraOutFielders: [
-        FIELDING_POSITION_TO_NUMBER[input.secondFielding.position],
-        ...(input.thirdOut ? [FIELDING_POSITION_TO_NUMBER[input.thirdOut.fielding.position]] : []),
-      ],
-    });
-    try {
-      const { secondAtBatId, thirdAtBatId } = await confirmDoublePlay({
-        gameId: game.id,
-        atBatId,
-        mode: state.mode,
-        inning: state.inning,
-        inningHalf: state.inningHalf,
-        pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
-        hitType: state.pendingHitType,
-        fieldX: state.fieldTap?.x ?? null,
-        fieldY: state.fieldTap?.y ?? null,
-        scorebookNotation,
-        batterFielding: {
-          position: input.batterFielding.position,
-          playerId: input.batterFielding.playerId,
-          opponentPlayerId: input.batterFielding.opponentPlayerId,
-        },
-        secondOutRunner: { type: input.runner.type, id: input.runner.id },
-        outType: input.outType,
-        secondOutFielding: {
-          position: input.secondFielding.position,
-          playerId: input.secondFielding.playerId,
-          opponentPlayerId: input.secondFielding.opponentPlayerId,
-        },
-        thirdOut: input.thirdOut
-          ? {
-              runner: { type: input.thirdOut.runner.type, id: input.thirdOut.runner.id },
-              outType: input.thirdOut.outType,
-              fielding: {
-                position: input.thirdOut.fielding.position,
-                playerId: input.thirdOut.fielding.playerId,
-                opponentPlayerId: input.thirdOut.fielding.opponentPlayerId,
-              },
-            }
-          : undefined,
-      });
-      const accuracyRatio = atBatAccuracyRatio("double_play", state.pendingPitches.length);
-      dispatch({
-        type: "CONFIRM_DOUBLE_PLAY",
-        atBatId,
-        secondAtBatId,
-        removedBase: input.base,
-        accuracyRatio,
-        thirdAtBatId,
-        thirdRemovedBase: input.thirdOut?.base ?? null,
-      });
-      setSummaryFlash(`${input.thirdOut ? "Triple Play" : "Double Play"} — ${scorebookNotation}`);
-      void withOfflineRetry(`dp-state-${game.id}-${Date.now()}`, () =>
-        syncGameState(game.id, {
-          runners: {
-            ...state.runners,
-            [input.base]: null,
-            ...(input.thirdOut ? { [input.thirdOut.base]: null } : {}),
-          },
-          outs: Math.min(3, state.outs + (input.thirdOut ? 3 : 2)),
-          current_at_bat_id: null,
-        })
-      );
-    } catch (err) {
-      setBanner(err instanceof Error ? err.message : "Failed to log double play -- check connection and try again");
-    }
-  }
 
   async function handleUndo() {
     if (!state.lastConfirmed) return;
-    const { atBatId, secondAtBatId, thirdAtBatId, mode, runsScored, runnersBeforeAtBat, pitchesThisAtBat } = state.lastConfirmed;
+    const { atBatId, secondAtBatId, thirdAtBatId, mode, runsScored, runnersBeforeAtBat, pitchesThisAtBat, battingOrderPosition } =
+      state.lastConfirmed;
     dispatch({ type: "UNDO_LOCAL" });
     syncRunners(runnersBeforeAtBat);
     // Fix 7 (baseball-logic-fixes batch): UNDO_LOCAL already corrects the
@@ -1586,7 +1589,15 @@ export function OperatorConsole({
       );
     }
     void withOfflineRetry(`undo-${atBatId}`, () =>
-      undoAtBat({ gameId: game.id, atBatId, secondAtBatId, thirdAtBatId, mode, runsScoredToReverse: runsScored })
+      undoAtBat({
+        gameId: game.id,
+        atBatId,
+        secondAtBatId,
+        thirdAtBatId,
+        mode,
+        runsScoredToReverse: runsScored,
+        restoreBattingOrderPosition: mode === "hitting" ? battingOrderPosition : null,
+      })
     );
   }
 
@@ -2083,81 +2094,68 @@ export function OperatorConsole({
     }
   }
 
-  // Sacrifice-rules batch: the single trigger for the per-runner outcome
-  // queue, called right after an at-bat confirms (from both handleConfirm
-  // and handleQuickPick) -- never before, since outcome-based sacrifice
-  // rules need the play's own result/hitType already decided. Fires for
-  // a fly/line/foul out (result "flyout"/"lineout" -- a foul out is
-  // stored as "flyout" too, see CLAUDE.md) or a bunt out at first
-  // (result "groundout" with hitType "bunt"), only when a runner is on
-  // base and outs are below 2 (the out just recorded would otherwise end
-  // the inning before any runner could legally do anything). Queue order
-  // is top base first (third, second, first), per spec.
+  // Sacrifice-rules batch, extended by fix/dp-fc: the single trigger for
+  // the per-runner outcome queue, called right after an at-bat confirms
+  // (from both handleConfirm and handleQuickPick) -- never before,
+  // since outcome-based sacrifice/double-play rules need the play's own
+  // result/hitType already decided. Fires for a fly/line/foul out
+  // (result "flyout"/"lineout" -- a foul out is stored as "flyout" too,
+  // see CLAUDE.md), a bunt out at first (result "groundout" with hitType
+  // "bunt"), or now ANY other groundout too (fix/dp-fc's "ground" kind,
+  // what makes a double/triple play derivable from a plain Ground Out),
+  // only when a runner is on base and outs are below 2 (the out just
+  // recorded would otherwise end the inning before any runner could
+  // legally do anything else). Queue order is top base first (third,
+  // second, first), per spec.
   function maybeStartRunnerOutcomeQueue(params: { atBatId: string; result: AtBatResult; hitType: HitType | null; outsBeforePlay: number; runnersBeforePlay: Runners }) {
     if (params.outsBeforePlay >= 2) return;
     const isFlyType = params.result === "flyout" || params.result === "lineout";
-    const isBuntOutAtFirst = params.result === "groundout" && params.hitType === "bunt";
-    if (!isFlyType && !isBuntOutAtFirst) return;
+    const isGroundType = params.result === "groundout";
+    if (!isFlyType && !isGroundType) return;
     const order: Base[] = ["third", "second", "first"];
     const queue = order.filter((b) => params.runnersBeforePlay[b]);
     if (queue.length === 0) return;
-    setRunnerOutcomeKind(isFlyType ? "fly" : "bunt");
+    const kind: RunnerOutcomeKind = isFlyType ? "fly" : params.hitType === "bunt" ? "bunt" : "ground";
+    setRunnerOutcomeKind(kind);
     setRunnerOutcomeAtBatId(params.atBatId);
-    setRunnerOutcomeAnyScored(false);
+    setRunnerOutcomeOutsBeforePlay(params.outsBeforePlay);
+    setRunnerOutcomeOutBases([]);
+    setRunnerOutcomeScoredBases([]);
     setRunnerOutcomeAnyMoved(false);
-    setRunnerOutcomeAnyOut(false);
     setRunnerOutcomeQueue(queue);
   }
 
   // One runner's outcome, popped from runnerOutcomeQueue regardless of
-  // which way it's decided. "Scored"/"Advanced" both go through the same
-  // applyRunnerAction path every other runner move already uses --
-  // "scored" passes a ScoreMethod that's already RBI-eligible per
-  // SCORE_METHOD_AWARDS_RBI (sac_fly for a fly/line/foul out; for a bunt,
-  // squeeze_play from third specifically -- same "breaking for home on
-  // the bunt" concept the old standalone squeeze prompt covered, now
-  // folded into this one question -- or sac_bunt from second/first).
-  // "Out" reuses handleTagUpViolation's own former body for the fly case
-  // (tag-up violation) and the plain runner-out path for the bunt case.
+  // which way it's decided. fix/dp-fc: "scored" and "out" no longer
+  // apply their DB-side effects (score bump/RBI/game_events for a score,
+  // a real extra at_bats row for an out) immediately -- they're
+  // collected here and applied all at once, with the full picture, once
+  // the queue drains (finalizeRunnerOutcomeQueue below). `runners`
+  // itself still updates immediately either way (SET_RUNNER, local-only)
+  // so the diamond stays responsive while the queue is still open.
+  // "Advanced" is unambiguous regardless of what else happens on this
+  // play, so it still applies immediately via the existing
+  // applyRunnerAction path.
   type RunnerOutcomeDecision = "scored" | "advanced" | "stayed" | "out";
   function handleRunnerOutcomeDecision(base: Base, decision: RunnerOutcomeDecision) {
     const runner = state.runners[base];
-    const kind = runnerOutcomeKind;
-    const atBatId = runnerOutcomeAtBatId;
     setRunnerOutcomeQueue((q) => q.filter((b) => b !== base));
-    if (!runner || !kind) return;
+    if (!runner) return;
 
     if (decision === "stayed") return;
 
     if (decision === "out") {
-      setRunnerOutcomeAnyOut(true);
-      applyRunnerAction(base, "out");
-      setSummaryFlash(kind === "fly" ? `${runner.name} — Out, left base early` : `${runner.name} — Out`);
-      if (kind === "fly") {
-        void withOfflineRetry(`tagup-${game.id}-${Date.now()}`, () =>
-          logGameEvent(game.id, { eventType: "tag_up_violation", inning: state.inning, inningHalf: state.inningHalf, mode: state.mode })
-        );
-      }
+      setRunnerOutcomeOutBases((bs) => [...bs, { base, runner }]);
+      dispatch({ type: "SET_RUNNER", base, runner: null });
+      setSummaryFlash(runnerOutcomeKind === "fly" ? `${runner.name} — Out, left base early` : `${runner.name} — Out`);
       return;
     }
 
     if (decision === "scored") {
-      setRunnerOutcomeAnyScored(true);
+      setRunnerOutcomeScoredBases((bs) => [...bs, { base, runner }]);
       setRunnerOutcomeAnyMoved(true);
-      const method: ScoreMethod = kind === "fly" ? "sac_fly" : base === "third" ? "squeeze_play" : "sac_bunt";
-      applyRunnerAction(base, "scored", method);
-      setSummaryFlash(`${runner.name} scores — ${method === "squeeze_play" ? "squeeze play" : SCORE_METHOD_LABELS[method].toLowerCase()}`);
-      // Incidental correctness fix (Quick Mode scorekeeper batch):
-      // applyRunnerAction's ad-hoc "scored" branch only ever bumps the
-      // team score (adjustScore) -- it never wrote the RBI onto the
-      // batter's own at_bats row, in EITHER mode. Safe to credit it
-      // directly here (unlike the generic ad-hoc path, which has no
-      // reliable "current batter" -- see its own comment) because this
-      // handler only ever fires immediately after that specific batter's
-      // at-bat just confirmed, and atBatId was captured at trigger time.
-      if (atBatId) {
-        void withOfflineRetry(`runout-rbi-${atBatId}-${base}`, () => incrementAtBatRbi(game.id, atBatId, 1));
-      }
+      dispatch({ type: "SET_RUNNER", base, runner: null });
+      setSummaryFlash(`${runner.name} scores`);
       return;
     }
 
@@ -2167,34 +2165,286 @@ export function OperatorConsole({
     setSummaryFlash(`${runner.name} advances to ${NEXT_BASE[base]}`);
   }
 
-  // Once the queue fully drains, decide the sacrifice (if any) from the
-  // aggregate outcome -- never from which button was tapped. "fly":
-  // sacrifice iff at least one runner scored (a fly out with nobody
-  // scoring is just a plain out, same at-bat result either way). "bunt":
-  // sacrifice iff at least one runner advanced/scored AND nobody on the
-  // play was put out (a runner thrown out erasing the only base-runner
-  // benefit means this was never a sacrifice, just a regular bunt out --
-  // see at_bats.sacrifice_type's own migration comment). Nothing to flag
-  // when the aggregate says no sacrifice -- the at-bat's own already-
-  // confirmed result (a plain out, or hit_type: "bunt" for a bunt out)
-  // is already the complete, correct record.
-  useEffect(() => {
-    if (runnerOutcomeQueue.length > 0 || !runnerOutcomeKind || !runnerOutcomeAtBatId) return;
+  // fix/dp-fc: once the queue fully drains, apply everything at once,
+  // now that the FULL outcome of the play is known:
+  //  - "ground": 1 or 2 extra outs relabels the play Double Play/Triple
+  //    Play (resolveBattedBallPlay) and persists the extra out(s) via
+  //    confirmDoublePlay (reused as-is -- it already accepts null
+  //    fielding, since this flow never collects a fielder for the extra
+  //    out). inningEndedOnForce is the third-out rule: a run voided
+  //    because the out that brought the half-inning to 3 was a force.
+  //  - "fly"/"bunt": unchanged sacrifice determination (never produces
+  //    an extra out -- a doubled-off/appealed runner on a fly ball is a
+  //    tag play, never a force, so it can never retroactively cancel
+  //    another runner's run the way a ground-ball force can).
+  // Every "scored" decision's score bump/RBI/game_events, and every
+  // "out" decision's real at_bats row, happens exactly once, right here
+  // -- nothing was applied optimistically while the queue was still open.
+  // Bug 2 fix (fix/dp-fc follow-up): this used to `return` right after
+  // the fly/bunt sacrifice check, before ever reaching the outBases
+  // persistence block below -- so a runner marked "Out" on a Fly
+  // Out/Line Out/Foul Out (or a bunt) was removed from the diamond
+  // locally (handleRunnerOutcomeDecision's SET_RUNNER) but the extra
+  // out was never actually logged: no second at_bats row, no
+  // APPEND_EXTRA_OUT, no outs bump, no double-play relabeling. "ground"
+  // was never affected -- it already fell through to the persistence
+  // block unconditionally. Restructured so sacrifice determination
+  // (fly/bunt-only) and outs/labeling/third-out-rule/persistence (every
+  // kind) are two independent steps instead of one early-returning
+  // branch.
+  async function finalizeRunnerOutcomeQueue() {
     const kind = runnerOutcomeKind;
     const atBatId = runnerOutcomeAtBatId;
-    const isSacrifice = kind === "fly" ? runnerOutcomeAnyScored : runnerOutcomeAnyMoved && !runnerOutcomeAnyOut;
-    if (isSacrifice) {
-      void withOfflineRetry(`sactype-${atBatId}`, () => setSacrificeType(game.id, atBatId, kind));
-      setBanner(
-        kind === "fly"
-          ? "Counted as a sacrifice fly: a run scored, so this is not an at-bat."
-          : "Counted as a sacrifice bunt: a runner moved up, so this is not an at-bat."
-      );
-    }
+    if (!kind) return;
+    if (kind !== "groundSafe" && !atBatId) return;
+    const outBases = runnerOutcomeOutBases;
+    const scoredBases = runnerOutcomeScoredBases;
+    const anyMoved = runnerOutcomeAnyMoved;
+    const outsBeforePlay = runnerOutcomeOutsBeforePlay;
+    const hitType = runnerOutcomeHitType;
+    const runnersBeforePlay = runnerOutcomeRunnersBeforePlay;
     setRunnerOutcomeKind(null);
     setRunnerOutcomeAtBatId(null);
+    setRunnerOutcomeOutBases([]);
+    setRunnerOutcomeScoredBases([]);
+
+    // Implicit-FC batch: unlike the other three kinds, nothing has been
+    // persisted yet -- see finalizeImplicitFc for the full decision
+    // (fielder's choice vs. recording nothing at all).
+    if (kind === "groundSafe") {
+      await finalizeImplicitFc({ outBases, scoredBases, outsBeforePlay, hitType, runnersBeforePlay });
+      return;
+    }
+    if (!atBatId) return;
+
+    if (kind === "fly" || kind === "bunt") {
+      const isSacrifice = kind === "fly" ? scoredBases.length > 0 : anyMoved && outBases.length === 0;
+      if (isSacrifice) {
+        void withOfflineRetry(`sactype-${atBatId}`, () => setSacrificeType(game.id, atBatId, kind));
+        setBanner(
+          kind === "fly"
+            ? "Counted as a sacrifice fly: a run scored, so this is not an at-bat."
+            : "Counted as a sacrifice bunt: a runner moved up, so this is not an at-bat."
+        );
+      }
+    }
+
+    // Outs/labeling/third-out rule, shared by every kind. A fly/line out
+    // is never a force (isGroundoutForce only cares whether the result
+    // is literally "groundout"), so "flyout" is a safe stand-in for
+    // kind "fly" here -- resolveBattedBallPlay never distinguishes
+    // flyout from lineout beyond that, and the single-out label it
+    // would otherwise pick was already shown by handleConfirm/
+    // handleQuickPick before this queue even started.
+    const play = resolveBattedBallPlay({
+      result: kind === "fly" ? "flyout" : "groundout",
+      outsBeforePlay: runnerOutcomeOutsBeforePlay,
+      decisions: Object.fromEntries([...outBases.map((o) => [o.base, "out"]), ...scoredBases.map((s) => [s.base, "scored"])]),
+    });
+
+    if (play.inningEndedOnForce && scoredBases.length > 0) {
+      setBanner(`${scoredBases.length > 1 ? "Runs" : "Run"} did not count — the 3rd out was a force play (rule 5.09)`);
+    } else {
+      for (const { base, runner } of scoredBases) {
+        // Implicit-FC batch: rule 9.04(a)(2) -- no RBI is ever credited on
+        // a play where the batter grounds into a (now always-derived)
+        // double or triple play, run or no run. Only applies to kind
+        // "ground" (batterOut always true there) -- "bunt"'s own
+        // squeeze-play/sac-bunt RBI rules are unaffected, since a bunt
+        // double play wasn't part of what was asked for here.
+        const method: ScoreMethod =
+          kind === "fly"
+            ? "sac_fly"
+            : kind === "bunt"
+              ? (base === "third" ? "squeeze_play" : "sac_bunt")
+              : play.isDoublePlay || play.isTriplePlay
+                ? "double_play"
+                : "hit";
+        void creditAdHocRun(atBatId, runner, method);
+      }
+    }
+
+    if (outBases.length > 0) {
+      try {
+        const { secondAtBatId, thirdAtBatId } = await confirmDoublePlay({
+          gameId: game.id,
+          atBatId,
+          mode: state.mode,
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+          hitType: state.pendingHitType,
+          fieldX: null,
+          fieldY: null,
+          scorebookNotation: pendingNotation,
+          batterFielding: null,
+          secondOutRunner: { type: outBases[0].runner.type, id: outBases[0].runner.id },
+          outType: "force",
+          secondOutFielding: null,
+          thirdOut: outBases[1]
+            ? { runner: { type: outBases[1].runner.type, id: outBases[1].runner.id }, outType: "force", fielding: null }
+            : undefined,
+        });
+        dispatch({ type: "APPEND_EXTRA_OUT", atBatId: secondAtBatId });
+        if (thirdAtBatId) dispatch({ type: "APPEND_EXTRA_OUT", atBatId: thirdAtBatId });
+        setSummaryFlash(`${play.resultLabel} — ${outBases.map((o) => o.runner.name).join(", ")} out`);
+        void withOfflineRetry(`dp-state-${game.id}-${Date.now()}`, () =>
+          syncGameState(game.id, { outs: Math.min(3, state.outs + outBases.length) })
+        );
+      } catch (err) {
+        setBanner(err instanceof Error ? err.message : "Failed to log the extra out -- check connection and try again");
+      }
+    }
+  }
+
+  // Implicit-FC batch: the groundSafe-kind decision finalizeRunnerOutcomeQueue
+  // defers to -- nothing has been persisted for this play yet (the batter
+  // was never confirmed out, so there's no "groundout" row to append an
+  // extra out onto). resolveGroundBallWithRunners decides between three
+  // outcomes: "record nothing" (batter safe, nobody out -- revert the
+  // local runner movements and tell the operator to use 1B/Error
+  // instead), a fielder's choice (batter safe, at least one runner out),
+  // or (implicitly, never reached here since batterOut is always false
+  // for this kind) a double/triple play.
+  async function finalizeImplicitFc(ctx: {
+    outBases: { base: Base; runner: RunnerState }[];
+    scoredBases: { base: Base; runner: RunnerState }[];
+    outsBeforePlay: number;
+    hitType: HitType | null;
+    runnersBeforePlay: Runners | null;
+  }) {
+    const { outBases, scoredBases, outsBeforePlay, hitType, runnersBeforePlay } = ctx;
+    const decisions: Partial<Record<Base, RunnerOutcomeDecision>> = Object.fromEntries([
+      ...outBases.map((o) => [o.base, "out"] as const),
+      ...scoredBases.map((s) => [s.base, "scored"] as const),
+    ]);
+    const play = resolveGroundBallWithRunners({ batterOut: false, outsBeforePlay, decisions });
+
+    if (play.recordNothing) {
+      const revert = runnersBeforePlay ?? state.runners;
+      dispatch({ type: "APPLY_HIT_RUNNER_DECISION", runners: revert, scoredAdd: [] });
+      syncRunners(revert);
+      setBanner("If the batter reached safely with nobody out, record it as a hit (1B) or an Error.");
+      return;
+    }
+
+    const method: ScoreMethod = outsBeforePlay < 2 ? "fielders_choice" : "fielders_choice_2out";
+    let creditScored = scoredBases;
+    let runsScored = creditScored.length;
+    if (play.inningEndedOnForce && creditScored.length > 0) {
+      setBanner(`${creditScored.length > 1 ? "Runs" : "Run"} did not count — the 3rd out was a force play (rule 5.09)`);
+      creditScored = [];
+      runsScored = 0;
+    } else {
+      setBanner("Counted as a fielder's choice: the batter reached because a runner was put out. It's an at-bat, not a hit.");
+    }
+    const rbi = SCORE_METHOD_AWARDS_RBI[method] ? runsScored : 0;
+    const outRunners = outBases.map((o) => o.runner);
+    const batter = currentBatterRunner();
+    const finalRunners: Runners = { ...state.runners, first: batter };
+    const scoredRunnerEntries: ScoredRunner[] = creditScored.map(({ runner }) => ({ runner, method }));
+
+    if (game.logging_mode === "quick") {
+      try {
+        const { atBatId: fcAtBatId } = await logQuickAtBat({
+          gameId: game.id,
+          mode: state.mode,
+          playerId: state.mode === "hitting" ? (battingPlayer?.player_id ?? null) : null,
+          pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+          inning: state.inning,
+          inningHalf: state.inningHalf,
+          battingOrderPosition: state.mode === "hitting" ? state.battingOrderPosition : null,
+          result: "fc",
+          hitType,
+          rbi,
+          runsScored,
+          opponentPitcherId: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
+          outsBefore: outsBeforePlay,
+          rispBefore: Boolean(runnersBeforePlay?.second || runnersBeforePlay?.third),
+          fieldX: null,
+          fieldY: null,
+        });
+        dispatch({
+          type: "QUICK_CONFIRM_LOCAL",
+          atBatId: fcAtBatId,
+          result: "fc",
+          runners: finalRunners,
+          scored: scoredRunnerEntries,
+          outsRecorded: 0,
+          runnersBeforeAtBat: runnersBeforePlay ?? state.runners,
+        });
+        syncRunners(finalRunners);
+
+        for (const outRunner of outRunners) {
+          const { atBatId: extraAtBatId } = await logExtraOut({
+            gameId: game.id,
+            mode: state.mode,
+            playerId: outRunner.type === "player" ? outRunner.id : null,
+            pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
+            inning: state.inning,
+            inningHalf: state.inningHalf,
+            result: "fc",
+          });
+          dispatch({ type: "APPEND_EXTRA_OUT", atBatId: extraAtBatId });
+        }
+        if (outRunners.length > 0) {
+          setSummaryFlash(`Fielder's Choice — ${outRunners.map((r) => r.name).join(", ")} out`);
+          void withOfflineRetry(`fc-state-${game.id}-${Date.now()}`, () =>
+            syncGameState(game.id, { outs: Math.min(3, outsBeforePlay + outRunners.length) })
+          );
+        } else {
+          setSummaryFlash("Fielder's Choice");
+        }
+      } catch (err) {
+        setBanner(err instanceof Error ? err.message : "Failed to log at-bat -- check connection and try again");
+      }
+      return;
+    }
+
+    // Full Mode: dispatch SET_RESULT and let the existing runnerConfirm /
+    // auto-confirm-effect / handleConfirm pipeline persist it onto the
+    // already-open draft at-bat -- handleConfirm's own fcOutRunners-driven
+    // extra-out persistence (see above) takes it from here.
+    setFcOutRunners(outRunners);
+    dispatch({ type: "SET_RESULT", result: "fc", suggestion: finalRunners, scored: scoredRunnerEntries, hasMovement: true });
+    syncRunners(finalRunners);
+  }
+
+  // fix/dp-fc: the ad-hoc run-crediting every "Scored" decision needs --
+  // factored out of the old handleRunnerOutcomeDecision so both the
+  // fly/bunt sacrifice path and the new ground/force-out path above can
+  // share it. Same mechanism the diamond's own ad-hoc "Scored" action
+  // already uses once an at-bat is no longer open (bumpScoreAdHoc-style
+  // score update + a game_events row for the player's own run, plus the
+  // RBI written directly onto the batter's already-confirmed row).
+  function creditAdHocRun(atBatId: string, runner: RunnerState, method: ScoreMethod) {
+    bumpScoreAdHoc();
+    const eventType = SCORE_METHOD_EVENT[method] ?? "runner_scored";
+    void withOfflineRetry(`event-${game.id}-${Date.now()}-${runner.id ?? runner.name}`, () =>
+      logGameEvent(game.id, {
+        eventType,
+        inning: state.inning,
+        inningHalf: state.inningHalf,
+        mode: state.mode,
+        runsScored: 1,
+        scorerPlayerId: runner.type === "player" ? runner.id : null,
+      })
+    );
+    if (SCORE_METHOD_AWARDS_RBI[method]) {
+      void withOfflineRetry(`runout-rbi-${atBatId}-${runner.id ?? runner.name}`, () => incrementAtBatRbi(game.id, atBatId, 1));
+    }
+  }
+
+  useEffect(() => {
+    if (runnerOutcomeQueue.length > 0 || !runnerOutcomeKind) return;
+    // Implicit-FC batch: kind "groundSafe" may have no at-bat id yet
+    // (Quick Mode has no draft row to point at) -- every other kind
+    // always has one (maybeStartRunnerOutcomeQueue only ever fires after
+    // the batter's own row is already confirmed).
+    if (runnerOutcomeKind !== "groundSafe" && !runnerOutcomeAtBatId) return;
+    void finalizeRunnerOutcomeQueue();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runnerOutcomeQueue.length, runnerOutcomeKind, runnerOutcomeAtBatId, runnerOutcomeAnyScored, runnerOutcomeAnyMoved, runnerOutcomeAnyOut]);
+  }, [runnerOutcomeQueue.length, runnerOutcomeKind, runnerOutcomeAtBatId]);
 
   // Fix 4: Intentional Walk. Deliberately bypasses ensureDraftAtBat/the
   // pitch popup entirely (per spec) -- the at_bats row is created already
@@ -2303,8 +2553,30 @@ export function OperatorConsole({
   // it, instead of logging immediately on the grid tap. "Skip" (or
   // tapping nothing) still logs the at-bat -- field_x/field_y just stay
   // null, same as any other at-bat nobody tapped a location for.
+  //
+  // Implicit-FC batch: the plain "Ground Out"/"GO" quick button (and
+  // Bunt's own "Out at First", which also ends up here via
+  // handleBuntOutcome) used to fall straight through to handleQuickPick,
+  // always treating the batter as out. Intercepted here the same way
+  // pickResult intercepts it for Full Mode, so both grids and both modes
+  // now ask "Was the batter put out?" first when there's a runner on
+  // base and outs below 2 -- see resolveGroundOutBatterPrompt/
+  // beginImplicitFcFlow above.
   function startQuickPick(def: QuickModeButtonDef) {
     if (state.outs >= 3) return;
+    if (def.result === "groundout" && anyRunnerOnBase() && state.outs < 2) {
+      setGroundOutQuickPendingDef(def);
+      setGroundOutBatterPromptOpen(true);
+      return;
+    }
+    proceedQuickGroundOutAsOut(def);
+  }
+
+  // Implicit-FC batch: what startQuickPick used to do unconditionally
+  // for every result -- factored out so "Out at First" (answered in the
+  // new prompt) can resume exactly here, skipping the question it
+  // already answered.
+  function proceedQuickGroundOutAsOut(def: QuickModeButtonDef) {
     if (NO_FIELD_TAP_RESULTS.has(def.result)) {
       void handleQuickPick(def, null);
       return;
@@ -2332,49 +2604,34 @@ export function OperatorConsole({
   // the picked outcome then flows through the exact same startQuickPick
   // pipeline (field-tap step included) every other ball-in-play result
   // already uses.
-  function handleBuntOutcome(outcome: "out_at_first" | "safe" | "error" | "fc") {
+  //
+  // Implicit-FC batch: the 4th "FC" option is gone -- removing the
+  // standalone Fielder's Choice button means a bunt where the batter
+  // reaches but a runner is retired needs a new way to be represented,
+  // or it would become a silent gap (no button left could express it).
+  // "Safe," with a runner on base and outs below 2, now opens the same
+  // implicit-FC queue a plain Ground Out does (batterOut already known
+  // false, so the preliminary question is skipped) instead of recording
+  // an unconditional bunt single -- a runner marked "Out" there is what
+  // derives the fielder's choice. "Out at First" is unchanged (still
+  // routes through startQuickPick, which will itself ask "Was the
+  // batter put out?" again for a runner-on-base/outs-below-2 bunt --
+  // mildly redundant with having just tapped "Out at First," but safe,
+  // and keeps one unconditional entry point for every groundout/bunt
+  // combination instead of two).
+  function handleBuntOutcome(outcome: "out_at_first" | "safe" | "error") {
     setBuntOutcomePrompt(false);
+    if (outcome === "safe" && anyRunnerOnBase() && state.outs < 2) {
+      beginImplicitFcFlow("bunt");
+      return;
+    }
     const def: QuickModeButtonDef =
       outcome === "out_at_first"
         ? { label: "Bunt — Out at First", result: "groundout", hitType: "bunt" }
         : outcome === "safe"
           ? { label: "Bunt — Safe", result: "single", hitType: "bunt" }
-          : outcome === "error"
-            ? { label: "Bunt — Error", result: "error", hitType: "bunt" }
-            : { label: "Bunt — FC", result: "fc", hitType: "bunt" };
+          : { label: "Bunt — Error", result: "error", hitType: "bunt" };
     startQuickPick(def);
-  }
-
-  // Quick Mode scorekeeper batch: Double Play, entered by picking which
-  // occupied base's runner was also out (no fielding chain -- see
-  // logQuickDoublePlay's own comment on why this is deliberately lighter
-  // than full mode's DoublePlayWizard). Always exactly 2 outs, never a
-  // run (matches full mode's own confirmDoublePlay, which hardcodes
-  // runsScored to 0 too).
-  async function handleQuickDoublePlay(base: Base) {
-    setQuickRunnerPrompt(null);
-    const runner = state.runners[base];
-    if (!runner || state.outs > 1) return;
-    const batter = currentBatterRunner();
-    const runnersBeforeAtBat = state.runners;
-    try {
-      const { atBatId, secondAtBatId } = await logQuickDoublePlay({
-        gameId: game.id,
-        mode: state.mode,
-        playerId: state.mode === "hitting" ? (battingPlayer?.player_id ?? null) : null,
-        pitcherId: state.mode === "pitching" ? state.currentPitcherId : null,
-        inning: state.inning,
-        inningHalf: state.inningHalf,
-        battingOrderPosition: state.mode === "hitting" ? state.battingOrderPosition : null,
-        secondOutRunner: { type: runner.type, id: runner.id },
-        opponentPitcherId: state.mode === "hitting" ? state.currentOpponentPitcherId : null,
-      });
-      dispatch({ type: "QUICK_DOUBLE_PLAY_LOCAL", atBatId, secondAtBatId, removedBase: base, runnersBeforeAtBat });
-      syncRunners({ ...state.runners, [base]: null });
-      setSummaryFlash(`Double Play — ${batter.name} & ${runner.name}`);
-    } catch (err) {
-      setBanner(err instanceof Error ? err.message : "Failed to log double play -- check connection and try again");
-    }
   }
 
   // Quick Mode scorekeeper batch: Stolen Base as its own direct button --
@@ -2573,7 +2830,16 @@ export function OperatorConsole({
   }
 
   const undoRemaining = state.lastConfirmed ? Math.max(0, state.lastConfirmed.deadline - now) : 0;
-  const undoActive = state.lastConfirmed !== null && undoRemaining > 0 && !state.currentAtBatId;
+  // Safety change (pre-main-merge): a play that appended an extra out
+  // (double play, triple play, fielder's choice -- the one thing these
+  // three share is a non-null secondAtBatId, set by APPEND_EXTRA_OUT)
+  // can Undo-skip a batter, a known issue accepted for now rather than
+  // fixed here. Narrowest possible mitigation: just don't offer Undo for
+  // that specific play, so the broken path can't be taken -- Undo for
+  // every other play, and Undo after the 3rd out, are untouched.
+  const undoHasExtraOut = state.lastConfirmed !== null && state.lastConfirmed.secondAtBatId !== null;
+  const undoActive = state.lastConfirmed !== null && undoRemaining > 0 && !state.currentAtBatId && !undoHasExtraOut;
+  const undoBlockedForExtraOut = state.lastConfirmed !== null && undoRemaining > 0 && !state.currentAtBatId && undoHasExtraOut;
 
   const pitchCountColor =
     state.mode === "pitching"
@@ -2895,7 +3161,6 @@ export function OperatorConsole({
             collapsed={lineupStripCollapsed}
             onToggleCollapsed={() => setLineupStripCollapsed((c) => !c)}
             onPick={startQuickPick}
-            onDoublePlay={() => setQuickRunnerPrompt("doublePlay")}
             onStolenBase={() => setQuickRunnerPrompt("stolenBase")}
             onIbb={() => setIbbConfirmOpen(true)}
             onBunt={() => setBuntOutcomePrompt(true)}
@@ -3232,16 +3497,14 @@ export function OperatorConsole({
 
             {rightPanelMode === "quickRunnerPrompt" && quickRunnerPrompt && (
               <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-primary/50 bg-surface p-3 text-center">
-                <p className="text-sm font-semibold text-white">
-                  {quickRunnerPrompt === "doublePlay" ? "Which runner was also out?" : "Which runner stole a base?"}
-                </p>
+                <p className="text-sm font-semibold text-white">Which runner stole a base?</p>
                 <div className="mt-3 flex flex-col gap-2">
                   {(["third", "second", "first"] as Base[])
                     .filter((b) => state.runners[b])
                     .map((b) => (
                       <button
                         key={b}
-                        onClick={() => (quickRunnerPrompt === "doublePlay" ? void handleQuickDoublePlay(b) : handleQuickStolenBase(b))}
+                        onClick={() => handleQuickStolenBase(b)}
                         className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm text-white hover:border-accent-primary"
                       >
                         {state.runners[b]!.name} ({b})
@@ -3429,24 +3692,15 @@ export function OperatorConsole({
                             // Infield: "remove HR from result options" -- an
                             // infield hit physically can't clear the wall.
                             .filter((r) => !(fieldZone === "infield" && r === "hr"))
-                            // Bug fix (feature/lineup-drafts): Fielder's
-                            // Choice needs a runner on base -- same rule
-                            // Quick Mode's own FC button now enforces (see
-                            // quick-mode-grid.tsx). Full Mode has no
-                            // separate Sac Fly/Sac Bunt buttons to fix here
-                            // -- those are Quick Mode-only labels for a
-                            // plain Fly Out/bunted Ground Out, which Full
-                            // Mode already represents as such.
-                            .filter((r) => !(r === "fc" && !anyRunnerOnBase()))
                             .map((r) => (
                               <button
                                 key={r}
                                 onClick={() => pickResult(r)}
                                 className="min-h-[48px] rounded-md border border-border bg-background px-2 text-sm font-medium text-foreground/70 transition hover:border-accent-gold hover:text-white"
                               >
-                                {/* Sacrifice-rules batch: the same four
+                                {/* Sacrifice-rules batch: the same
                                     underlying results (groundout/single/
-                                    error/fc) are relabeled in "how it
+                                    error) are relabeled in "how it
                                     ended" terms for a bunt -- see
                                     BUNT_RESULT_LABELS. */}
                                 {state.pendingHitType === "bunt" ? BUNT_RESULT_LABELS[r] ?? RESULT_LABELS[r] : RESULT_LABELS[r]}
@@ -3498,26 +3752,6 @@ export function OperatorConsole({
                     onSelect={handleGroundOutFielderConfirmed}
                     resolve={resolve}
                   />
-                )}
-
-                {flowStep === "groundOut" && groundOutSubStep === "secondOutAsk" && (
-                  <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3 text-center">
-                    <p className="text-sm font-semibold text-white">Was there another out on this play?</p>
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        onClick={handleAnotherOutYes}
-                        className="min-h-[44px] flex-1 rounded-md bg-accent-primary px-3 text-sm font-semibold text-white"
-                      >
-                        Yes
-                      </button>
-                      <button
-                        onClick={handleAnotherOutNo}
-                        className="min-h-[44px] flex-1 rounded-md border border-border px-3 text-sm font-medium text-foreground/70"
-                      >
-                        No
-                      </button>
-                    </div>
-                  </div>
                 )}
 
                 {flowStep === "runnerConfirm" && state.suggestedResult && (
@@ -3636,6 +3870,7 @@ export function OperatorConsole({
               <span className="relative">Undo ({Math.ceil(undoRemaining / 1000)}s)</span>
             </button>
           )}
+          {undoBlockedForExtraOut && <span className="text-[11px] text-accent-amber">To fix this play, tell the coach.</span>}
           <button
             onClick={() => dispatch({ type: "SET_PANEL", panel: "endGame", open: true })}
             className="min-h-[40px] rounded-md bg-accent-red px-3 text-xs font-semibold text-white"
@@ -3653,77 +3888,33 @@ export function OperatorConsole({
         />
       )}
 
-      {dpWizard && (
-        <DoublePlayWizard
-          wizard={dpWizard}
-          runners={state.runners}
-          resolve={resolve}
-          suggestedInitialFielderPosition={suggestedFielderPosition}
-          // Feature 1 (fielding-play logging batch): only reached when
-          // "Double Play" was picked directly (pickResult) -- the
-          // dynamic-upgrade entry point (handleAnotherOutYes) pre-fills
-          // initialFielding and starts at "runner" instead.
-          onInitialFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "runner", initialFielding: f } : w))}
-          onChangeBase={(base) => setDpWizard((w) => (w ? { ...w, step: "type", base } : w))}
-          onChangeType={(outType) => setDpWizard((w) => (w ? { ...w, outType } : w))}
-          // Feature 1: skip straight to fielding2 when firstFielding is
-          // already known (the batter's-own-out fielder, collected by the
-          // plain-groundout flow before this wizard was ever entered) --
-          // asking about it a second time here would be redundant.
-          onProceedToFielding1={() => setDpWizard((w) => (w ? { ...w, step: w.firstFielding ? "fielding2" : "fielding1" } : w))}
-          onFirstFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "fielding2", firstFielding: f } : w))}
-          // Fix 8 (baseball-logic-fixes batch, minor tier): no longer
-          // confirms immediately -- holds the fielder and asks "was there
-          // a third out?" first, since a triple play needs one more
-          // runner/type/fielding round before there's anything to confirm.
-          onSecondFielding={(f) => setDpWizard((w) => (w ? { ...w, step: "thirdOutAsk", secondFielding: f } : w))}
-          onThirdOutAsk={(hasThirdOut) => {
-            if (!dpWizard.base || !dpWizard.firstFielding || !dpWizard.secondFielding || !dpWizard.initialFielding) return;
-            const runner = state.runners[dpWizard.base];
-            if (!runner) return;
-            if (!hasThirdOut) {
-              void handleConfirmDoublePlay({
-                base: dpWizard.base,
-                runner,
-                outType: dpWizard.outType,
-                batterFielding: dpWizard.firstFielding,
-                secondFielding: dpWizard.secondFielding,
-                initialFielding: dpWizard.initialFielding,
-              });
-              return;
-            }
-            setDpWizard((w) => (w ? { ...w, step: "thirdOutRunner" } : w));
-          }}
-          onChangeThirdBase={(base) => setDpWizard((w) => (w ? { ...w, step: "thirdOutType", thirdBase: base } : w))}
-          onChangeThirdType={(outType) => setDpWizard((w) => (w ? { ...w, step: "thirdOutFielding", thirdOutType: outType } : w))}
-          onThirdFielding={(f) => {
-            if (!dpWizard.base || !dpWizard.firstFielding || !dpWizard.secondFielding || !dpWizard.initialFielding) return;
-            if (!dpWizard.thirdBase || !dpWizard.thirdOutType) return;
-            const runner = state.runners[dpWizard.base];
-            const thirdRunner = state.runners[dpWizard.thirdBase];
-            if (!runner || !thirdRunner) return;
-            void handleConfirmDoublePlay({
-              base: dpWizard.base,
-              runner,
-              outType: dpWizard.outType,
-              batterFielding: dpWizard.firstFielding,
-              secondFielding: dpWizard.secondFielding,
-              thirdOut: { base: dpWizard.thirdBase, runner: thirdRunner, outType: dpWizard.thirdOutType, fielding: f },
-              initialFielding: dpWizard.initialFielding,
-            });
-          }}
-          onCancel={() => {
-            setDpWizard(null);
-            // Feature 1 (fielding-play logging batch): if this wizard was
-            // entered via the dynamic "was there another out?" upgrade
-            // (groundOutBatterFielder is only ever set by that path, never
-            // by picking "Double Play" directly), cancelling it should
-            // fall back to the plain single groundout already collected
-            // rather than leaving the play to auto-confirm with the wrong
-            // fielder and no notation.
-            if (groundOutBatterFielder) finalizeGroundOutNotation(groundOutBatterFielder, []);
-          }}
-        />
+      {/* Implicit-FC batch: "Was the batter put out?" -- a plain modal
+          (not anchored to a tap point, same treatment the other
+          full-screen wizards here get), replacing the old "which runner
+          was put out, or No one out" wizard. "Out at First" resumes the
+          plain groundout flow; "Safe" opens the per-runner queue that
+          derives a fielder's choice (or nothing) -- see
+          resolveGroundOutBatterPrompt/beginImplicitFcFlow. */}
+      {groundOutBatterPromptOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-5 text-center">
+            <h3 className="font-heading text-lg font-bold text-white">Was the batter put out?</h3>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                onClick={() => resolveGroundOutBatterPrompt(true)}
+                className="min-h-[44px] rounded-md bg-accent-primary px-3 text-sm font-semibold text-white"
+              >
+                Out at First
+              </button>
+              <button
+                onClick={() => resolveGroundOutBatterPrompt(false)}
+                className="min-h-[44px] rounded-md border border-border px-3 text-sm font-medium text-white hover:border-accent-primary"
+              >
+                Safe
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {pickoffWizard && (
@@ -3898,6 +4089,17 @@ export function OperatorConsole({
           runs={state.runsThisInning}
           errors={state.errorsThisInning}
           onEndInning={confirmEndInning}
+          // Bug 2 fix (fix/dp-fc follow-up): this modal is a fixed,
+          // z-[60] full-screen overlay -- the bottom bar's own Undo
+          // button (z-10) is completely covered by it the instant outs
+          // hits 3, with no way past it except End Inning. undoActive/
+          // undoRemaining/handleUndo are unchanged; this just gives the
+          // same control a second, reachable home for as long as the
+          // 30s window (or state.lastConfirmed) is still open.
+          undoActive={undoActive}
+          undoRemaining={undoRemaining}
+          onUndo={handleUndo}
+          undoBlockedForExtraOut={undoBlockedForExtraOut}
         />
       )}
 
@@ -4013,7 +4215,6 @@ function QuickModeLeftPanel({
   collapsed,
   onToggleCollapsed,
   onPick,
-  onDoublePlay,
   onStolenBase,
   onIbb,
   onBunt,
@@ -4032,7 +4233,6 @@ function QuickModeLeftPanel({
   collapsed: boolean;
   onToggleCollapsed: () => void;
   onPick: (def: QuickModeButtonDef) => void;
-  onDoublePlay: () => void;
   onStolenBase: () => void;
   onIbb: () => void;
   onBunt: () => void;
@@ -4102,8 +4302,6 @@ function QuickModeLeftPanel({
             <dd>Walk (base on balls)</dd>
             <dt className="font-semibold text-white">HBP</dt>
             <dd>Hit by pitch</dd>
-            <dt className="font-semibold text-white">FC</dt>
-            <dd>Fielder&apos;s choice</dd>
             <dt className="font-semibold text-white">SF</dt>
             <dd>Sacrifice fly — a run scored on a fly/line/foul out</dd>
             <dt className="font-semibold text-white">SH</dt>
@@ -4112,6 +4310,10 @@ function QuickModeLeftPanel({
           <p className="mt-1.5 text-foreground/50">
             Fly Out, Line Out, Foul Out, and Bunt ask what happened to any runner on base (outs below 2) and mark SF/SH
             on the scorebook automatically -- never a button you tap yourself.
+          </p>
+          <p className="mt-1.5 text-foreground/50">
+            There&apos;s no FC button either: a Ground Out (or a bunt) where the batter is safe and a runner is put
+            out is counted as a fielder&apos;s choice automatically.
           </p>
         </div>
       )}
@@ -4172,11 +4374,9 @@ function QuickModeLeftPanel({
         <div className="sm:hidden">
           <MobileQuickModeGrid
             onPick={onPick}
-            onDoublePlay={onDoublePlay}
             onIbb={onIbb}
             onBunt={onBunt}
             disabled={state.outs >= 3}
-            dpDisabled={state.outs > 1 || !anyRunnerOnBase}
             runners={state.runners}
             outs={state.outs}
           />
@@ -4198,20 +4398,6 @@ function QuickModeLeftPanel({
         {/* Desktop/tablet: unchanged from before this batch. */}
         <div className="hidden sm:block">
           <QuickModeGrid onPick={onPick} onBunt={onBunt} disabled={state.outs >= 3} runners={state.runners} outs={state.outs} />
-
-          {/* Double Play needs a follow-up "which runner" pick (see
-              quickRunnerPrompt in the shared right panel), so it isn't a
-              flat QuickModeGrid button like the others -- it can't resolve
-              in one tap. Disabled past 1 out (a double play always records
-              2, which would overflow 3) or with nobody on base. */}
-          <button
-            type="button"
-            disabled={state.outs > 1 || !anyRunnerOnBase}
-            onClick={onDoublePlay}
-            className="glossy mt-2 min-h-[48px] w-full rounded-md border-2 border-accent-amber px-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-accent-amber/20 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            Double Play
-          </button>
 
           <p className="mb-1 mt-3 text-[10px] font-semibold uppercase tracking-wide text-foreground/40">Special plays</p>
           <div className="flex flex-wrap gap-2">
@@ -4691,11 +4877,23 @@ function RunnerOutcomePanel({
 }: {
   base: Base;
   runner: RunnerState;
-  kind: "fly" | "bunt";
+  kind: "fly" | "bunt" | "ground" | "groundSafe";
   onDecide: (decision: "scored" | "advanced" | "stayed" | "out") => void;
 }) {
   const nextBase = NEXT_BASE[base];
-  const prompt = kind === "fly" ? "was on {base} when the ball was caught -- what happened?" : "was on {base} on the bunt -- what happened?";
+  const prompt =
+    kind === "fly"
+      ? "was on {base} when the ball was caught -- what happened?"
+      : kind === "bunt"
+        ? "was on {base} on the bunt -- what happened?"
+        : "was on {base} on the ground ball -- what happened?";
+  // fix/dp-fc: "ground" never labels Scored as a sacrifice (a productive
+  // groundout is just a normal RBI, not a sac fly/squeeze/sac bunt) and
+  // never labels Out as a tag-up violation (a force out on a ground
+  // ball, never a tag play) -- see resolveBattedBallPlay/
+  // finalizeRunnerOutcomeQueue for how those two decisions actually get
+  // applied once the whole queue drains.
+  const scoredLabel = kind === "fly" ? "sacrifice fly" : kind === "bunt" ? (base === "third" ? "squeeze play" : "sacrifice bunt") : null;
   return (
     <div className="glossy w-full max-w-[320px] rounded-lg border border-accent-amber/50 bg-accent-amber/10 p-3">
       <p className="text-xs text-accent-amber">
@@ -4706,7 +4904,7 @@ function RunnerOutcomePanel({
           onClick={() => onDecide("scored")}
           className="min-h-[44px] rounded-md border border-accent-green/60 px-3 text-left text-sm font-medium text-white hover:bg-accent-green/20"
         >
-          Scored — RBI ({kind === "fly" ? "sacrifice fly" : base === "third" ? "squeeze play" : "sacrifice bunt"})
+          Scored — RBI{scoredLabel ? ` (${scoredLabel})` : ""}
         </button>
         {nextBase && (
           <button
@@ -4742,7 +4940,7 @@ function BuntOutcomePrompt({
   onDecide,
   onCancel,
 }: {
-  onDecide: (outcome: "out_at_first" | "safe" | "error" | "fc") => void;
+  onDecide: (outcome: "out_at_first" | "safe" | "error") => void;
   onCancel: () => void;
 }) {
   return (
@@ -4759,19 +4957,13 @@ function BuntOutcomePrompt({
           onClick={() => onDecide("safe")}
           className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
         >
-          Safe (Bunt Hit)
+          Safe
         </button>
         <button
           onClick={() => onDecide("error")}
           className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
         >
           Error
-        </button>
-        <button
-          onClick={() => onDecide("fc")}
-          className="min-h-[44px] rounded-md border border-border px-3 text-left text-sm font-medium text-white hover:border-accent-primary"
-        >
-          Fielder&apos;s Choice
         </button>
       </div>
       <button onClick={onCancel} className="mt-3 text-xs text-foreground/40 hover:text-white">
@@ -5131,11 +5323,30 @@ function ThreeOutsModal({
   runs,
   errors,
   onEndInning,
+  undoActive,
+  undoRemaining,
+  onUndo,
+  undoBlockedForExtraOut,
 }: {
   hits: number;
   runs: number;
   errors: number;
   onEndInning: () => void;
+  // Bug 2 fix (fix/dp-fc follow-up): a mistake on the very last out
+  // (the one that just ended the half-inning) used to be unfixable --
+  // this full-screen overlay has no way past it except End Inning, and
+  // the bottom bar's own Undo lives underneath it, unreachable. Same
+  // undoActive/undoRemaining the bottom bar already computes; onUndo is
+  // the same handleUndo.
+  undoActive: boolean;
+  undoRemaining: number;
+  onUndo: () => void;
+  // Safety change (pre-main-merge): same undoBlockedForExtraOut the
+  // bottom bar computes -- this modal's own Undo button needs the same
+  // "not for a double/triple play or fielder's choice" restriction, or
+  // the 3rd-out overlay would reopen the exact skip-a-batter path the
+  // bottom bar was just closed off from.
+  undoBlockedForExtraOut: boolean;
 }) {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#030A06]/95 p-4">
@@ -5158,9 +5369,18 @@ function ThreeOutsModal({
             <p className="text-[10px] uppercase text-foreground/40">Errors</p>
           </div>
         </div>
+        {undoActive && (
+          <button
+            onClick={onUndo}
+            className="mt-4 w-full min-h-[48px] rounded-md border border-accent-amber px-4 text-sm font-semibold text-accent-amber"
+          >
+            Undo last play ({Math.ceil(undoRemaining / 1000)}s)
+          </button>
+        )}
+        {undoBlockedForExtraOut && <p className="mt-4 text-xs text-accent-amber">To fix this play, tell the coach.</p>}
         <button
           onClick={onEndInning}
-          className="mt-6 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-background"
+          className="mt-3 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-background"
         >
           End Inning
         </button>
@@ -5227,233 +5447,6 @@ function PickoffWizard({
               </button>
             </div>
           </>
-        )}
-
-        <button onClick={onCancel} className="mt-4 w-full text-xs text-foreground/50">
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// Feature 1 (fielding-play logging batch): the runner's current base maps
-// to where a force out on them is actually made -- one base further
-// along (a runner on 3rd forced out goes to home, which isn't a `Base`
-// value, hence the separate OutBase-returning helper rather than reusing
-// the existing NEXT_BASE map).
-function forceDestination(base: Base): OutBase {
-  if (base === "first") return "second";
-  if (base === "second") return "third";
-  return "home";
-}
-
-function DoublePlayWizard({
-  wizard,
-  runners,
-  resolve,
-  suggestedInitialFielderPosition,
-  onInitialFielding,
-  onChangeBase,
-  onChangeType,
-  onProceedToFielding1,
-  onFirstFielding,
-  onSecondFielding,
-  onThirdOutAsk,
-  onChangeThirdBase,
-  onChangeThirdType,
-  onThirdFielding,
-  onCancel,
-}: {
-  wizard: DpWizardState;
-  runners: Runners;
-  resolve: (position: FieldingPosition) => ResolvedFielder;
-  // Feature 1: only meaningful for the "initialFielding" step (reached
-  // when "Double Play" is picked directly, without a prior field-tap
-  // fielding step of its own to derive one from already).
-  suggestedInitialFielderPosition: FieldingPosition | null;
-  onInitialFielding: (f: ResolvedFielder) => void;
-  onChangeBase: (base: Base) => void;
-  onChangeType: (t: OutType) => void;
-  onProceedToFielding1: () => void;
-  onFirstFielding: (f: ResolvedFielder) => void;
-  onSecondFielding: (f: ResolvedFielder) => void;
-  // Fix 8 (baseball-logic-fixes batch, minor tier): the four new steps
-  // that generalize this wizard to a triple play -- unused/no-ops for a
-  // regular double play, which never leaves the original four steps.
-  onThirdOutAsk: (hasThirdOut: boolean) => void;
-  onChangeThirdBase: (base: Base) => void;
-  onChangeThirdType: (t: OutType) => void;
-  onThirdFielding: (f: ResolvedFielder) => void;
-  onCancel: () => void;
-}) {
-  const occupied = (["first", "second", "third"] as Base[]).filter((b) => runners[b]);
-  // The runner already picked for the second out can't also be the third.
-  const occupiedForThird = occupied.filter((b) => b !== wizard.base);
-  const title = wizard.step.startsWith("thirdOut") ? "Triple Play" : "Double Play";
-  // Feature 1: every fielding sub-step below suggests a covering fielder
-  // from the same standard-coverage table the plain-groundout flow uses,
-  // anchored on whoever fielded the ball originally -- not chained
-  // step-to-step (see standardCoveringFielder's own comment on why that
-  // would need chronological reasoning this UI's ask-order doesn't
-  // actually follow). Always overridable via the picker's own "Change".
-  const initialFielderNumber = wizard.initialFielding ? FIELDING_POSITION_TO_NUMBER[wizard.initialFielding.position] : null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-5">
-        <h3 className="font-heading text-lg font-bold text-white">{title}</h3>
-
-        {wizard.step === "initialFielding" && (
-          <div className="mt-2">
-            <FielderSuggestionPanel
-              title="Who fielded the ball?"
-              suggestedPosition={suggestedInitialFielderPosition}
-              onSelect={onInitialFielding}
-              resolve={resolve}
-            />
-          </div>
-        )}
-
-        {wizard.step === "runner" && (
-          <>
-            <p className="mt-2 text-sm text-foreground/60">Which runner was out?</p>
-            <div className="mt-3 flex flex-col gap-2">
-              {occupied.map((b) => (
-                <button
-                  key={b}
-                  onClick={() => onChangeBase(b)}
-                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
-                >
-                  {runners[b]?.name} ({b})
-                </button>
-              ))}
-              {occupied.length === 0 && <p className="text-sm text-foreground/40">No runners on base.</p>}
-            </div>
-          </>
-        )}
-
-        {wizard.step === "type" && (
-          <>
-            <p className="mt-2 text-sm text-foreground/60">Force out or tag out (the runner)?</p>
-            <div className="mt-3 flex gap-2">
-              {(["force", "tag"] as OutType[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => onChangeType(t)}
-                  className={`flex-1 rounded-md border px-3 py-2 text-sm capitalize ${
-                    wizard.outType === t ? "border-accent-primary bg-accent-primary text-white" : "border-border text-foreground/70"
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={onProceedToFielding1}
-              className="mt-4 w-full min-h-[48px] rounded-md bg-accent-primary px-4 text-sm font-semibold text-white"
-            >
-              Next
-            </button>
-          </>
-        )}
-
-        {wizard.step === "fielding1" && (
-          <div className="mt-2">
-            <FielderSuggestionPanel
-              title="First out (batter, force at 1B) — who covered it?"
-              suggestedPosition={initialFielderNumber !== null ? FIELDER_NUMBER_TO_POSITION[standardCoveringFielder("first", initialFielderNumber)] : null}
-              onSelect={onFirstFielding}
-              resolve={resolve}
-            />
-          </div>
-        )}
-
-        {wizard.step === "fielding2" && (
-          <div className="mt-2">
-            <FielderSuggestionPanel
-              title="Second out — who covered it?"
-              suggestedPosition={
-                initialFielderNumber !== null && wizard.base
-                  ? FIELDER_NUMBER_TO_POSITION[standardCoveringFielder(forceDestination(wizard.base), initialFielderNumber)]
-                  : null
-              }
-              onSelect={onSecondFielding}
-              resolve={resolve}
-            />
-          </div>
-        )}
-
-        {wizard.step === "thirdOutAsk" && (
-          <>
-            <p className="mt-2 text-sm text-foreground/60">Was there a third out? (Triple Play)</p>
-            <div className="mt-3 flex gap-2">
-              <button
-                onClick={() => onThirdOutAsk(true)}
-                className="min-h-[48px] flex-1 rounded-md bg-accent-primary px-3 text-sm font-semibold text-white"
-              >
-                Yes
-              </button>
-              <button
-                onClick={() => onThirdOutAsk(false)}
-                className="min-h-[48px] flex-1 rounded-md border border-border px-3 text-sm font-medium text-foreground/70"
-              >
-                No — confirm double play
-              </button>
-            </div>
-          </>
-        )}
-
-        {wizard.step === "thirdOutRunner" && (
-          <>
-            <p className="mt-2 text-sm text-foreground/60">Which runner was the third out?</p>
-            <div className="mt-3 flex flex-col gap-2">
-              {occupiedForThird.map((b) => (
-                <button
-                  key={b}
-                  onClick={() => onChangeThirdBase(b)}
-                  className="rounded-md border border-border px-3 py-2 text-left text-sm text-white hover:border-accent-primary"
-                >
-                  {runners[b]?.name} ({b})
-                </button>
-              ))}
-              {occupiedForThird.length === 0 && <p className="text-sm text-foreground/40">No other runners on base.</p>}
-            </div>
-          </>
-        )}
-
-        {wizard.step === "thirdOutType" && (
-          <>
-            <p className="mt-2 text-sm text-foreground/60">Force out or tag out (the third runner)?</p>
-            <div className="mt-3 flex gap-2">
-              {(["force", "tag"] as OutType[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => onChangeThirdType(t)}
-                  className={`flex-1 rounded-md border px-3 py-2 text-sm capitalize ${
-                    wizard.thirdOutType === t ? "border-accent-primary bg-accent-primary text-white" : "border-border text-foreground/70"
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-
-        {wizard.step === "thirdOutFielding" && (
-          <div className="mt-2">
-            <FielderSuggestionPanel
-              title="Third out — who covered it?"
-              suggestedPosition={
-                initialFielderNumber !== null && wizard.thirdBase
-                  ? FIELDER_NUMBER_TO_POSITION[standardCoveringFielder(forceDestination(wizard.thirdBase), initialFielderNumber)]
-                  : null
-              }
-              onSelect={onThirdFielding}
-              resolve={resolve}
-            />
-          </div>
         )}
 
         <button onClick={onCancel} className="mt-4 w-full text-xs text-foreground/50">

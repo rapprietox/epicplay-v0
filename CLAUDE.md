@@ -160,7 +160,7 @@ See `supabase/migrations/*.sql` for the authoritative definitions
   - `logging_accuracy_score`, `notes` added in Sprint 3, set once by `endGame` when the operator submits the post-game summary
 - `lineup(id, game_id, player_id, batting_order, position, created_at)`
 - `at_bats(id, game_id, player_id, pitcher_id, mode, inning, inning_half, batting_order_position, result, hit_type, field_x, field_y, rbi, runs_scored, is_out, confirmed_at, created_at)`
-  - `result`: single/double/triple/hr/flyout/groundout/lineout/strikeout/walk/hbp/error/fc
+  - `result`: single/double/triple/hr/flyout/groundout/lineout/strikeout/walk/hbp/error/fc/double_play (plus `intentional_walk`/`dropped_third_strike_safe`/`ground_rule_double`, added later -- see the fix batches below)
   - `hit_type`: groundball/linedrive/flyball/bunt/popup/hr (nullable -- not every result has one)
   - `field_x`/`field_y`: 0-100 coordinates on the field diagram (nullable)
   - `pitcher_id` added in Sprint 2 (nullable, who was pitching this at-bat) -- see Pitching stats below
@@ -1785,6 +1785,97 @@ are reverted to their exact original values; nothing else in
 size, popup sizing, and 1.8x batter cards from the two batches in
 between are untouched, and width-driven zone sizing + `items-center`
 stays, since those were requested separately and remain correct).
+
+## Double play, triple play, and fielder's choice: both always derived, never a direct pick
+
+A long-running `fix/dp-fc` branch (merged to `main`) reworked how a
+double play, triple play, and fielder's choice get logged on the
+operator screen. **This supersedes the Sprint 3 follow-up section
+above's description of a `DoublePlayWizard` and a "which runner was
+put out, or No one out" Fielder's Choice wizard -- neither exists any
+more.** There is no button for any of the three. All three are derived
+from the SAME place: a plain **Ground Out** (Quick Mode's "Ground
+Out"/"GO" button, Full Mode's "Ground Out" result, or a bunt's "Out at
+First") tapped with a runner on base and outs below 2.
+
+- **"Was the batter put out?"** is asked first (a plain modal,
+  `groundOutBatterPromptOpen` in `operator-console.tsx`). Bases empty or
+  2 outs already: never asked, and the tap is just a plain ground out,
+  unchanged from a routine play.
+- Either answer leads to the SAME per-runner **Scored / Advanced /
+  Stayed / Out** question (`RunnerOutcomePanel`, one runner at a time,
+  top base first) that Fly Out/Line Out/Foul Out/a bunt-out-at-first
+  already used for the sacrifice-fly/sacrifice-bunt question -- a 4th
+  `RunnerOutcomeKind` ("groundSafe") reuses the identical queue/UI
+  machinery for "batter safe" instead of adding a parallel one.
+- The combination decides the result (`resolveGroundBallWithRunners` in
+  `src/lib/operator/runner-outcomes.ts`, pure and DB/React-free on
+  purpose -- the real UI and the proof scripts in `scripts/` can't
+  disagree about what it says):
+  - Batter out + 1 runner also out -> **Double Play**; batter out + 2
+    runners out -> **Triple Play** (`resolveBattedBallPlay`, the
+    original fix/dp-fc function, kept for this branch of the decision --
+    batterOut is always `true` here).
+  - Batter out, nobody else out -> plain **Ground Out**.
+  - Batter safe + at least one runner out -> **Fielder's Choice**
+    (`at_bats.result = 'fc'`) -- batter placed on first, the retired
+    runner(s) logged as their own extra-out row(s) (0, 1, or 2, same
+    ceiling a triple play has), an at-bat but never a hit.
+  - Batter safe, nobody out -> **nothing is recorded at all**. A banner
+    tells the operator to log it as a hit (1B) or an Error instead --
+    tapping "Ground Out" doesn't commit to anything until the per-runner
+    answers are in, so there's nothing to undo in this case.
+- **RBI**: a double/triple play never credits an RBI, even if a run
+  scores on the same play (rule 9.04(a)(2); `ScoreMethod` value
+  `"double_play"`, `SCORE_METHOD_AWARDS_RBI: false`). A fielder's choice
+  credits an RBI only if there were fewer than 2 outs before the play
+  (`"fielders_choice"` vs. the no-RBI `"fielders_choice_2out"`).
+- **Third-out force rule** (rule 5.09(b)/4.09(b)): a run doesn't count if
+  the out that brought the half-inning to 3 was a force -- applies to
+  both branches (`inningEndedOnForce` in the same pure function), with a
+  banner explaining why when it fires.
+- Every extra out row this produces (the double/triple play's 2nd/3rd
+  out, or the fielder's choice's retired runner) merges into the SAME
+  `state.lastConfirmed` as the batter's own row via `APPEND_EXTRA_OUT`
+  (`secondAtBatId`/`thirdAtBatId`) -- that's what makes Undo a single tap
+  for the whole play, not three. Removing the separate Fielder's Choice
+  button also removed the "Bunt" Quick Mode wizard's own FC option; its
+  "Safe" choice now runs the same implicit-FC queue instead of
+  unconditionally logging a clean bunt hit.
+
+### Undo's batting-order fix, and a known remaining limitation
+
+Undo (`handleUndo`/`undoAtBat`) used to restore `battingOrderPosition`
+by reading whatever the column currently held and subtracting one slot
+-- the same arithmetic the forward advance uses, in reverse. That gives
+the wrong answer the moment anything changes the value between a play's
+forward advance and its Undo (a race between two overlapping Quick Mode
+fire-and-forget requests, a retried write, anything), since arithmetic
+over a shared mutable value can't tell "untouched since this play" apart
+from "touched by something else." Fixed by snapshotting
+`battingOrderPosition` once, in `OperatorState.lastConfirmed`, at the
+exact moment a play's own forward advance happens (`CONFIRM_LOCAL`/
+`QUICK_CONFIRM_LOCAL`/`CONFIRM_INTENTIONAL_WALK`); Undo now restores
+that saved value directly -- locally in the reducer and server-side via
+`undoAtBat`'s `restoreBattingOrderPosition` parameter, a flat `UPDATE`,
+never a read-then-decrement. Proved against the real server actions (not
+just the reducer) in `scripts/test-battingorder-db.ts`, including a test
+that deliberately corrupts `game_state.batting_order_position` between
+the play and the Undo to show the old code gets it wrong and the new
+code doesn't.
+
+**Known issue, accepted for now:** Undo after specifically a double
+play, triple play, or fielder's choice can still skip a batter --
+reversing an extra-out play correctly needs more than the batting-order
+snapshot fix above, and that work hasn't been done. Rather than ship
+Undo that silently corrupts the batting order for these three play
+types, the operator screen just doesn't offer Undo for them: whenever
+`state.lastConfirmed.secondAtBatId` is set (true for exactly a double
+play, a triple play, or a fielder's choice, and nothing else), both the
+bottom bar and the 3rd-out modal show "To fix this play, tell the
+coach." instead of an Undo button. Undo for every other play, and Undo
+after the 3rd out for a play that didn't append an extra out, are
+unaffected.
 
 ## Auth flow
 

@@ -18,7 +18,7 @@ import type {
 } from "@/lib/supabase/types";
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 import { RESULT_IS_OUT } from "@/lib/operator/types";
-import { nextBattingOrderPosition, previousBattingOrderPosition } from "@/lib/operator/batting-order";
+import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
 import { parseVoiceCommand, type VoiceCommand } from "@/lib/anthropic";
 import { generatePostGameAnalysis } from "@/lib/post-game-analysis";
 
@@ -80,16 +80,18 @@ async function advanceBattingOrder(supabase: ReturnType<typeof createClient>, ga
   await supabase.from("game_state").update({ batting_order_position: nextPosition }).eq("game_id", gameId);
 }
 
-// Mirrors advanceBattingOrder for Undo, so the persisted position doesn't
-// stay one batter ahead of reality after a confirm gets reversed.
-async function reverseBattingOrder(supabase: ReturnType<typeof createClient>, gameId: string, mode: AtBatMode) {
-  if (mode !== "hitting") return;
-  const { data: gameState } = await supabase.from("game_state").select("batting_order_position").eq("game_id", gameId).single();
-  if (!gameState) return;
-  const slots = await occupiedBattingOrderSlots(supabase, gameId);
-  const prevPosition = previousBattingOrderPosition(slots, gameState.batting_order_position ?? 1);
-  await supabase.from("game_state").update({ batting_order_position: prevPosition }).eq("game_id", gameId);
-}
+// Batting-order Undo fix: this used to mirror advanceBattingOrder --
+// read the CURRENT game_state.batting_order_position and compute one
+// slot back from it. That's exactly the "forward or backward arithmetic"
+// the bug report asked to remove: it silently gives the wrong answer if
+// the position changed for any reason between this play's own forward
+// advance and the Undo (a race between concurrent requests, a retried
+// fire-and-forget write, anything) -- restoring a value that was never
+// actually a function of "what it is right now" fixes that by
+// construction. Replaced by a flat write in undoAtBat below, to the
+// exact battingOrderPosition the client snapshotted in lastConfirmed
+// before the play advanced it in the first place. No longer called from
+// anywhere; kept deleted rather than orphaned.
 
 // KAIROS batch, Tool 6: gated behind the same operator/coach auth every
 // other action in this file uses, even though the parse itself doesn't
@@ -325,62 +327,40 @@ export async function logQuickAtBat(input: QuickAtBatInput): Promise<{ atBatId: 
   return { atBatId: data.id };
 }
 
-export interface QuickDoublePlayInput {
+export interface LogExtraOutInput {
   gameId: string;
   mode: AtBatMode;
   playerId: string | null;
   pitcherId: string | null;
   inning: number;
   inningHalf: InningHalf;
-  battingOrderPosition: number | null;
-  secondOutRunner: { type: "player" | "opponent"; id: string | null };
-  opponentPitcherId: string | null;
+  // fix/dp-fc: a bare, already-confirmed is_out=true row for a runner
+  // put out on the SAME play as an at-bat that's already been confirmed
+  // separately (a double/triple play's extra out via the per-runner
+  // outcome queue, or a fielder's-choice runner) -- never the batter's
+  // own row, which confirmAtBat/confirmDoublePlay already handle. No
+  // fielding chain/notation: this flow doesn't collect one (see
+  // operator-console.tsx's finalizeRunnerOutcomeQueue/resolveFc).
+  // `result` matches whatever the batter's own row ended up as
+  // ("double_play" for the ground/fly/line-out case, "fc" for a
+  // fielder's choice) so a scorebook reading both rows together sees a
+  // consistent play, not two different outcomes for the same play.
+  result: "double_play" | "fc";
 }
 
-// Quick Mode scorekeeper batch: the same two-rows-per-double-play shape
-// confirmDoublePlay uses (batter's own out + a second row for the other
-// runner put out -- see 20260908150001_double_play_and_fielding.sql for
-// why two rows), but both inserted already-confirmed in one call instead
-// of updating a pre-existing draft row, since Quick Mode never creates
-// one. No fielding chain/notation and no triple-play extension -- Quick
-// Mode has no field-diagram/position-picker data source to ask for one,
-// consistent with the mode's whole "no pitch-by-pitch location data"
-// premise; a deliberately lighter flow than full mode's DoublePlayWizard.
-export async function logQuickDoublePlay(input: QuickDoublePlayInput): Promise<{ atBatId: string; secondAtBatId: string }> {
+export async function logExtraOut(input: LogExtraOutInput): Promise<{ atBatId: string }> {
   const { supabase } = await requireOperatorGame(input.gameId);
 
-  const { data: batterRow, error: batterError } = await supabase
+  const { data, error } = await supabase
     .from("at_bats")
     .insert({
       game_id: input.gameId,
+      mode: input.mode,
       player_id: input.playerId,
       pitcher_id: input.pitcherId,
-      mode: input.mode,
       inning: input.inning,
       inning_half: input.inningHalf,
-      batting_order_position: input.battingOrderPosition,
-      result: "double_play",
-      is_out: true,
-      out_type: "force",
-      rbi: 0,
-      runs_scored: 0,
-      opponent_pitcher_id: input.opponentPitcherId,
-      confirmed_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-  if (batterError || !batterRow) throw new Error(batterError?.message ?? "Failed to log double play");
-
-  const { data: secondRow, error: secondError } = await supabase
-    .from("at_bats")
-    .insert({
-      game_id: input.gameId,
-      mode: input.mode,
-      player_id: input.secondOutRunner.type === "player" ? input.secondOutRunner.id : null,
-      pitcher_id: input.pitcherId,
-      inning: input.inning,
-      inning_half: input.inningHalf,
-      result: "double_play",
+      result: input.result,
       is_out: true,
       out_type: "force",
       rbi: 0,
@@ -389,12 +369,20 @@ export async function logQuickDoublePlay(input: QuickDoublePlayInput): Promise<{
     })
     .select("id")
     .single();
-  if (secondError || !secondRow) throw new Error(secondError?.message ?? "Failed to log second out");
+  if (error || !data) throw new Error(error?.message ?? "Failed to log the extra out");
 
-  await advanceBattingOrder(supabase, input.gameId, input.mode);
+  // Bug 1 fix (fix/dp-fc follow-up): this row is never its own plate
+  // appearance -- it's always the second half of a play whose batter
+  // already confirmed (and already advanced the order) via confirmAtBat
+  // or logQuickAtBat, called just before this. Advancing again here
+  // moved game_state.batting_order_position two slots forward per play
+  // while the client's own local state (and Undo's single
+  // reverseBattingOrder call) only ever moved it one -- a server-side
+  // drift that only surfaced on reload/resume, since the client's own
+  // in-memory battingOrderPosition was never wrong to begin with.
 
   revalidatePath("/operator");
-  return { atBatId: batterRow.id, secondAtBatId: secondRow.id };
+  return { atBatId: data.id };
 }
 
 // Quick Mode scorekeeper batch: a sac fly / squeeze play scores a runner
@@ -620,7 +608,14 @@ export async function confirmDoublePlay(
   }
 
   await supabase.from("game_state").update({ current_at_bat_id: null }).eq("game_id", input.gameId);
-  await advanceBattingOrder(supabase, input.gameId, input.mode);
+  // Bug 1 fix (fix/dp-fc follow-up): same reasoning as logExtraOut's own
+  // comment above -- the batter's own row (atBatId) was already
+  // confirmed, and the order already advanced, via confirmAtBat or
+  // logQuickAtBat before this function is ever called (it's always the
+  // follow-up for a second/third out on that same play, never its own
+  // plate appearance). confirmDoublePlay has no other caller now that
+  // the old DoublePlayWizard is gone, so this call was always redundant
+  // in the current architecture, not just in some cases.
 
   revalidatePath("/operator");
   return { secondAtBatId: secondRow.id, thirdAtBatId };
@@ -713,6 +708,14 @@ export async function undoAtBat(input: {
   thirdAtBatId?: string | null;
   mode: AtBatMode;
   runsScoredToReverse: number;
+  // Batting-order Undo fix: the exact game_state.batting_order_position
+  // value from immediately before this play's own forward advance,
+  // snapshotted client-side in lastConfirmed.battingOrderPosition at
+  // confirm time (see reducer.ts) -- null for a pitching-mode play,
+  // which never touches our own batting order at all. Written back
+  // verbatim below; never recomputed from whatever the column currently
+  // holds, so this can't drift no matter what else has touched it since.
+  restoreBattingOrderPosition: number | null;
 }) {
   const { supabase, game } = await requireOperatorGame(input.gameId);
 
@@ -736,7 +739,9 @@ export async function undoAtBat(input: {
     await supabase.from("games").update(update).eq("id", input.gameId);
   }
 
-  await reverseBattingOrder(supabase, input.gameId, input.mode);
+  if (input.mode === "hitting" && input.restoreBattingOrderPosition !== null) {
+    await supabase.from("game_state").update({ batting_order_position: input.restoreBattingOrderPosition }).eq("game_id", input.gameId);
+  }
 
   revalidatePath("/operator");
 }
