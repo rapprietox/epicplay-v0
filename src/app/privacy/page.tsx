@@ -98,7 +98,10 @@ export default function PrivacyPolicyPage() {
           player on the team. A player can see their own Clubhouse — their own stats and, if
           unlocked, their own Clubhouse Pro content. A player can also see their team&apos;s
           leaderboard, schedule, and results, but only their own detailed profile. We do not sell
-          personal data to anyone.
+          personal data to anyone. A coach can also generate a public live-game link for a single
+          game — anyone with that link can see that game&apos;s score, inning, and plays in
+          progress, with players identified only by first name and last initial, until the coach
+          turns the link off.
         </p>
       </LegalSection>
 
