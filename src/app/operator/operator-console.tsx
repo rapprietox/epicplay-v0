@@ -3925,6 +3925,16 @@ export function OperatorConsole({
           runs={state.runsThisInning}
           errors={state.errorsThisInning}
           onEndInning={confirmEndInning}
+          // Bug 2 fix (fix/dp-fc follow-up): this modal is a fixed,
+          // z-[60] full-screen overlay -- the bottom bar's own Undo
+          // button (z-10) is completely covered by it the instant outs
+          // hits 3, with no way past it except End Inning. undoActive/
+          // undoRemaining/handleUndo are unchanged; this just gives the
+          // same control a second, reachable home for as long as the
+          // 30s window (or state.lastConfirmed) is still open.
+          undoActive={undoActive}
+          undoRemaining={undoRemaining}
+          onUndo={handleUndo}
         />
       )}
 
@@ -5152,11 +5162,23 @@ function ThreeOutsModal({
   runs,
   errors,
   onEndInning,
+  undoActive,
+  undoRemaining,
+  onUndo,
 }: {
   hits: number;
   runs: number;
   errors: number;
   onEndInning: () => void;
+  // Bug 2 fix (fix/dp-fc follow-up): a mistake on the very last out
+  // (the one that just ended the half-inning) used to be unfixable --
+  // this full-screen overlay has no way past it except End Inning, and
+  // the bottom bar's own Undo lives underneath it, unreachable. Same
+  // undoActive/undoRemaining the bottom bar already computes; onUndo is
+  // the same handleUndo.
+  undoActive: boolean;
+  undoRemaining: number;
+  onUndo: () => void;
 }) {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#030A06]/95 p-4">
@@ -5179,9 +5201,17 @@ function ThreeOutsModal({
             <p className="text-[10px] uppercase text-foreground/40">Errors</p>
           </div>
         </div>
+        {undoActive && (
+          <button
+            onClick={onUndo}
+            className="mt-4 w-full min-h-[48px] rounded-md border border-accent-amber px-4 text-sm font-semibold text-accent-amber"
+          >
+            Undo last play ({Math.ceil(undoRemaining / 1000)}s)
+          </button>
+        )}
         <button
           onClick={onEndInning}
-          className="mt-6 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-background"
+          className="mt-3 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-background"
         >
           End Inning
         </button>

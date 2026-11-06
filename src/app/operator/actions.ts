@@ -369,7 +369,15 @@ export async function logExtraOut(input: LogExtraOutInput): Promise<{ atBatId: s
     .single();
   if (error || !data) throw new Error(error?.message ?? "Failed to log the extra out");
 
-  await advanceBattingOrder(supabase, input.gameId, input.mode);
+  // Bug 1 fix (fix/dp-fc follow-up): this row is never its own plate
+  // appearance -- it's always the second half of a play whose batter
+  // already confirmed (and already advanced the order) via confirmAtBat
+  // or logQuickAtBat, called just before this. Advancing again here
+  // moved game_state.batting_order_position two slots forward per play
+  // while the client's own local state (and Undo's single
+  // reverseBattingOrder call) only ever moved it one -- a server-side
+  // drift that only surfaced on reload/resume, since the client's own
+  // in-memory battingOrderPosition was never wrong to begin with.
 
   revalidatePath("/operator");
   return { atBatId: data.id };
@@ -598,7 +606,14 @@ export async function confirmDoublePlay(
   }
 
   await supabase.from("game_state").update({ current_at_bat_id: null }).eq("game_id", input.gameId);
-  await advanceBattingOrder(supabase, input.gameId, input.mode);
+  // Bug 1 fix (fix/dp-fc follow-up): same reasoning as logExtraOut's own
+  // comment above -- the batter's own row (atBatId) was already
+  // confirmed, and the order already advanced, via confirmAtBat or
+  // logQuickAtBat before this function is ever called (it's always the
+  // follow-up for a second/third out on that same play, never its own
+  // plate appearance). confirmDoublePlay has no other caller now that
+  // the old DoublePlayWizard is gone, so this call was always redundant
+  // in the current architecture, not just in some cases.
 
   revalidatePath("/operator");
   return { secondAtBatId: secondRow.id, thirdAtBatId };
