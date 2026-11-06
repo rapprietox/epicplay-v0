@@ -22,7 +22,23 @@ const EXTRA_ALLOWED_SECTIONS: Record<string, string[]> = {
 // profiles.team_id is still null until the invite page's claimInvite()
 // call finishes, so without this the role-redirect block below would
 // bounce them to /pending before the claim ever runs.
-const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/auth-code-error", "/invite"];
+//
+// feature/live-broadcast: "/live/" (trailing slash, deliberately) --
+// the public, no-login game broadcast page at /live/[token]. The
+// trailing slash is what scopes this to exactly that prefix: matched
+// with `pathname.startsWith(path)` like every other entry here, a bare
+// "/live" would also match a hypothetical unrelated "/livestream" route,
+// which "/live/" cannot. Bare "/live" (no token segment) is NOT public
+// -- it doesn't start with "/live/" and no page exists there anyway.
+// "/api/live/" is listed here too for the same explicit, scoped-prefix
+// reasoning, but it's currently redundant: every "/api/*" path already
+// returns before this list is even consulted (see the early return
+// below) -- that's the actual mechanism making /api/live/[token]
+// reachable without a session today, the same way the Stripe webhook
+// route already works. This entry is defense-in-depth/documentation,
+// so /api/live/ stays public on purpose even if that blanket /api/
+// bypass is ever narrowed later.
+const PUBLIC_PATHS = ["/login", "/auth/callback", "/auth/auth-code-error", "/invite", "/live/", "/api/live/"];
 
 // Marketing-homepage fix: "/" is public too (src/app/page.tsx renders the
 // full marketing site -- a native React/Three.js/GSAP build at

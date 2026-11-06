@@ -274,6 +274,10 @@ export interface Database {
           // Lineup Intelligence 2.0, Part 1.
           speed_rating: number;
           player_type: PlayerType;
+          // feature/live-broadcast: schema groundwork only -- a plain
+          // title shown as text on the live page when set, no playback
+          // in this phase. See the migration's own comment.
+          walk_up_song: string | null;
           created_at: string;
         };
         Insert: {
@@ -293,6 +297,7 @@ export interface Database {
           free_preview_kairos_used?: number;
           speed_rating?: number;
           player_type?: PlayerType;
+          walk_up_song?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["players"]["Insert"]>;
@@ -362,6 +367,12 @@ export interface Database {
           // feature/lineup-drafts: set once a coach locks a draft into
           // this row's `lineup` rows -- see lockLineup (draft-actions.ts).
           lineup_confirmed_at: string | null;
+          // feature/live-broadcast: null when no live link is active.
+          // Overwriting it (createShareLink) is what "invalidates the
+          // old one" -- there's only ever one valid token per game. See
+          // the migration's own comment for why there's no public RLS
+          // policy keyed off this column.
+          share_token: string | null;
         };
         Insert: {
           id?: string;
@@ -388,6 +399,7 @@ export interface Database {
           new_inning_threshold_minutes?: number | null;
           created_at?: string;
           lineup_confirmed_at?: string | null;
+          share_token?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["games"]["Insert"]>;
         Relationships: [];

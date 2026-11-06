@@ -188,3 +188,25 @@ export async function saveGameRulesOverride(
 
   revalidatePath(`/coach/games/${gameId}/setup`);
 }
+
+// feature/live-broadcast -- crypto.randomUUID(), the same unguessable-
+// token mechanism this app already uses for invite_token
+// (src/app/coach/actions.ts). Overwriting games.share_token with a
+// fresh one is what "creating a new one invalidates the old one"
+// means -- there's only ever one valid token per game, enforced by the
+// column itself, not by separately deleting/revoking the previous value.
+export async function createShareLink(gameId: string): Promise<string> {
+  const { supabase } = await requireCoachGame(gameId);
+  const token = crypto.randomUUID();
+  const { error } = await supabase.from("games").update({ share_token: token }).eq("id", gameId);
+  if (error) throw new Error(error.message);
+  revalidatePath(`/coach/games/${gameId}/setup`);
+  return token;
+}
+
+export async function disableShareLink(gameId: string): Promise<void> {
+  const { supabase } = await requireCoachGame(gameId);
+  const { error } = await supabase.from("games").update({ share_token: null }).eq("id", gameId);
+  if (error) throw new Error(error.message);
+  revalidatePath(`/coach/games/${gameId}/setup`);
+}
