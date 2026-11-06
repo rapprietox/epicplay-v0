@@ -1,7 +1,7 @@
-// Shared by the reducer (advancing/reversing to the next/previous real
-// batter) and the operator console (the on-deck panel + the Quick Mode
-// lineup strip), so all three agree on what "next"/"previous" means
-// once a lineup's batting_order values aren't a contiguous 1-9 run.
+// Shared by the reducer (advancing to the next real batter) and the
+// operator console (the on-deck panel + the Quick Mode lineup strip), so
+// all three agree on what "next" means once a lineup's batting_order
+// values aren't a contiguous 1-9 run.
 //
 // Gaps are a real, intentional side effect of the lineup builder's
 // "never renumber a vacated slot" design (see lineup-builder.tsx's
@@ -14,16 +14,16 @@
 // differently -- the root cause of a since-fixed bug where they
 // disagreed about who was up and who was on deck.
 //
-// Both functions fall back to the first/last occupied slot if `current`
-// itself isn't a real slot (shouldn't happen once callers only ever
-// feed back a value these functions themselves produced, but a lineup
-// can't be assumed non-empty at the very first at-bat of a game).
-// `occupiedSlots ?? []` guards a localStorage snapshot saved before
-// this field existed on OperatorState -- HYDRATE can load one of those
-// verbatim (see operator-console.tsx's "if (local && local.dirty)"
-// effect), which would otherwise crash here with `undefined` instead
-// of a real array the very first time a stale snapshot from before
-// this fix gets restored.
+// Falls back to the first occupied slot if `current` itself isn't a
+// real slot (shouldn't happen once callers only ever feed back a value
+// this function itself produced, but a lineup can't be assumed
+// non-empty at the very first at-bat of a game). `occupiedSlots ?? []`
+// guards a localStorage snapshot saved before this field existed on
+// OperatorState -- HYDRATE can load one of those verbatim (see
+// operator-console.tsx's "if (local && local.dirty)" effect), which
+// would otherwise crash here with `undefined` instead of a real array
+// the very first time a stale snapshot from before this fix gets
+// restored.
 export function nextBattingOrderPosition(occupiedSlots: number[], current: number): number {
   const slots = occupiedSlots ?? [];
   if (slots.length === 0) return current;
@@ -33,14 +33,18 @@ export function nextBattingOrderPosition(occupiedSlots: number[], current: numbe
   return sorted[(idx + 1) % sorted.length];
 }
 
-export function previousBattingOrderPosition(occupiedSlots: number[], current: number): number {
-  const slots = occupiedSlots ?? [];
-  if (slots.length === 0) return current;
-  const sorted = [...slots].sort((a, b) => a - b);
-  const idx = sorted.indexOf(current);
-  if (idx === -1) return sorted[sorted.length - 1];
-  return sorted[(idx - 1 + sorted.length) % sorted.length];
-}
+// Batting-order Undo fix: previousBattingOrderPosition (the inverse of
+// the function above, "go back one slot from wherever we currently
+// are") used to back Undo -- removed, not kept unused, once Undo
+// started restoring an explicit snapshot (OperatorState.lastConfirmed.
+// battingOrderPosition) instead. The arithmetic itself was the bug:
+// "one slot back from whatever battingOrderPosition currently is" gives
+// the wrong answer the moment anything else has touched that value
+// since the play it's meant to undo advanced it -- a race between two
+// overlapping requests, a retried write, anything -- since arithmetic
+// has no way to tell "untouched since this play" apart from "touched by
+// something else." Restoring a value captured once, before the play
+// ever changed anything, can't have that problem.
 
 // Lineup-builder batch: placePlayer/removePlayer now keep every NEW
 // draft's batting order dense (1..N, renumbered on every change that

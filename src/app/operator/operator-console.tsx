@@ -1569,7 +1569,8 @@ export function OperatorConsole({
 
   async function handleUndo() {
     if (!state.lastConfirmed) return;
-    const { atBatId, secondAtBatId, thirdAtBatId, mode, runsScored, runnersBeforeAtBat, pitchesThisAtBat } = state.lastConfirmed;
+    const { atBatId, secondAtBatId, thirdAtBatId, mode, runsScored, runnersBeforeAtBat, pitchesThisAtBat, battingOrderPosition } =
+      state.lastConfirmed;
     dispatch({ type: "UNDO_LOCAL" });
     syncRunners(runnersBeforeAtBat);
     // Fix 7 (baseball-logic-fixes batch): UNDO_LOCAL already corrects the
@@ -1588,7 +1589,15 @@ export function OperatorConsole({
       );
     }
     void withOfflineRetry(`undo-${atBatId}`, () =>
-      undoAtBat({ gameId: game.id, atBatId, secondAtBatId, thirdAtBatId, mode, runsScoredToReverse: runsScored })
+      undoAtBat({
+        gameId: game.id,
+        atBatId,
+        secondAtBatId,
+        thirdAtBatId,
+        mode,
+        runsScoredToReverse: runsScored,
+        restoreBattingOrderPosition: mode === "hitting" ? battingOrderPosition : null,
+      })
     );
   }
 

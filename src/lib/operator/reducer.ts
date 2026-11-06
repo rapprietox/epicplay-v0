@@ -10,7 +10,7 @@ import type {
   Runners,
 } from "@/lib/supabase/types";
 import { RUNNING_ACCURACY_WARNING_THRESHOLD, runningAccuracy } from "@/lib/pitch-accuracy";
-import { nextBattingOrderPosition, previousBattingOrderPosition } from "./batting-order";
+import { nextBattingOrderPosition } from "./batting-order";
 import { advanceOneRunner } from "./runner-advance";
 import { SCORE_METHOD_AWARDS_RBI, type Base, type OperatorState, type RunnerQuickAction, type ScoreMethod, type ScoredRunner } from "./types";
 
@@ -418,6 +418,10 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           secondAtBatId: null,
           thirdAtBatId: null,
           mode: state.mode,
+          // Batting-order Undo fix: the position BEFORE nextBattingOrder
+          // (computed above) is applied -- exactly what Undo should
+          // restore, snapshotted here rather than recomputed later.
+          battingOrderPosition: state.battingOrderPosition,
           runsScored,
           outsRecorded: action.outsRecorded,
           pitchesThisAtBat: state.pendingPitches.length,
@@ -494,6 +498,8 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           secondAtBatId: null,
           thirdAtBatId: null,
           mode: state.mode,
+          // Batting-order Undo fix: see CONFIRM_LOCAL's own comment.
+          battingOrderPosition: state.battingOrderPosition,
           runsScored: action.runsScored,
           outsRecorded: 0,
           // Fix 7: an IBB always adds exactly 4, regardless of how many
@@ -552,6 +558,8 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
           secondAtBatId: null,
           thirdAtBatId: null,
           mode: state.mode,
+          // Batting-order Undo fix: see CONFIRM_LOCAL's own comment.
+          battingOrderPosition: state.battingOrderPosition,
           runsScored,
           outsRecorded: action.outsRecorded,
           pitchesThisAtBat: 0,
@@ -580,10 +588,12 @@ export function operatorReducer(state: OperatorState, action: OperatorAction): O
 
     case "UNDO_LOCAL": {
       if (!state.lastConfirmed) return state;
-      const prevBattingOrder =
-        state.lastConfirmed.mode === "hitting"
-          ? previousBattingOrderPosition(state.battingOrderSlots, state.battingOrderPosition)
-          : state.battingOrderPosition;
+      // Batting-order Undo fix: restore the EXACT snapshot
+      // lastConfirmed.battingOrderPosition took before this play's own
+      // advance -- no arithmetic over the current (possibly already
+      // wrong, for reasons unrelated to this specific play) value. See
+      // the field's own comment on OperatorState.
+      const prevBattingOrder = state.lastConfirmed.mode === "hitting" ? state.lastConfirmed.battingOrderPosition : state.battingOrderPosition;
       return {
         ...state,
         battingOrderPosition: prevBattingOrder,

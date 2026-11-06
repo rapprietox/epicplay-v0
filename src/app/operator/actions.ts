@@ -18,7 +18,7 @@ import type {
 } from "@/lib/supabase/types";
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 import { RESULT_IS_OUT } from "@/lib/operator/types";
-import { nextBattingOrderPosition, previousBattingOrderPosition } from "@/lib/operator/batting-order";
+import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
 import { parseVoiceCommand, type VoiceCommand } from "@/lib/anthropic";
 import { generatePostGameAnalysis } from "@/lib/post-game-analysis";
 
@@ -80,16 +80,18 @@ async function advanceBattingOrder(supabase: ReturnType<typeof createClient>, ga
   await supabase.from("game_state").update({ batting_order_position: nextPosition }).eq("game_id", gameId);
 }
 
-// Mirrors advanceBattingOrder for Undo, so the persisted position doesn't
-// stay one batter ahead of reality after a confirm gets reversed.
-async function reverseBattingOrder(supabase: ReturnType<typeof createClient>, gameId: string, mode: AtBatMode) {
-  if (mode !== "hitting") return;
-  const { data: gameState } = await supabase.from("game_state").select("batting_order_position").eq("game_id", gameId).single();
-  if (!gameState) return;
-  const slots = await occupiedBattingOrderSlots(supabase, gameId);
-  const prevPosition = previousBattingOrderPosition(slots, gameState.batting_order_position ?? 1);
-  await supabase.from("game_state").update({ batting_order_position: prevPosition }).eq("game_id", gameId);
-}
+// Batting-order Undo fix: this used to mirror advanceBattingOrder --
+// read the CURRENT game_state.batting_order_position and compute one
+// slot back from it. That's exactly the "forward or backward arithmetic"
+// the bug report asked to remove: it silently gives the wrong answer if
+// the position changed for any reason between this play's own forward
+// advance and the Undo (a race between concurrent requests, a retried
+// fire-and-forget write, anything) -- restoring a value that was never
+// actually a function of "what it is right now" fixes that by
+// construction. Replaced by a flat write in undoAtBat below, to the
+// exact battingOrderPosition the client snapshotted in lastConfirmed
+// before the play advanced it in the first place. No longer called from
+// anywhere; kept deleted rather than orphaned.
 
 // KAIROS batch, Tool 6: gated behind the same operator/coach auth every
 // other action in this file uses, even though the parse itself doesn't
@@ -706,6 +708,14 @@ export async function undoAtBat(input: {
   thirdAtBatId?: string | null;
   mode: AtBatMode;
   runsScoredToReverse: number;
+  // Batting-order Undo fix: the exact game_state.batting_order_position
+  // value from immediately before this play's own forward advance,
+  // snapshotted client-side in lastConfirmed.battingOrderPosition at
+  // confirm time (see reducer.ts) -- null for a pitching-mode play,
+  // which never touches our own batting order at all. Written back
+  // verbatim below; never recomputed from whatever the column currently
+  // holds, so this can't drift no matter what else has touched it since.
+  restoreBattingOrderPosition: number | null;
 }) {
   const { supabase, game } = await requireOperatorGame(input.gameId);
 
@@ -729,7 +739,9 @@ export async function undoAtBat(input: {
     await supabase.from("games").update(update).eq("id", input.gameId);
   }
 
-  await reverseBattingOrder(supabase, input.gameId, input.mode);
+  if (input.mode === "hitting" && input.restoreBattingOrderPosition !== null) {
+    await supabase.from("game_state").update({ batting_order_position: input.restoreBattingOrderPosition }).eq("game_id", input.gameId);
+  }
 
   revalidatePath("/operator");
 }

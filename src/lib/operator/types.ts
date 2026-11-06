@@ -272,6 +272,20 @@ export interface OperatorState {
     // else (a regular at-bat, or a double play).
     thirdAtBatId: string | null;
     mode: AtBatMode;
+    // Batting-order Undo fix: the EXACT batting_order_position value from
+    // immediately before this play's own forward advance -- captured
+    // once, synchronously, in the same reducer case that applies the
+    // advance (CONFIRM_LOCAL/QUICK_CONFIRM_LOCAL/CONFIRM_INTENTIONAL_WALK),
+    // so it can never disagree with what actually happened. UNDO_LOCAL
+    // (and the server's own undoAtBat) restore THIS saved value directly
+    // -- no "take whatever the position currently is and subtract one"
+    // arithmetic, which is what let Undo drift when a double/triple
+    // play's or a fielder's choice's extra out row(s) landed between the
+    // batter's own advance and the Undo tap (or any other change to the
+    // position in between): arithmetic over a value that might have
+    // moved for an unrelated reason gives a wrong answer; restoring a
+    // fixed snapshot can't.
+    battingOrderPosition: number;
     runsScored: number;
     outsRecorded: number;
     // Fix 7 (baseball-logic-fixes batch): how many pitches this at-bat
