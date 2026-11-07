@@ -12,6 +12,7 @@ import {
 } from "@/lib/heat-map";
 import type { FieldCalibrationPoints, GameType } from "@/lib/supabase/types";
 import { formatGameDate } from "@/lib/dates";
+import { parabolaPath, TRAJECTORY_STYLE } from "@/lib/trajectory";
 
 type Dot = SprayDot & { gameType: GameType };
 type HitTypeFilter = "all" | "groundball" | "linedrive" | "flyball";
@@ -56,55 +57,11 @@ const LINE_CATEGORY_ORDER: LineHitCategory[] = ["flyball", "groundball", "linedr
 // extrapolated the same way as before: small/modest peak heights with
 // no special decoration, the safest default with no real trajectory
 // data to justify anything more.
-interface TrajectoryStyle {
-  color: string;
-  durationMs: number;
-  strokeWidth: number;
-  peakPct: number; // peak height as a fraction of the home-to-landing distance
-  overshootFactor: number; // extends the path's endpoint this fraction further past the real landing spot
-  glow: string | undefined; // exact CSS filter value, or undefined for no glow
-  starburst: boolean;
-}
-
-const TRAJECTORY_STYLE: Record<LineHitCategory, TrajectoryStyle> = {
-  groundball: { color: "#EF9F27", durationMs: 350, strokeWidth: 2.5, peakPct: 0.05, overshootFactor: 0, glow: undefined, starburst: false },
-  linedrive: { color: "#F0C060", durationMs: 300, strokeWidth: 3, peakPct: 0.15, overshootFactor: 0, glow: undefined, starburst: false },
-  flyball: { color: "#2ECC71", durationMs: 800, strokeWidth: 3, peakPct: 0.45, overshootFactor: 0, glow: undefined, starburst: false },
-  hr: {
-    color: "#F0C060",
-    durationMs: 1200,
-    strokeWidth: 4,
-    peakPct: 0.7,
-    overshootFactor: 0.15,
-    glow: "drop-shadow(0 0 8px #F0C060)",
-    starburst: true,
-  },
-  popup: { color: LINE_HIT_CATEGORY_COLOR.popup, durationMs: 400, strokeWidth: 2, peakPct: 0.25, overshootFactor: 0, glow: undefined, starburst: false },
-  other: { color: LINE_HIT_CATEGORY_COLOR.other, durationMs: 300, strokeWidth: 2, peakPct: 0.08, overshootFactor: 0, glow: undefined, starburst: false },
-};
-
-interface PathResult {
-  d: string;
-  endX: number;
-  endY: number;
-}
-
-// The one shape every hit type now shares. overshootFactor (home run
-// only) extends the endpoint beyond the real landing coordinate first,
-// so the peak then sits centered over the whole dramatized flight --
-// the ball/starburst animate to this extended point, while the detail
-// panel on click still reports the real at-bat's own data regardless of
-// where it's dramatized to land.
-function parabolaPath(x1: number, y1: number, x2: number, y2: number, peakPct: number, overshootFactor: number): PathResult {
-  const dist = Math.hypot(x2 - x1, y2 - y1) || 1;
-  const dirX = (x2 - x1) / dist;
-  const dirY = (y2 - y1) / dist;
-  const endX = x2 + dirX * dist * overshootFactor;
-  const endY = y2 + dirY * dist * overshootFactor;
-  const midX = (x1 + endX) / 2;
-  const midY = (y1 + endY) / 2 - dist * peakPct;
-  return { d: `M ${x1},${y1} Q ${midX},${midY} ${endX},${endY}`, endX, endY };
-}
+//
+// TRAJECTORY_STYLE/parabolaPath moved to src/lib/trajectory.ts so the
+// live broadcast page (src/app/live/[token]/live-view.tsx) can reuse
+// this exact arc/glow/duration-per-hit-type shape instead of a second,
+// drifting copy -- see that module's own comment.
 
 export function PlayerSprayChart({
   dots,

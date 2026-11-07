@@ -2,9 +2,17 @@ import { NextResponse, type NextRequest } from "next/server";
 import { headers } from "next/headers";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { lionsDisplayName, opponentDisplayName } from "@/lib/live/names";
-import { narrateAtBatResult, narrateGameEvent, narrateRun, narrateStolenBase, narrateSubstitution } from "@/lib/live/narration";
+import {
+  narrateAtBatResult,
+  narrateDoublePlay,
+  narrateGameEvent,
+  narrateRun,
+  narrateRunWithContext,
+  narrateStolenBase,
+  narrateSubstitution,
+} from "@/lib/live/narration";
 import { isRateLimited } from "@/lib/live/rate-limit";
-import type { Runners } from "@/lib/supabase/types";
+import type { AtBatMode, Runners } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +49,33 @@ type NarrationEntry = {
   // including an opponent runner's out (see narration.ts's own
   // comment on why that correlation isn't attempted here).
   outPlayerId?: string;
+  // Live stadium batch: set only on a stolen-base entry -- the API has
+  // no historical runners snapshot to compare against (only the current
+  // one), so it can never say which base itself; the client diffs this
+  // player's base across two successive polls instead and upgrades the
+  // text once it can. See narration.ts's own comment (gap #1).
+  stolenBasePlayerId?: string;
+  stolenBaseRunnerName?: string;
+  // Live stadium batch: set only on an at-bat entry with a saved field
+  // tap -- lets the client animate the ball's trajectory and, for a
+  // caught fly/line/foul out, place the fielder's circle. hitType is
+  // null for every Quick Mode ball in play (no hit-type picker there),
+  // which the client's trajectory code already treats as "use a generic
+  // arc," not a missing-data error.
+  fieldX?: number | null;
+  fieldY?: number | null;
+  hitType?: string | null;
+  // True only for a flyout/lineout (foul outs are stored as "flyout" too
+  // -- see CLAUDE.md) with a saved dot -- lets the client show the
+  // fielder catching the ball at that dot and burst the batter, instead
+  // of exposing the raw `result` enum just for this one check.
+  isCaughtBall?: boolean;
+  // True only when result is "hr" -- needed alongside hitType, not
+  // instead of it, because Quick Mode's own "HR" button logs hitType
+  // null (see quick-mode-grid.tsx) even though result is "hr"; the
+  // trajectory's "home run highest" style has to key off this, the same
+  // reason src/lib/heat-map.ts's lineHitCategory checks result first.
+  isHomeRun?: boolean;
 };
 
 export async function GET(_request: NextRequest, { params }: { params: { token: string } }) {
@@ -89,7 +124,7 @@ export async function GET(_request: NextRequest, { params }: { params: { token: 
     supabase.from("players").select("id, name, walk_up_song").eq("team_id", game.team_id),
     supabase
       .from("at_bats")
-      .select("id, player_id, mode, result, field_x, runs_scored, is_out, created_at")
+      .select("id, player_id, mode, result, field_x, field_y, hit_type, runs_scored, is_out, created_at")
       .eq("game_id", game.id)
       .not("confirmed_at", "is", null)
       .order("created_at", { ascending: false })
@@ -121,30 +156,122 @@ export async function GET(_request: NextRequest, { params }: { params: { token: 
 
   const entries: NarrationEntry[] = [];
 
+  // Live stadium batch: score-aware narration ("Lions take the lead!",
+  // "Tied up!") needs to know the score margin immediately BEFORE a run
+  // crossed the plate, not just the final total -- but this route has no
+  // historical score snapshots, only the two running totals on `games`.
+  // Reliably reconstructing every past run's own before/after margin
+  // would mean replaying the WHOLE game's scoring in order, and knowing
+  // which side a game_events-sourced run belongs to isn't actually
+  // possible from the stored columns (game_events has no `mode` column
+  // -- see actions.ts's logGameEvent, which only uses mode transiently
+  // to decide which score column to bump, never persists it). Scoped
+  // down to what's both correct and knowable: only the SINGLE most
+  // recent scoring play in the whole feed gets the score-aware treatment
+  // (its "before" margin is just the current margin minus its own
+  // contribution, since nothing has scored since), and only when that
+  // play was an at-bat (whose `mode` IS reliably known) -- every older
+  // or game-events-sourced run keeps the plain, still-energetic generic
+  // line instead of a guess.
+  type ScoringUnit = { id: string; ts: string; mode: AtBatMode | null; runs: number };
+  const scoringUnits: ScoringUnit[] = [];
   for (const ab of atBats ?? []) {
-    const batterName = ab.mode === "hitting" ? ourName(ab.player_id) ?? "Lions" : opponentDisplayName(hasOpponentRoster, null, null);
-    const text = narrateAtBatResult({ batterName, result: ab.result, fieldX: ab.field_x });
-    if (text) entries.push({ id: `ab-${ab.id}`, text, ts: ab.created_at });
+    if (ab.runs_scored > 0) scoringUnits.push({ id: `ab-${ab.id}`, ts: ab.created_at, mode: ab.mode, runs: ab.runs_scored });
+  }
+  for (const ev of gameEvents ?? []) {
+    if (ev.runs_scored > 0) scoringUnits.push({ id: `ev-${ev.id}`, ts: ev.created_at, mode: null, runs: ev.runs_scored });
+  }
+  scoringUnits.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+  const newestScoring = scoringUnits[0];
+  const marginAfterFinal = game.our_score - game.opponent_score;
+  const scoreContext =
+    newestScoring?.mode
+      ? {
+          unitId: newestScoring.id,
+          marginBefore: newestScoring.mode === "hitting" ? marginAfterFinal - newestScoring.runs : marginAfterFinal + newestScoring.runs,
+          marginAfter: marginAfterFinal,
+        }
+      : null;
+
+  // Live stadium batch: a double/triple play is 2-3 at_bats rows
+  // sharing result "double_play" (see CLAUDE.md's "two rows, not one"
+  // note -- a triple play adds a third), all inserted within the same
+  // server-action call a few ms apart. Narrated ONCE per real play, not
+  // once per row, by grouping rows whose created_at falls within 3s of
+  // the previous row in the same group (ordered ascending first so the
+  // grouping only ever looks at adjacent-in-time rows).
+  const dpRows = (atBats ?? [])
+    .filter((ab) => ab.result === "double_play")
+    .slice()
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const dpGroups: (typeof dpRows)[number][][] = [];
+  for (const row of dpRows) {
+    const lastGroup = dpGroups[dpGroups.length - 1];
+    const lastRow = lastGroup?.[lastGroup.length - 1];
+    if (lastRow && Math.abs(new Date(row.created_at).getTime() - new Date(lastRow.created_at).getTime()) <= 3000) {
+      lastGroup.push(row);
+    } else {
+      dpGroups.push([row]);
+    }
+  }
+  const dpRowIds = new Set(dpRows.map((r) => r.id));
+  for (const group of dpGroups) {
+    const latest = group[group.length - 1];
+    entries.push({
+      id: `dp-${group[0].id}`,
+      text: narrateDoublePlay({ id: group[0].id, mode: group[0].mode, isTriplePlay: group.length >= 3 }),
+      ts: latest.created_at,
+    });
+  }
+
+  for (const ab of atBats ?? []) {
+    if (!dpRowIds.has(ab.id)) {
+      const batterName = ab.mode === "hitting" ? ourName(ab.player_id) ?? "Lions" : opponentDisplayName(hasOpponentRoster, null, null);
+      const text = narrateAtBatResult({ id: ab.id, batterName, result: ab.result, fieldX: ab.field_x });
+      const isCaughtBall = (ab.result === "flyout" || ab.result === "lineout") && ab.field_x !== null && ab.field_y !== null;
+      if (text) {
+        entries.push({
+          id: `ab-${ab.id}`,
+          text,
+          ts: ab.created_at,
+          fieldX: ab.field_x,
+          fieldY: ab.field_y,
+          hitType: ab.hit_type,
+          isCaughtBall,
+          isHomeRun: ab.result === "hr",
+        });
+      }
+    }
+    const unitId = `ab-${ab.id}`;
     for (let i = 0; i < ab.runs_scored; i++) {
-      entries.push({ id: `ab-${ab.id}-run-${i}`, text: narrateRun(), ts: ab.created_at });
+      const runId = `${unitId}-run-${i}`;
+      const useContext = scoreContext && scoreContext.unitId === unitId && i === ab.runs_scored - 1;
+      const text = useContext ? narrateRunWithContext(runId, scoreContext.marginBefore, scoreContext.marginAfter) : narrateRun(runId);
+      entries.push({ id: runId, text, ts: ab.created_at });
     }
   }
 
   for (const sb of stolenBases ?? []) {
     const runnerName = ourName(sb.player_id) ?? "Lions";
-    entries.push({ id: `sb-${sb.id}`, text: narrateStolenBase(runnerName), ts: sb.created_at });
+    entries.push({
+      id: `sb-${sb.id}`,
+      text: narrateStolenBase(`sb-${sb.id}`, runnerName),
+      ts: sb.created_at,
+      stolenBasePlayerId: sb.player_id ?? undefined,
+      stolenBaseRunnerName: runnerName,
+    });
   }
 
   for (const sub of substitutions ?? []) {
     const inName = ourName(sub.player_in_id) ?? "Sub";
     const outName = ourName(sub.player_out_id) ?? "Player";
-    entries.push({ id: `sub-${sub.id}`, text: narrateSubstitution(inName, outName), ts: sub.created_at });
+    entries.push({ id: `sub-${sub.id}`, text: narrateSubstitution(`sub-${sub.id}`, inName, outName), ts: sub.created_at });
   }
 
   const OUR_RUNNER_OUT_EVENTS = new Set(["caught_stealing", "pickoff_out", "rundown_out", "out_at_next_base", "tag_up_violation"]);
   for (const ev of gameEvents ?? []) {
     const subjectName = ev.player_id ? ourName(ev.player_id) : opponentName(ev.opponent_player_id);
-    const text = narrateGameEvent(ev.event_type, subjectName);
+    const text = narrateGameEvent(`ev-${ev.id}`, ev.event_type, subjectName);
     if (text) {
       entries.push({
         id: `ev-${ev.id}`,
@@ -153,8 +280,10 @@ export async function GET(_request: NextRequest, { params }: { params: { token: 
         outPlayerId: ev.player_id && OUR_RUNNER_OUT_EVENTS.has(ev.event_type) ? ev.player_id : undefined,
       });
     }
+    const unitId = `ev-${ev.id}`;
     for (let i = 0; i < ev.runs_scored; i++) {
-      entries.push({ id: `ev-${ev.id}-run-${i}`, text: narrateRun(), ts: ev.created_at });
+      const runId = `${unitId}-run-${i}`;
+      entries.push({ id: runId, text: narrateRun(runId), ts: ev.created_at });
     }
   }
 
