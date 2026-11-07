@@ -32,6 +32,24 @@ export function ShareLinkPanel({
     });
   }
 
+  // Share button batch: createShareLink already overwrites share_token
+  // with a fresh crypto.randomUUID() -- "creating a new one invalidates
+  // the old one" (see its own comment) -- so regenerating while a token
+  // already exists is the exact same call, just exposed as its own
+  // button instead of only being reachable by first turning the link off.
+  function handleRegenerate() {
+    setError(null);
+    startTransition(async () => {
+      try {
+        const newToken = await createShareLink(gameId);
+        setToken(newToken);
+        setCopied(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not regenerate the link");
+      }
+    });
+  }
+
   function handleDisable() {
     setError(null);
     startTransition(async () => {
@@ -80,13 +98,22 @@ export function ShareLinkPanel({
               {copied ? "Copied" : "Copy"}
             </button>
           </div>
-          <button
-            onClick={handleDisable}
-            disabled={pending}
-            className="text-[11px] text-accent-red hover:underline disabled:opacity-50"
-          >
-            {pending ? "Turning off…" : "Turn off live link"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleRegenerate}
+              disabled={pending}
+              className="text-[11px] text-foreground/60 hover:underline disabled:opacity-50"
+            >
+              {pending ? "Regenerating…" : "Regenerate link"}
+            </button>
+            <button
+              onClick={handleDisable}
+              disabled={pending}
+              className="text-[11px] text-accent-red hover:underline disabled:opacity-50"
+            >
+              {pending ? "Turning off…" : "Turn off live link"}
+            </button>
+          </div>
         </div>
       )}
       {error && <p className="text-[11px] text-accent-red">{error}</p>}

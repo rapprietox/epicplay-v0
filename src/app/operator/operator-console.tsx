@@ -68,6 +68,8 @@ import {
   confirmChainSubstitution,
   confirmDoublePlay,
   confirmIntentionalWalk,
+  createLiveShareLink,
+  disableLiveShareLink,
   incrementAtBatRbi,
   logGameEvent,
   logPitch,
@@ -385,6 +387,12 @@ export function OperatorConsole({
   const [pendingNotation, setPendingNotation] = useState<string | null>(null);
   const [pitcherPickerOpen, setPitcherPickerOpen] = useState(false);
   const [opponentPitcherPickerOpen, setOpponentPitcherPickerOpen] = useState(false);
+  // Share button batch: the live-link management modal opened from the
+  // Pickoff/Substitution row's new "Share" button -- a modal rather than
+  // inline-expanding that row, since the row is a deliberate fixed 40px
+  // exception to the 48px tap-target rule and a URL + copy/turn off/
+  // regenerate wouldn't fit in it.
+  const [shareLinkOpen, setShareLinkOpen] = useState(false);
   // Fix 2: two-step pickoff wizard (pick the base, then the result) opened
   // from the quick-actions panel -- separate from the existing per-base
   // "Picked Off" runner quick-action (tap an occupied base -> its menu),
@@ -3835,6 +3843,11 @@ export function OperatorConsole({
               onClick={() => dispatch({ type: "SET_PANEL", panel: "substitution", open: true })}
               className="glossy flex-1 justify-start border-l-4 border-l-accent-gold pl-3 text-left"
             />
+            <QuickButton
+              label="Share"
+              onClick={() => setShareLinkOpen(true)}
+              className="glossy flex-1 justify-start border-l-4 border-l-accent-green pl-3 text-left"
+            />
           </div>
         </div>
       </div>
@@ -3924,6 +3937,14 @@ export function OperatorConsole({
           onChangeBase={(base) => setPickoffWizard({ step: "result", base })}
           onResult={(outcome) => pickoffWizard.base && handlePickoffResult(pickoffWizard.base, outcome)}
           onCancel={() => setPickoffWizard(null)}
+        />
+      )}
+
+      {shareLinkOpen && (
+        <ShareLinkModal
+          gameId={game.id}
+          initialShareToken={game.share_token}
+          onClose={() => setShareLinkOpen(false)}
         />
       )}
 
@@ -5383,6 +5404,108 @@ function ThreeOutsModal({
           className="mt-3 w-full min-h-[48px] rounded-md bg-accent-green px-4 text-base font-semibold text-background"
         >
           End Inning
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Share button batch: "copy, turn off, regenerate" for the operator
+// screen's own "Share" button -- deliberately a separate, small
+// component rather than reusing the coach dashboard's ShareLinkPanel
+// (src/app/coach/games/[id]/setup/share-link-panel.tsx), which is
+// styled as an inline corner control, not a modal, and calls the
+// coach-only createShareLink/disableShareLink. Same local-state-holds-
+// the-current-token pattern as that component, for the same reason:
+// the game.share_token prop is a snapshot from this page's last server
+// render, so the UI needs its own up-to-date copy once the operator
+// creates/regenerates/turns off the link.
+function ShareLinkModal({ gameId, initialShareToken, onClose }: { gameId: string; initialShareToken: string | null; onClose: () => void }) {
+  const [token, setToken] = useState(initialShareToken);
+  const [copied, setCopied] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const shareUrl = token ? `${window.location.origin}/live/${token}` : null;
+
+  async function handleCreate() {
+    setPending(true);
+    setError(null);
+    try {
+      setToken(await createLiveShareLink(gameId));
+      setCopied(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not create the link");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function handleDisable() {
+    setPending(true);
+    setError(null);
+    try {
+      await disableLiveShareLink(gameId);
+      setToken(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not turn off the link");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function handleCopy() {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard permission can fail in some browsers -- the URL is
+      // already shown as selectable text, so this is a convenience, not
+      // the only way to get it.
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
+      <div className="w-full max-w-xs rounded-lg border border-border bg-surface p-4 text-center">
+        <p className="mb-3 text-xs uppercase tracking-wide text-foreground/40">Live share link</p>
+        {!shareUrl ? (
+          <button
+            onClick={handleCreate}
+            disabled={pending}
+            className="min-h-[44px] w-full rounded-md border border-accent-gold px-3 text-sm font-semibold text-accent-gold disabled:opacity-50"
+          >
+            {pending ? "Creating…" : "Share live link"}
+          </button>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <p className="break-all rounded border border-border bg-background px-2 py-1.5 text-[11px] text-foreground/80">{shareUrl}</p>
+            <button
+              onClick={handleCopy}
+              className="min-h-[44px] w-full rounded-md border border-border text-sm text-white hover:border-accent-primary"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+            <button
+              onClick={handleCreate}
+              disabled={pending}
+              className="min-h-[44px] w-full rounded-md border border-border text-sm text-foreground/70 hover:border-accent-primary disabled:opacity-50"
+            >
+              {pending ? "Regenerating…" : "Regenerate link"}
+            </button>
+            <button
+              onClick={handleDisable}
+              disabled={pending}
+              className="min-h-[44px] w-full rounded-md border border-accent-red text-sm text-accent-red disabled:opacity-50"
+            >
+              {pending ? "Turning off…" : "Turn off live link"}
+            </button>
+          </div>
+        )}
+        {error && <p className="mt-2 text-[11px] text-accent-red">{error}</p>}
+        <button onClick={onClose} className="mt-3 text-xs text-foreground/50 hover:text-white">
+          Close
         </button>
       </div>
     </div>

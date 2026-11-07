@@ -1025,3 +1025,31 @@ export async function endGame(gameId: string, notes: string) {
 
   return { accuracyScore, atBatsLogged: count };
 }
+
+// Live broadcast share button, Stage 3: the coach-only createShareLink/
+// disableShareLink in src/app/coach/games/[id]/setup/actions.ts gate on
+// requireCoachGame (role === "coach" strictly), so an operator calling
+// them directly from this screen would get "Not authorized" -- widening
+// that shared helper to also accept "operator" would change every other
+// action in that file too (lineup/setup edits that really should stay
+// coach-only), not a small, isolated change. These two mirror the exact
+// same crypto.randomUUID()-overwrite mechanism through requireOperatorGame
+// (already coach-or-operator) instead, so the operator's own "Share"
+// button works without touching that file's auth boundary at all.
+export async function createLiveShareLink(gameId: string): Promise<string> {
+  const { supabase } = await requireOperatorGame(gameId);
+  const token = crypto.randomUUID();
+  const { error } = await supabase.from("games").update({ share_token: token }).eq("id", gameId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/operator");
+  revalidatePath("/coach");
+  return token;
+}
+
+export async function disableLiveShareLink(gameId: string): Promise<void> {
+  const { supabase } = await requireOperatorGame(gameId);
+  const { error } = await supabase.from("games").update({ share_token: null }).eq("id", gameId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/operator");
+  revalidatePath("/coach");
+}

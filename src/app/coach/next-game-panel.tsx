@@ -1,6 +1,8 @@
 import Link from "next/link";
 import type { Database } from "@/lib/supabase/types";
 import { daysUntil, formatGameDate } from "@/lib/dates";
+import { SITE_URL } from "@/lib/legal";
+import { ShareLinkPanel } from "./games/[id]/setup/share-link-panel";
 import { recordAgainstOpponent, formatRecord } from "@/lib/opponent-history";
 import { computeBattingLines, formatAvg } from "@/lib/stats";
 import { generateOpponentInsight, type OpponentInsightInput } from "@/lib/anthropic";
@@ -38,12 +40,15 @@ export async function NextGamePanel({
               {activeGame.our_score}&ndash;{activeGame.opponent_score}
             </p>
           </div>
-          <Link
-            href={`/operator?game=${activeGame.id}`}
-            className="shrink-0 rounded-md bg-accent-green px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-green/90"
-          >
-            Continue Game
-          </Link>
+          <div className="flex shrink-0 flex-col items-end gap-2">
+            <Link
+              href={`/operator?game=${activeGame.id}`}
+              className="rounded-md bg-accent-green px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-green/90"
+            >
+              Continue Game
+            </Link>
+            <ShareLinkPanel gameId={activeGame.id} initialShareToken={activeGame.share_token} siteUrl={SITE_URL} />
+          </div>
         </div>
       </section>
     );
