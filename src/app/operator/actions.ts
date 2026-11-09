@@ -19,9 +19,21 @@ import type {
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 import { RESULT_IS_OUT } from "@/lib/operator/types";
 import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
+import { assertGameIsActive, decideChainSubstitutionWrite } from "@/lib/operator/chain-substitution";
 import { parseVoiceCommand, type VoiceCommand } from "@/lib/anthropic";
 import { generatePostGameAnalysis } from "@/lib/post-game-analysis";
 
+// Reliability fix: every action in this file assumes a live, in-progress
+// game -- none of them make sense (or were ever meant to run) once a
+// game is completed/cancelled/still in setup. Nothing previously
+// enforced that server-side; a stale operator tab left open from before
+// a game ended, or a queued offline-retry closure, could still fire a
+// mutation long after the game was over. That's exactly how Carlos De
+// León's lineup slot got silently corrupted on 2026-11-08 -- a real
+// confirmChainSubstitution call landed on this completed game about two
+// seconds after a manual data fix, re-deriving a now-stale value. Gating
+// here (rather than per-action) protects every current and future
+// action in this file uniformly.
 async function requireOperatorGame(gameId: string) {
   const supabase = createClient();
   const {
@@ -45,6 +57,7 @@ async function requireOperatorGame(gameId: string) {
     .eq("team_id", profile.team_id)
     .single();
   if (!game) throw new Error("Game not found");
+  assertGameIsActive(game);
 
   return { supabase, teamId: profile.team_id, game };
 }
@@ -896,14 +909,35 @@ export async function confirmChainSubstitution(gameId: string, input: ChainSubst
 
   let incomingBattingOrder: number | null = null;
   if (input.outgoingPlayerId) {
-    const { data: outgoingRow, error: outgoingLookupError } = await supabase
-      .from("lineup")
-      .select("batting_order")
-      .eq("game_id", gameId)
-      .eq("player_id", input.outgoingPlayerId)
-      .maybeSingle();
+    const [{ data: existingSub, error: existingSubError }, { data: outgoingRow, error: outgoingLookupError }, { data: incomingRow, error: incomingLookupError }] =
+      await Promise.all([
+        supabase
+          .from("substitutions")
+          .select("id")
+          .eq("game_id", gameId)
+          .eq("player_out_id", input.outgoingPlayerId)
+          .eq("player_in_id", input.incomingPlayerId)
+          .maybeSingle(),
+        supabase.from("lineup").select("batting_order").eq("game_id", gameId).eq("player_id", input.outgoingPlayerId).maybeSingle(),
+        supabase.from("lineup").select("batting_order").eq("game_id", gameId).eq("player_id", input.incomingPlayerId).maybeSingle(),
+      ]);
+    if (existingSubError) throw new Error(existingSubError.message);
     if (outgoingLookupError) throw new Error(outgoingLookupError.message);
-    incomingBattingOrder = outgoingRow?.batting_order ?? null;
+    if (incomingLookupError) throw new Error(incomingLookupError.message);
+
+    const decision = decideChainSubstitutionWrite({
+      existingSubstitutionExists: !!existingSub,
+      outgoingBattingOrder: outgoingRow?.batting_order ?? null,
+      incomingOwnBattingOrder: incomingRow?.batting_order ?? null,
+    });
+    if (decision.skip) {
+      // Already recorded by a prior call -- a repeat (retry-queue
+      // replay, a double tap) must not duplicate the substitutions row
+      // or re-derive batting_order from a lineup row a prior run has
+      // already cleared to null. Nothing left to do.
+      return;
+    }
+    incomingBattingOrder = decision.incomingBattingOrder;
   }
 
   const { error: incomingError } = await supabase
