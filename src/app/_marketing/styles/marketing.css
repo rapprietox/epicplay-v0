@@ -54,6 +54,14 @@
   text-align: center;
   padding: 0 24px;
   opacity: 0; /* GSAP reveals this */
+  /* Video-visibility fix: a hard ceiling so this can never render wider
+     than its own available width, whatever a child's own max-width
+     math works out to -- the actual bug (a wide, non-shrinking lead
+     form forcing this wider than a narrow phone's viewport) is fixed at
+     its source in .hero-text-block/.hero-lead-form below, but this is
+     the backstop that makes that class of bug impossible here again. */
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .hero-wordmark {
@@ -88,20 +96,39 @@
   letter-spacing: -0.01em;
 }
 
+/* Video-visibility fix: a clean, contained "readable block" for the
+   headline + form, sitting over the video with its own translucent
+   dark backing (the page-wide overlay was lightened to compensate --
+   see Hero.tsx). `width: min(100%, 460px)` is the key fix for the
+   mobile overflow bug this replaces: a plain `max-width` with no width
+   has no floor, so a wide fixed-width child (the old 480px-capped lead
+   form) could force this whole block -- and .hero-content around it --
+   wider than the viewport on a narrow phone. `min(100%, ...)` means it
+   can never exceed 100% of its own available width, full stop. */
+.hero-text-block {
+  width: min(100%, 460px);
+  margin: 0 auto;
+  background: rgba(3, 10, 6, 0.5);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(46, 204, 113, 0.18);
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-sizing: border-box;
+}
+
 /* Launch-capture batch: the rotating headline. A fixed-height relative
    box with every headline absolutely positioned inside it (inset: 0,
    centered) and crossfaded via opacity -- a fixed height is what keeps
    the form below it from jumping as the 3 headlines wrap to different
-   numbers of lines. min-height is sized for the longest of the 3 at a
-   roughly 560px max-width; the global prefers-reduced-motion rule at
-   the bottom of this file already makes the opacity transition instant
-   for a reduced-motion visitor, on top of Hero.tsx also never starting
-   the rotation timer for them. */
+   numbers of lines. The global prefers-reduced-motion rule at the
+   bottom of this file already makes the opacity transition instant for
+   a reduced-motion visitor, on top of Hero.tsx also never starting the
+   rotation timer for them. */
 .hero-tagline-rotator {
   position: relative;
-  max-width: 560px;
-  min-height: 110px;
-  margin: 0 auto 32px;
+  width: 100%;
+  min-height: 92px;
+  margin: 0 auto 20px;
 }
 .hero-tagline {
   position: absolute;
@@ -109,14 +136,15 @@
   opacity: 0;
   transition: opacity 0.6s ease;
   font-family: "DM Sans", sans-serif;
-  font-size: clamp(16px, 2.5vw, 22px);
-  color: #9fc4ac;
+  font-size: clamp(15px, 2.2vw, 19px);
+  color: #c8ead6;
   line-height: 1.5;
   margin: 0;
+  text-align: center;
 }
 .hero-tagline.is-active { opacity: 1; }
 
-.hero-lead-form { max-width: 480px; margin: 0 auto; text-align: left; }
+.hero-lead-form { width: 100%; text-align: left; }
 
 .hero-buttons {
   display: flex;
@@ -1604,6 +1632,15 @@
    while it's visible (see LaunchBanner.tsx's own comment on why a
    body class is simplest here).
    ============================================================ */
+/* Bug fix (video-visibility batch): the two stitch SVGs used to be
+   flex children in the same row as the link/dismiss button, each with
+   width="100%" -- as replaced elements they refused to shrink, which
+   squeezed the link text down to ~58px and wrapped it across 7 lines,
+   ballooning this banner to ~186px/164px tall. Restructured so the
+   stitches are absolutely positioned top/bottom edges (out of flow
+   entirely, can't affect the row's height) and the row itself is a
+   fixed, genuinely thin height -- "a thin stitched edge," not a
+   quarter of the viewport. */
 .launch-banner {
   position: fixed;
   top: 0;
@@ -1611,51 +1648,58 @@
   right: 0;
   z-index: 1100;
   overflow: hidden;
+  background: linear-gradient(90deg, #1a6b3c, #2ecc71);
+}
+.launch-banner-stitch {
+  display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 6px;
+}
+.launch-banner-stitch-top { top: 0; }
+.launch-banner-stitch-bottom { bottom: 0; transform: scaleY(-1); }
+.launch-banner-row {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 9px 44px;
-  background: linear-gradient(90deg, #1a6b3c, #2ecc71);
+  min-height: 34px;
+  padding: 7px 40px;
   font-family: "DM Sans", sans-serif;
   font-size: 0.85rem;
   font-weight: 600;
   text-align: center;
 }
-.launch-banner-stitch { display: block; flex-shrink: 0; }
-.launch-banner-link {
-  position: relative;
-  z-index: 1;
-  color: #030a06;
-  text-decoration: underline;
-}
+.launch-banner-link { color: #030a06; text-decoration: underline; }
 .launch-banner-link strong { font-weight: 800; }
 .launch-banner-dismiss {
   position: absolute;
   z-index: 2;
-  right: 14px;
+  right: 12px;
   top: 50%;
   transform: translateY(-50%);
   background: none;
   border: none;
   color: #030a06;
-  font-size: 1.15rem;
+  font-size: 1.1rem;
   line-height: 1;
   padding: 4px 6px;
   cursor: pointer;
 }
 /* Stadium lights: two soft, blurred cones that sweep across the banner
-   and flicker, CSS-only. Low opacity + screen blend so they read as a
-   light wash over the green gradient, never obscuring the text (which
-   sits above them via z-index). */
+   and flicker, CSS-only -- kept subtle (lower opacity, narrower than
+   the first pass) and clipped to the banner's own box (overflow:
+   hidden on .launch-banner above), so they read as a faint light wash
+   on the green gradient and can never reach the hero below it. */
 .launch-banner-light {
   position: absolute;
   top: -120%;
-  width: 90px;
+  width: 54px;
   height: 340%;
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0));
-  filter: blur(7px);
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0));
+  filter: blur(6px);
   mix-blend-mode: screen;
   pointer-events: none;
   transform: rotate(16deg);
@@ -1667,15 +1711,15 @@
   50% { left: 104%; }
 }
 @keyframes launchBannerFlicker {
-  0%, 100% { opacity: 0.45; }
-  40% { opacity: 0.15; }
-  55% { opacity: 0.6; }
-  75% { opacity: 0.25; }
+  0%, 100% { opacity: 0.3; }
+  40% { opacity: 0.1; }
+  55% { opacity: 0.4; }
+  75% { opacity: 0.16; }
 }
 body.has-launch-banner .marketing-nav { top: 40px; }
 @media (max-width: 640px) {
-  .launch-banner { font-size: 0.76rem; padding: 9px 38px; min-height: 44px; }
-  body.has-launch-banner .marketing-nav { top: 44px; }
+  .launch-banner-row { font-size: 0.76rem; padding: 7px 36px; min-height: 40px; }
+  body.has-launch-banner .marketing-nav { top: 40px; }
 }
 
 /* ============================================================

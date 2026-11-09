@@ -17,10 +17,15 @@ const ROLE_OPTIONS = [
 // a later, unrelated visit in the same tab.
 const PREFILL_EMAIL_KEY = "epicplay_lead_email";
 
-// One form, two places (the hero, compact, and the "Founding Access"
-// section lower on the page, full-size) -- same fields, same action,
-// same validation, so the two can never drift into asking for
-// different things. `variant` only changes layout/copy, never behavior.
+// One form, two places. Video-visibility fix: the hero's "compact"
+// variant now asks for name and email ONLY -- phone/role/the WhatsApp
+// checkbox moved to being exclusively the "Founding Access" section's
+// job, per the request ("keep one form in the hero (name and email
+// only, the rest in the 'Founding Access' section)"). The "section"
+// variant is unchanged (every field). Both still submit through the
+// same submitLead action; role is optional there (see actions.ts) so a
+// name+email-only hero submission isn't rejected for a field it never
+// asked for.
 export function LaunchLeadForm({ variant, formId }: { variant: "compact" | "section"; formId?: string }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -90,30 +95,34 @@ export function LaunchLeadForm({ variant, formId }: { variant: "compact" | "sect
         </label>
       </div>
 
-      <div className="lead-row">
-        <label className="lead-field">
-          <span>WhatsApp number (optional)</span>
-          <input type="tel" name="phone" className="lead-input" placeholder="+1 555 123 4567" />
-        </label>
-        <label className="lead-field">
-          <span>Role</span>
-          <select name="role" required defaultValue="" className="lead-input">
-            <option value="" disabled>
-              Select one
-            </option>
-            {ROLE_OPTIONS.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      {variant === "section" && (
+        <>
+          <div className="lead-row">
+            <label className="lead-field">
+              <span>WhatsApp number (optional)</span>
+              <input type="tel" name="phone" className="lead-input" placeholder="+1 555 123 4567" />
+            </label>
+            <label className="lead-field">
+              <span>Role</span>
+              <select name="role" required defaultValue="" className="lead-input">
+                <option value="" disabled>
+                  Select one
+                </option>
+                {ROLE_OPTIONS.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
 
-      <label className="lead-checkbox">
-        <input type="checkbox" name="whatsappOptin" />
-        <span>Add me to the EpicPlay WhatsApp community.</span>
-      </label>
+          <label className="lead-checkbox">
+            <input type="checkbox" name="whatsappOptin" />
+            <span>Add me to the EpicPlay WhatsApp community.</span>
+          </label>
+        </>
+      )}
 
       {error && <p className="lead-error">{error}</p>}
 

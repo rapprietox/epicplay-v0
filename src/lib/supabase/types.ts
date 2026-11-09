@@ -204,7 +204,7 @@ export interface Database {
           created_at: string;
           name: string;
           email: string;
-          role: "coach" | "operator" | "player" | "league_organizer" | "parent";
+          role: "coach" | "operator" | "player" | "league_organizer" | "parent" | null;
           team_size: number | null;
           message: string | null;
           source: string;
@@ -216,7 +216,7 @@ export interface Database {
           created_at?: string;
           name: string;
           email: string;
-          role: "coach" | "operator" | "player" | "league_organizer" | "parent";
+          role?: "coach" | "operator" | "player" | "league_organizer" | "parent" | null;
           team_size?: number | null;
           message?: string | null;
           source?: string;

@@ -76,7 +76,15 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
 
   if (!name) return { ok: false, error: "Enter your name." };
   if (!email || !EMAIL_RE.test(email)) return { ok: false, error: "Enter a valid email." };
-  if (!ALLOWED_ROLES.includes(role as (typeof ALLOWED_ROLES)[number])) {
+  // Video-visibility fix: role is now optional at this layer -- the
+  // hero's compact form (name + email only, per the fix request) never
+  // sends one at all. Only reject it when a role WAS sent and isn't one
+  // of the known values; the "Founding Access" section's <select> still
+  // has `required` client-side, so a role is effectively mandatory
+  // there, just not enforced a second time here for a form that never
+  // asks for it. leads.role is nullable as of the same migration this
+  // batch also widens for 'parent' (20261109100001_leads_launch_capture.sql).
+  if (role && !ALLOWED_ROLES.includes(role as (typeof ALLOWED_ROLES)[number])) {
     return { ok: false, error: "Select a role." };
   }
   if (phone && !PHONE_RE.test(phone)) {
@@ -100,7 +108,7 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
     const { error } = await supabase.from("leads").insert({
       name,
       email,
-      role: role as (typeof ALLOWED_ROLES)[number],
+      role: role ? (role as (typeof ALLOWED_ROLES)[number]) : null,
       team_size: teamSize,
       message: message || null,
       phone: phone || null,

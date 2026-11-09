@@ -21,6 +21,16 @@ alter table public.leads drop constraint if exists leads_role_check;
 alter table public.leads add constraint leads_role_check
   check (role in ('coach', 'operator', 'player', 'league_organizer', 'parent'));
 
+-- Video-visibility fix (same day): the hero now carries a second,
+-- lighter-weight copy of this form with name + email only, per the
+-- fix request -- it never collects a role at all. role was `not null`
+-- since the original leads table, which would reject that submission
+-- outright. Dropped to nullable; a plain `check (role in (...))`
+-- constraint already treats NULL as satisfying the check (SQL's normal
+-- three-valued-logic behavior), so the constraint above needs no
+-- further change for this.
+alter table public.leads alter column role drop not null;
+
 -- Needed for "skip a duplicate email" in submitLead(). The anon
 -- INSERT-only RLS policy on this table (see 20261030100001_leads.sql)
 -- means a server action can't SELECT to check for an existing email

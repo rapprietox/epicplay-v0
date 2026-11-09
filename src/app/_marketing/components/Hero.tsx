@@ -158,14 +158,20 @@ export function Hero() {
         </video>
       )}
 
-      {/* Dark overlay -- slightly stronger on mobile, where the 9:16
-          video fills the whole screen behind the wordmark/buttons and
-          needs a bit more contrast than the desktop crop does. */}
+      {/* Dark overlay -- lightened in the video-visibility fix (was
+          0.4/0.55) so the video reads clearly across the whole hero,
+          not just around its edges. The headline/form now carry their
+          own, more localized dark backing (see .hero-text-block below)
+          for text contrast, instead of leaning on one heavy page-wide
+          overlay to do both jobs at once. Still slightly stronger on
+          mobile, where the 9:16 video fills the whole screen behind
+          the wordmark/text and needs a touch more contrast than the
+          desktop crop does. */}
       <div
         style={{
           position: "absolute",
           inset: 0,
-          background: isMobile ? "rgba(3,10,6,0.55)" : "rgba(3,10,6,0.4)",
+          background: isMobile ? "rgba(3,10,6,0.32)" : "rgba(3,10,6,0.22)",
           zIndex: 1,
         }}
       />
@@ -186,24 +192,31 @@ export function Hero() {
           <span className="wordmark-epic">EPICPLAY</span>
           <span className="wordmark-ai">AI</span>
         </div>
-        <div
-          className="hero-tagline-rotator"
-          onMouseEnter={() => setHeadlinePaused(true)}
-          onMouseLeave={() => setHeadlinePaused(false)}
-        >
-          {ROTATING_HEADLINES.map((text, i) => (
-            <p
-              key={text}
-              className={`hero-tagline ${i === activeHeadlineIndex ? "is-active" : ""}`}
-              aria-hidden={i !== activeHeadlineIndex}
-            >
-              {text}
-            </p>
-          ))}
-        </div>
+        {/* Clean, readable block: the rotating headline and the compact
+            form now sit inside one contained card (its own translucent
+            dark background + blur), not loose over the now-lighter page
+            overlay -- "a clean, readable block... with a lighter dark
+            overlay behind the text," per the fix request. */}
+        <div className="hero-text-block">
+          <div
+            className="hero-tagline-rotator"
+            onMouseEnter={() => setHeadlinePaused(true)}
+            onMouseLeave={() => setHeadlinePaused(false)}
+          >
+            {ROTATING_HEADLINES.map((text, i) => (
+              <p
+                key={text}
+                className={`hero-tagline ${i === activeHeadlineIndex ? "is-active" : ""}`}
+                aria-hidden={i !== activeHeadlineIndex}
+              >
+                {text}
+              </p>
+            ))}
+          </div>
 
-        <div className="hero-lead-form">
-          <LaunchLeadForm variant="compact" formId="hero-lead-form" />
+          <div className="hero-lead-form">
+            <LaunchLeadForm variant="compact" formId="hero-lead-form" />
+          </div>
         </div>
       </div>
 
