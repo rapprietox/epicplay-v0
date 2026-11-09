@@ -16,15 +16,21 @@ import { resultLetter } from "@/lib/opponent-history";
 import { computeBattingLines, computePitchingLines } from "@/lib/stats";
 import { computeEpsForRoster } from "@/lib/eps";
 import { buildLeaderRows } from "@/lib/leader-stats";
-import { countTeamGames } from "@/lib/leader-qualification";
+import { countTeamGames, isRateQualified, MIN_PA_PER_TEAM_GAME } from "@/lib/leader-qualification";
 import { TeamLeadersBoard } from "@/components/team-leaders-board";
+import { TeamHittingTable, type HittingTableRow } from "@/components/team-hitting-table";
 import type { Database } from "@/lib/supabase/types";
 
 type Game = Database["public"]["Tables"]["games"]["Row"];
 type Player = Database["public"]["Tables"]["players"]["Row"];
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
-type GameEvent = Pick<Database["public"]["Tables"]["game_events"]["Row"], "event_type" | "player_id" | "game_id">;
+type GameEvent = Pick<
+  Database["public"]["Tables"]["game_events"]["Row"],
+  "event_type" | "player_id" | "game_id" | "scorer_player_id" | "runs_scored"
+>;
+
+const TEAM_TOTAL_ID = "__team_total__";
 
 interface Props {
   games: Game[];
@@ -50,13 +56,91 @@ interface Props {
 export function TeamSection({ games, players, atBats, stolenBases, gameEvents, viewerPlayerId }: Props) {
   const hitting = atBats.filter((ab) => ab.mode === "hitting");
   const pitching = atBats.filter((ab) => ab.mode === "pitching");
-  const battingLines = computeBattingLines(hitting, stolenBases);
+  // Hitting-table batch: scoringEvents (3rd arg) so Runs/R matches the
+  // coach dashboard's own call, not just at_bats.runs_scored.
+  const battingLines = computeBattingLines(hitting, stolenBases, gameEvents);
   const pitchingLines = computePitchingLines(pitching, games);
   const epsLines = computeEpsForRoster(players.map((p) => p.id), hitting, gameEvents);
   // No filters on this board (unlike the coach's), so "team games" is
   // just every completed game in the full set passed in.
   const teamGames = countTeamGames(games);
   const rows = buildLeaderRows(players, battingLines, pitchingLines, epsLines, teamGames);
+
+  // Full hitting table batch: read-only mirror of the coach's "Team
+  // Hitting" table, same rules (qualification, totals row via the same
+  // sentinel-remap trick), no facet filters -- same "no filters on this
+  // board" precedent as the Team Leaders mirror just above.
+  const gamesPlayedByPlayer = new Map<string, Set<string>>();
+  for (const ab of hitting) {
+    if (!ab.player_id) continue;
+    let set = gamesPlayedByPlayer.get(ab.player_id);
+    if (!set) {
+      set = new Set();
+      gamesPlayedByPlayer.set(ab.player_id, set);
+    }
+    set.add(ab.game_id);
+  }
+  const csByPlayer = new Map<string, number>();
+  for (const e of gameEvents) {
+    if (e.event_type !== "caught_stealing" || !e.player_id) continue;
+    csByPlayer.set(e.player_id, (csByPlayer.get(e.player_id) ?? 0) + 1);
+  }
+  const hittingRows: HittingTableRow[] = players.map((p) => {
+    const line = battingLines.get(p.id);
+    const pa = line?.pa ?? 0;
+    return {
+      playerId: p.id,
+      playerName: p.name,
+      playerJersey: p.jersey_number,
+      g: gamesPlayedByPlayer.get(p.id)?.size ?? 0,
+      pa,
+      ab: line?.ab ?? 0,
+      r: line?.runsScored ?? 0,
+      h: line?.h ?? 0,
+      doubles: line?.doubles ?? 0,
+      triples: line?.triples ?? 0,
+      hr: line?.hr ?? 0,
+      rbi: line?.rbi ?? 0,
+      bb: line?.bb ?? 0,
+      k: line?.k ?? 0,
+      sb: line?.sb ?? 0,
+      cs: csByPlayer.get(p.id) ?? 0,
+      avg: line?.avg ?? 0,
+      obp: line?.obp ?? 0,
+      slg: line?.slg ?? 0,
+      ops: line?.ops ?? 0,
+      qualified: isRateQualified("pa", pa, teamGames),
+    };
+  });
+  const teamHitting = hitting.map((ab) => ({ ...ab, player_id: TEAM_TOTAL_ID }));
+  const teamStolenBases = stolenBases.map((sb) => ({ ...sb, player_id: TEAM_TOTAL_ID }));
+  const teamScoringEvents = gameEvents.map((e) => ({ ...e, scorer_player_id: e.scorer_player_id ? TEAM_TOTAL_ID : e.scorer_player_id }));
+  const teamLine = computeBattingLines(teamHitting, teamStolenBases, teamScoringEvents).get(TEAM_TOTAL_ID);
+  let totalCs = 0;
+  for (const v of Array.from(csByPlayer.values())) totalCs += v;
+  const hittingTotals: HittingTableRow = {
+    playerId: TEAM_TOTAL_ID,
+    playerName: "Team Total",
+    playerJersey: null,
+    g: teamGames,
+    pa: teamLine?.pa ?? 0,
+    ab: teamLine?.ab ?? 0,
+    r: teamLine?.runsScored ?? 0,
+    h: teamLine?.h ?? 0,
+    doubles: teamLine?.doubles ?? 0,
+    triples: teamLine?.triples ?? 0,
+    hr: teamLine?.hr ?? 0,
+    rbi: teamLine?.rbi ?? 0,
+    bb: teamLine?.bb ?? 0,
+    k: teamLine?.k ?? 0,
+    sb: teamLine?.sb ?? 0,
+    cs: totalCs,
+    avg: teamLine?.avg ?? 0,
+    obp: teamLine?.obp ?? 0,
+    slg: teamLine?.slg ?? 0,
+    ops: teamLine?.ops ?? 0,
+    qualified: true,
+  };
 
   const completed = games.filter((g) => g.status === "completed");
   const wins = completed.filter((g) => g.our_score > g.opponent_score).length;
@@ -127,6 +211,19 @@ export function TeamSection({ games, players, atBats, stolenBases, gameEvents, v
         <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-accent-gold">Team Leaders</h2>
         <div className="mt-4">
           <TeamLeadersBoard rows={rows} getPlayerHref={(id) => (id === viewerPlayerId ? "/player/clubhouse" : null)} />
+        </div>
+      </section>
+
+      <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-5">
+        <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-accent-gold">Team Hitting</h2>
+        <div className="mt-4">
+          <TeamHittingTable
+            rows={hittingRows}
+            totals={hittingTotals}
+            getPlayerHref={(id) => (id === viewerPlayerId ? "/player/clubhouse" : null)}
+            minPaPerTeamGame={MIN_PA_PER_TEAM_GAME}
+            teamGames={teamGames}
+          />
         </div>
       </section>
     </section>

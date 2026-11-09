@@ -21,7 +21,10 @@ type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
 type StolenBase = Database["public"]["Tables"]["stolen_bases"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
 type Player = Database["public"]["Tables"]["players"]["Row"];
-type GameEvent = Pick<Database["public"]["Tables"]["game_events"]["Row"], "event_type" | "player_id" | "game_id">;
+type GameEvent = Pick<
+  Database["public"]["Tables"]["game_events"]["Row"],
+  "event_type" | "player_id" | "game_id" | "scorer_player_id" | "runs_scored"
+>;
 
 type Filter = "all" | "season" | "playoff";
 
@@ -84,7 +87,10 @@ export function LeadersBoard({ players, atBats, stolenBases, games, gameEvents }
   }, [gameEvents, matchingGameIds, noFilterActive]);
 
   const rows = useMemo(() => {
-    const battingLines = computeBattingLines(filteredAtBats, filteredStolenBases);
+    // Hitting-table batch: scoringEvents (3rd arg) now passed so the Runs
+    // card counts runs scored outside any at-bat (wild pitch/passed
+    // ball/balk/a bare "Scored" tap), not just at_bats.runs_scored.
+    const battingLines = computeBattingLines(filteredAtBats, filteredStolenBases, filteredGameEvents);
     const pitchingLines = computePitchingLines(filteredAtBats, filteredGames);
     const epsLines = computeEpsForRoster(players.map((p) => p.id), filteredAtBats, filteredGameEvents);
     const teamGames = countTeamGames(filteredGames);

@@ -85,8 +85,16 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
     ? await supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null)
     : { data: [] };
   const { data: teamStolenBases } = gameIds.length ? await supabase.from("stolen_bases").select("*").in("game_id", gameIds) : { data: [] };
+  // Hitting-table batch: widened from "caught_stealing only" to every
+  // event row, carrying scorer_player_id/runs_scored too -- TeamSection's
+  // Runs card/column and the new Team Hitting table's R column both need
+  // runs that score outside any at-bat (wild pitch/passed ball/balk/a
+  // bare "Scored" tap). computeBattingLines/caughtStealingFor each filter
+  // the rows they care about out of this same set, so one broader query
+  // serves both instead of two narrower ones -- same change as the coach
+  // dashboard's own game_events query.
   const { data: teamCaughtStealing } = gameIds.length
-    ? await supabase.from("game_events").select("event_type, player_id, game_id").in("game_id", gameIds).eq("event_type", "caught_stealing")
+    ? await supabase.from("game_events").select("event_type, player_id, game_id, scorer_player_id, runs_scored").in("game_id", gameIds)
     : { data: [] };
 
   // EPS batch: SB_success_rate needs caught-stealing counts, only in
