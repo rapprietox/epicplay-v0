@@ -18,3 +18,11 @@ export const GOVERNING_LAW = "[TODO: governing law jurisdiction not yet determin
 // as an empty string (not a placeholder URL) so callers can check
 // `WHATSAPP_URL` truthiness and hide the button entirely until it's real.
 export const WHATSAPP_URL = "";
+
+// Launch-capture batch: a WhatsApp *community* invite link (distinct
+// from WHATSAPP_URL above, which is a direct 1:1 contact link) and an
+// Instagram profile link -- both TODO, both empty strings for the same
+// reason as WHATSAPP_URL above, so callers can check truthiness and
+// hide the button entirely until a real URL is set.
+export const WHATSAPP_COMMUNITY_URL = "";
+export const INSTAGRAM_URL = "";

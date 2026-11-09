@@ -6,7 +6,18 @@ import { createClient } from "@/lib/supabase/server";
 export type LeadResult = { ok: true } | { ok: false; error: string };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const ALLOWED_ROLES = ["coach", "operator", "player", "league_organizer"] as const;
+// Loose on purpose, per the launch-capture request: just the characters
+// a phone number written any which way (with or without a country
+// code, spaced out or not) would plausibly use. Not a real phone-format
+// validator, and not meant to be one.
+const PHONE_RE = /^[\d+\s]+$/;
+// "parent" is new (launch-capture batch); "operator" stays listed even
+// though the launch form no longer offers it as a <select> option --
+// it's still a valid value for data already in the table and for any
+// other caller of this action, and the DB's own check constraint
+// (20261109100001_leads_launch_capture.sql) allows it for the same
+// reason.
+const ALLOWED_ROLES = ["coach", "operator", "player", "league_organizer", "parent"] as const;
 
 // Simple in-memory sliding-window rate limit, same spirit as this
 // repo's existing in-memory offline retry queue
@@ -54,6 +65,12 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
   const name = String(formData.get("name") ?? "").trim();
   const email = String(formData.get("email") ?? "").trim();
   const role = String(formData.get("role") ?? "").trim();
+  const phone = String(formData.get("phone") ?? "").trim();
+  // A plain HTML checkbox only ever sends its value ("on" by default)
+  // when checked -- absent from formData entirely when unchecked --
+  // which is exactly the "unchecked by default" behavior the launch
+  // form's WhatsApp-community checkbox needs, with no extra JS.
+  const whatsappOptin = formData.get("whatsappOptin") === "on";
   const teamSizeRaw = String(formData.get("teamSize") ?? "").trim();
   const message = String(formData.get("message") ?? "").trim();
 
@@ -61,6 +78,9 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
   if (!email || !EMAIL_RE.test(email)) return { ok: false, error: "Enter a valid email." };
   if (!ALLOWED_ROLES.includes(role as (typeof ALLOWED_ROLES)[number])) {
     return { ok: false, error: "Select a role." };
+  }
+  if (phone && !PHONE_RE.test(phone)) {
+    return { ok: false, error: "Enter a valid phone number (digits, +, and spaces only)." };
   }
 
   let teamSize: number | null = null;
@@ -72,15 +92,27 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
 
   try {
     const supabase = createClient();
+    // Launch-capture batch: source is now always "launch" -- every
+    // caller of this action is a launch-page form (the hero's compact
+    // form and the Founding Access section both use the same
+    // LaunchLeadForm component/action). "marketing_site" stays on every
+    // row captured before this batch; nothing re-labels old rows.
     const { error } = await supabase.from("leads").insert({
       name,
       email,
       role: role as (typeof ALLOWED_ROLES)[number],
       team_size: teamSize,
       message: message || null,
-      source: "marketing_site",
+      phone: phone || null,
+      whatsapp_optin: whatsappOptin,
+      source: "launch",
     });
     if (error) {
+      // 23505 = unique_violation on leads_email_unique_idx (lower(email))
+      // -- this visitor is already on the list. "Skip a duplicate
+      // email" means exactly that: no second row, but still the normal
+      // success response, not an error shown to them.
+      if (error.code === "23505") return { ok: true };
       console.error("[submitLead] insert failed", error);
       return { ok: false, error: "Something went wrong -- please try again." };
     }

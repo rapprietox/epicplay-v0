@@ -2,6 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
+import { LaunchLeadForm } from "./LaunchLeadForm";
+
+// Launch-capture batch: three headlines, cycled every 5s with a fade,
+// paused while hovered, per the request. Kept outside the component so
+// it isn't re-created every render -- the array itself never changes.
+const ROTATING_HEADLINES = [
+  "Your team's stats, finally in one place. Free until Dec 31.",
+  "Track your season. Free until Dec 31. Stats, spray charts and an AI coach for your team.",
+  "Every at-bat. Every stat. Free through December. Built by a coach.",
+];
+// "Show only #3 when prefers-reduced-motion is on" -- #3 (index 2).
+const REDUCED_MOTION_HEADLINE_INDEX = 2;
 
 // Three.js was removed entirely to isolate the hero video from the
 // field-overlay question -- turned out neither the canvas nor this
@@ -24,6 +36,9 @@ export function Hero() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [src, setSrc] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const [headlineIndex, setHeadlineIndex] = useState(0);
+  const [headlinePaused, setHeadlinePaused] = useState(false);
 
   useEffect(() => {
     gsap.fromTo(
@@ -32,6 +47,29 @@ export function Hero() {
       { opacity: 1, y: 0, duration: 1.2, ease: "power2.out", delay: 2 }
     );
   }, []);
+
+  // Rotating headline: cycle every 5s, pause on hover, and never start
+  // the timer at all under prefers-reduced-motion (the global CSS rule
+  // in marketing.css would make the fade instant either way, but the
+  // request asks for #3 specifically, not "every headline, instantly").
+  useEffect(() => {
+    const mql = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const apply = (reduced: boolean) => setReducedMotion(reduced);
+    apply(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => apply(e.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (reducedMotion || headlinePaused) return;
+    const id = setInterval(() => {
+      setHeadlineIndex((i) => (i + 1) % ROTATING_HEADLINES.length);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [reducedMotion, headlinePaused]);
+
+  const activeHeadlineIndex = reducedMotion ? REDUCED_MOTION_HEADLINE_INDEX : headlineIndex;
 
   // Pick (and keep picking, across a phone rotation or a desktop
   // window resize past the breakpoint) which file to load.
@@ -148,14 +186,24 @@ export function Hero() {
           <span className="wordmark-epic">EPICPLAY</span>
           <span className="wordmark-ai">AI</span>
         </div>
-        <p className="hero-tagline">The Intelligence Layer Amateur Baseball Has Been Missing.</p>
-        <div className="hero-buttons">
-          <a href="/login" className="btn-primary">
-            Start Your Season →
-          </a>
-          <a href="#platform" className="btn-ghost">
-            See How It Works ↓
-          </a>
+        <div
+          className="hero-tagline-rotator"
+          onMouseEnter={() => setHeadlinePaused(true)}
+          onMouseLeave={() => setHeadlinePaused(false)}
+        >
+          {ROTATING_HEADLINES.map((text, i) => (
+            <p
+              key={text}
+              className={`hero-tagline ${i === activeHeadlineIndex ? "is-active" : ""}`}
+              aria-hidden={i !== activeHeadlineIndex}
+            >
+              {text}
+            </p>
+          ))}
+        </div>
+
+        <div className="hero-lead-form">
+          <LaunchLeadForm variant="compact" formId="hero-lead-form" />
         </div>
       </div>
 

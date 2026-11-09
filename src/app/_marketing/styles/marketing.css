@@ -88,14 +88,35 @@
   letter-spacing: -0.01em;
 }
 
+/* Launch-capture batch: the rotating headline. A fixed-height relative
+   box with every headline absolutely positioned inside it (inset: 0,
+   centered) and crossfaded via opacity -- a fixed height is what keeps
+   the form below it from jumping as the 3 headlines wrap to different
+   numbers of lines. min-height is sized for the longest of the 3 at a
+   roughly 560px max-width; the global prefers-reduced-motion rule at
+   the bottom of this file already makes the opacity transition instant
+   for a reduced-motion visitor, on top of Hero.tsx also never starting
+   the rotation timer for them. */
+.hero-tagline-rotator {
+  position: relative;
+  max-width: 560px;
+  min-height: 110px;
+  margin: 0 auto 32px;
+}
 .hero-tagline {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.6s ease;
   font-family: "DM Sans", sans-serif;
   font-size: clamp(16px, 2.5vw, 22px);
   color: #9fc4ac;
-  max-width: 560px;
-  margin: 0 auto 40px;
   line-height: 1.5;
+  margin: 0;
 }
+.hero-tagline.is-active { opacity: 1; }
+
+.hero-lead-form { max-width: 480px; margin: 0 auto; text-align: left; }
 
 .hero-buttons {
   display: flex;
@@ -803,18 +824,37 @@
   display: none;
 }
 .sticky-mobile-cta.visible { transform: translateY(0); }
+/* Launch-capture batch: was a single full-width <a> button; now a
+   one-line email-capture form (input + submit), same bar height. */
+.sticky-mobile-cta-form { display: flex; gap: 8px; }
+.sticky-mobile-cta-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 14px;
+  height: 44px;
+  background: #050e07;
+  border: 1px solid #1a3d28;
+  border-radius: 50px;
+  color: #eaf7ee;
+  font-family: "DM Sans", sans-serif;
+  font-size: 15px;
+}
+.sticky-mobile-cta-input:focus { outline: none; border-color: #2ecc71; }
 .sticky-mobile-cta-btn {
   display: block;
-  width: 100%;
+  flex-shrink: 0;
   text-align: center;
-  padding: 13px 0;
+  padding: 0 22px;
+  height: 44px;
   background: #f0c060;
   color: #030a06;
   font-family: "Barlow Condensed", sans-serif;
   font-weight: 900;
   font-size: 16px;
+  border: none;
   border-radius: 50px;
   text-decoration: none;
+  cursor: pointer;
 }
 @media (max-width: 640px) {
   .sticky-mobile-cta { display: block; }
@@ -1485,6 +1525,27 @@
 .lead-error { color: #e24b4a; font-size: 0.85rem; margin: 0; }
 .lead-success { text-align: center; color: #2ecc71; font-size: 1.1rem; margin: 0; padding: 20px 0; }
 .lead-submit { align-self: center; margin-top: 4px; }
+
+/* Launch-capture batch: the WhatsApp-community opt-in checkbox, and
+   the compact variant used inside the hero (smaller text/gaps so the
+   same form fits comfortably under the rotating headline). */
+.lead-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #9fc4ac;
+  cursor: pointer;
+}
+.lead-checkbox input[type="checkbox"] { margin-top: 2px; accent-color: #2ecc71; width: 15px; height: 15px; flex-shrink: 0; }
+.lead-form-compact { gap: 12px; }
+.lead-form-compact .lead-row { gap: 10px; }
+.lead-form-compact .lead-input { padding: 9px 11px; font-size: 0.88rem; }
+.lead-form-compact .lead-submit { padding: 12px 36px; font-size: 16px; }
+.lead-success-compact { font-size: 0.95rem; padding: 10px 0; }
+@media (max-width: 640px) {
+  .lead-form-compact .lead-row { grid-template-columns: 1fr; }
+}
 .lead-whatsapp {
   display: block;
   text-align: center;
@@ -1534,6 +1595,87 @@
 }
 @media (max-width: 480px) {
   .marketing-footer { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   LAUNCH BANNER -- slim, dismissible, baseball-stitched top strip.
+   Fixed above the fixed Nav (z-index above .marketing-nav's 1000);
+   body.has-launch-banner shifts Nav down by this banner's own height
+   while it's visible (see LaunchBanner.tsx's own comment on why a
+   body class is simplest here).
+   ============================================================ */
+.launch-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 9px 44px;
+  background: linear-gradient(90deg, #1a6b3c, #2ecc71);
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: center;
+}
+.launch-banner-stitch { display: block; flex-shrink: 0; }
+.launch-banner-link {
+  position: relative;
+  z-index: 1;
+  color: #030a06;
+  text-decoration: underline;
+}
+.launch-banner-link strong { font-weight: 800; }
+.launch-banner-dismiss {
+  position: absolute;
+  z-index: 2;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #030a06;
+  font-size: 1.15rem;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+/* Stadium lights: two soft, blurred cones that sweep across the banner
+   and flicker, CSS-only. Low opacity + screen blend so they read as a
+   light wash over the green gradient, never obscuring the text (which
+   sits above them via z-index). */
+.launch-banner-light {
+  position: absolute;
+  top: -120%;
+  width: 90px;
+  height: 340%;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0));
+  filter: blur(7px);
+  mix-blend-mode: screen;
+  pointer-events: none;
+  transform: rotate(16deg);
+}
+.launch-banner-light-a { animation: launchBannerSweep 10s ease-in-out infinite, launchBannerFlicker 3.4s ease-in-out infinite; }
+.launch-banner-light-b { animation: launchBannerSweep 10s ease-in-out infinite 5s, launchBannerFlicker 4.1s ease-in-out infinite 1.3s; }
+@keyframes launchBannerSweep {
+  0%, 100% { left: -12%; }
+  50% { left: 104%; }
+}
+@keyframes launchBannerFlicker {
+  0%, 100% { opacity: 0.45; }
+  40% { opacity: 0.15; }
+  55% { opacity: 0.6; }
+  75% { opacity: 0.25; }
+}
+body.has-launch-banner .marketing-nav { top: 40px; }
+@media (max-width: 640px) {
+  .launch-banner { font-size: 0.76rem; padding: 9px 38px; min-height: 44px; }
+  body.has-launch-banner .marketing-nav { top: 44px; }
 }
 
 /* ============================================================
