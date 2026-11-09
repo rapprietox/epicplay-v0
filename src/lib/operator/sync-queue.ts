@@ -1,3 +1,14 @@
+import { GAME_NOT_ACTIVE_ERROR } from "./chain-substitution";
+
+// A permanent rejection (the game is no longer active) will never
+// succeed on a later retry, unlike a transient network failure -- so it
+// must be told apart and dropped rather than retried forever. Matched
+// on the exact message requireOperatorGame throws (actions.ts); Next.js
+// Server Actions do propagate a thrown Error's message to the caller.
+function isPermanentFailure(err: unknown): boolean {
+  return err instanceof Error && err.message === GAME_NOT_ACTIVE_ERROR;
+}
+
 // Best-effort retry queue for server writes made while offline. Retries
 // live in memory (closures can't survive JSON serialization), so they
 // persist for the lifetime of this browser tab/session -- if the tab is
@@ -49,7 +60,18 @@ async function flush() {
         await entry.run();
         queue.shift();
         notify();
-      } catch {
+      } catch (err) {
+        if (isPermanentFailure(err)) {
+          // This game will never become active again for this action --
+          // retrying forever would just burn cycles, and could still
+          // race a manual data fix the way a live retry once did (see
+          // CLAUDE.md's stale-writes note). Drop it and keep draining
+          // the rest of the queue; this one entry's failure doesn't mean
+          // the whole queue is blocked the way an offline error does.
+          queue.shift();
+          notify();
+          continue;
+        }
         entry.attempts += 1;
         break; // stop and retry the whole queue later, in order
       }
@@ -74,7 +96,8 @@ function ensureFlushTimer() {
 export async function withOfflineRetry(description: string, fn: () => Promise<void>) {
   try {
     await fn();
-  } catch {
+  } catch (err) {
+    if (isPermanentFailure(err)) return; // this game will never become active again for this action -- retrying is pointless
     enqueue(description, fn);
   }
 }
