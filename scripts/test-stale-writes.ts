@@ -90,9 +90,9 @@ async function main() {
 
     // Both null -- refuse outright rather than write null onto a
     // starting row.
-    const bothNullMsg = await expectThrow(() =>
-      decideChainSubstitutionWrite({ existingSubstitutionExists: false, outgoingBattingOrder: null, incomingOwnBattingOrder: null })
-    );
+    const bothNullMsg = await expectThrow(() => {
+      decideChainSubstitutionWrite({ existingSubstitutionExists: false, outgoingBattingOrder: null, incomingOwnBattingOrder: null });
+    });
     check("both outgoing and incoming batting_order null -> throws instead of writing null", bothNullMsg !== null);
   }
 
