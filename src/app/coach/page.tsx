@@ -8,6 +8,7 @@ import { SeasonImportSection } from "./season-import-section";
 import { NextGamePanel } from "./next-game-panel";
 import { LastGameCard } from "./last-game-card";
 import { LeadersBoard } from "./leaders-board";
+import { TeamHittingTableSection } from "./team-hitting-table-section";
 import { ScheduleTable } from "./schedule-table";
 import { RealtimeRefresh } from "./realtime-refresh";
 import { TeamAnalytics } from "./team-analytics";
@@ -54,8 +55,15 @@ export default async function CoachPage({ searchParams }: { searchParams: { view
         supabase.from("stolen_bases").select("*").in("game_id", gameIds),
         supabase.from("lineup").select("*").in("game_id", gameIds).eq("status", "starting"),
         // EPS batch: SB_success_rate needs caught-stealing counts, which
-        // only live in game_events, not stolen_bases.
-        supabase.from("game_events").select("event_type, player_id, game_id").in("game_id", gameIds).eq("event_type", "caught_stealing"),
+        // only live in game_events, not stolen_bases. Hitting-table batch:
+        // widened from "event_type = caught_stealing only" to every event
+        // row, carrying scorer_player_id/runs_scored too -- the Runs
+        // card/column needs those for runs that score outside any at-bat
+        // (wild pitch, passed ball, balk, a bare "Scored" tap).
+        // computeBattingLines/caughtStealingFor each filter the rows they
+        // care about out of this same set, so one broader query serves
+        // both instead of two narrower ones.
+        supabase.from("game_events").select("event_type, player_id, game_id, scorer_player_id, runs_scored").in("game_id", gameIds),
         // Update 3 (Substitutes & Reserves): resolves "subbed in for slot X".
         supabase.from("substitutions").select("game_id, player_in_id, player_out_id").in("game_id", gameIds),
       ])
@@ -224,6 +232,14 @@ export default async function CoachPage({ searchParams }: { searchParams: { view
         <LastGameCard games={allGames} />
 
         <LeadersBoard players={players ?? []} atBats={atBats ?? []} stolenBases={stolenBases ?? []} games={allGames} gameEvents={gameEvents ?? []} />
+
+        <TeamHittingTableSection
+          players={players ?? []}
+          atBats={atBats ?? []}
+          stolenBases={stolenBases ?? []}
+          games={allGames}
+          gameEvents={gameEvents ?? []}
+        />
 
         <ScheduleTable games={allGames} opponentNames={(opponents ?? []).map((o) => o.name)} />
 

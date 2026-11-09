@@ -122,6 +122,16 @@ function TriplesIcon() {
   );
 }
 
+// Runs -- a runner sliding down into home plate.
+function RunsIcon() {
+  return (
+    <IconBase>
+      <path d="M12 3v10M12 13l-4 4M12 13l4 4" />
+      <path d="M6 21h12l-2-4H8z" fill="currentColor" stroke="none" />
+    </IconBase>
+  );
+}
+
 // Stolen Bases -- a running figure.
 function RunningIcon() {
   return (
@@ -213,6 +223,7 @@ const STAT_ICONS: Record<string, () => React.ReactElement> = {
   "Batting Average": BatIcon,
   "Home Runs": HomeRunIcon,
   RBI: RbiIcon,
+  Runs: RunsIcon,
   OPS: LightningIcon,
   OBP: BaseIcon,
   SLG: ContactIcon,
