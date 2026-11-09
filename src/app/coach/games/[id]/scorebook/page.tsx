@@ -65,6 +65,7 @@ export default async function ScorebookPage({ params }: { params: { id: string }
   // slot, so their at-bats/steals/strikeouts can all be folded into the
   // one row a paper scorebook would actually use for that batting spot.
   const subInByOutId = new Map((substitutions ?? []).map((s) => [s.player_out_id, s.player_in_id]));
+  const subOutByInId = new Map((substitutions ?? []).map((s) => [s.player_in_id, s.player_out_id]));
   function playerIdChainFor(startingPlayerId: string): string[] {
     const chain: string[] = [];
     const seen = new Set<string>();
@@ -75,6 +76,41 @@ export default async function ScorebookPage({ params }: { params: { id: string }
       current = subInByOutId.get(current) ?? null;
     }
     return chain;
+  }
+  // Slot-chain root fix: the chain used to be built starting from
+  // whichever player currently holds `status = 'starting'` for this
+  // slot and walking forward -- correct only when a slot's
+  // substitutions net out to an EVEN count (e.g. Mike -> Pedro -> Mike
+  // returns the current starter to the slot's original occupant). A
+  // single (odd) substitution, like Christian -> Carlos, leaves the
+  // ORIGINAL occupant upstream of the current starter, so a
+  // forward-only walk starting there silently dropped them. Walking
+  // backward via player_in_id -> player_out_id until reaching a player
+  // who was never subbed in finds that true root first. A closed loop
+  // (the even-swap case) has no such root -- the backward walk revisits
+  // a player it already saw -- so it falls back to the current starter,
+  // which the forward walk's own seen-guard already traverses correctly
+  // all the way around in that case.
+  function rootPlayerIdFor(currentStarterId: string): string {
+    const seen = new Set<string>();
+    let current = currentStarterId;
+    while (subOutByInId.has(current) && !seen.has(current)) {
+      seen.add(current);
+      current = subOutByInId.get(current)!;
+    }
+    return seen.has(current) ? currentStarterId : current;
+  }
+  // Safety net: a player who has a confirmed at-bat recorded at this
+  // batting slot (by batting_order_position) but isn't reachable via
+  // the substitution chain -- e.g. a substitution that was never logged
+  // -- must still show on the row, so no at-bat silently disappears
+  // from the scorebook the way Christian's originally did.
+  const atBatPlayerIdsBySlot = new Map<number, Set<string>>();
+  for (const ab of hittingAtBats ?? []) {
+    if (ab.batting_order_position == null || !ab.player_id) continue;
+    const set = atBatPlayerIdsBySlot.get(ab.batting_order_position) ?? new Set<string>();
+    set.add(ab.player_id);
+    atBatPlayerIdsBySlot.set(ab.batting_order_position, set);
   }
 
   const allAtBatIds = [...(hittingAtBats ?? []), ...(pitchingAtBats ?? [])].map((ab) => ab.id);
@@ -292,7 +328,13 @@ export default async function ScorebookPage({ params }: { params: { id: string }
             </thead>
             <tbody>
               {(lineup ?? []).map((slot, i) => {
-                const chain = playerIdChainFor(slot.player_id);
+                const root = rootPlayerIdFor(slot.player_id);
+                const chain = playerIdChainFor(root);
+                if (slot.batting_order != null) {
+                  for (const pid of Array.from(atBatPlayerIdsBySlot.get(slot.batting_order) ?? [])) {
+                    if (!chain.includes(pid)) chain.push(pid);
+                  }
+                }
                 const displayName = chain
                   .map((pid) => {
                     const p = playerById.get(pid);
