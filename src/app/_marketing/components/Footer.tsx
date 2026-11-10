@@ -42,7 +42,7 @@ export function Footer() {
               only once they're set, per the request. */}
           {WHATSAPP_COMMUNITY_URL && (
             <a href={WHATSAPP_COMMUNITY_URL} target="_blank" rel="noopener noreferrer">
-              WhatsApp community
+              WhatsApp channel
             </a>
           )}
           {INSTAGRAM_URL && (

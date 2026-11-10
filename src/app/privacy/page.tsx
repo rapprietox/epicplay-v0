@@ -49,9 +49,12 @@ export default function PrivacyPolicyPage() {
           </li>
           <li>
             <strong className="text-accent-gold">Marketing contact details.</strong> Name, email,
-            role, and (if you provide it) WhatsApp number entered on our launch/lead-capture forms.
-            We use these only to reach you about EpicPlay AI, and we only add your WhatsApp number
-            to our WhatsApp community if you check the box asking us to.
+            sport (baseball, softball, or both), role, and (if you provide it) WhatsApp number
+            entered on our launch/lead-capture forms. We use these only to reach you about
+            EpicPlay AI, and we only use your WhatsApp number to message you if you check the
+            box asking us to. Our WhatsApp channel itself is a separate, public channel —
+            anyone who follows it is visible to its other followers, the same as any public
+            WhatsApp channel.
           </li>
         </ul>
       </LegalSection>

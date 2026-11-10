@@ -18,6 +18,11 @@ const PHONE_RE = /^[\d+\s]+$/;
 // (20261109100001_leads_launch_capture.sql) allows it for the same
 // reason.
 const ALLOWED_ROLES = ["coach", "operator", "player", "league_organizer", "parent"] as const;
+// Sport-choice batch: required on this form (unlike role, which stays
+// optional -- see below). Softball isn't actually supported yet (see
+// the app's own FAQ); this only records what the visitor plays, it
+// doesn't change any stats/positions/ERA/innings logic.
+const ALLOWED_SPORTS = ["baseball", "softball", "both"] as const;
 
 // Simple in-memory sliding-window rate limit, same spirit as this
 // repo's existing in-memory offline retry queue
@@ -65,6 +70,7 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
   const name = String(formData.get("name") ?? "").trim();
   const email = String(formData.get("email") ?? "").trim();
   const role = String(formData.get("role") ?? "").trim();
+  const sport = String(formData.get("sport") ?? "").trim();
   const phone = String(formData.get("phone") ?? "").trim();
   // A plain HTML checkbox only ever sends its value ("on" by default)
   // when checked -- absent from formData entirely when unchecked --
@@ -86,6 +92,10 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
   // batch also widens for 'parent' (20261109100001_leads_launch_capture.sql).
   if (role && !ALLOWED_ROLES.includes(role as (typeof ALLOWED_ROLES)[number])) {
     return { ok: false, error: "Select a role." };
+  }
+  // Required, unlike role -- both LaunchLeadForm variants ask for it.
+  if (!ALLOWED_SPORTS.includes(sport as (typeof ALLOWED_SPORTS)[number])) {
+    return { ok: false, error: "Select baseball, softball, or both." };
   }
   if (phone && !PHONE_RE.test(phone)) {
     return { ok: false, error: "Enter a valid phone number (digits, +, and spaces only)." };
@@ -109,6 +119,7 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
       name,
       email,
       role: role ? (role as (typeof ALLOWED_ROLES)[number]) : null,
+      sport: sport as (typeof ALLOWED_SPORTS)[number],
       team_size: teamSize,
       message: message || null,
       phone: phone || null,

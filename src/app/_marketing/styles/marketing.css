@@ -1571,6 +1571,19 @@
 .lead-success { text-align: center; color: #2ecc71; font-size: 1.1rem; margin: 0; padding: 20px 0; }
 .lead-submit { align-self: center; margin-top: 4px; }
 
+/* Sport-choice/WhatsApp-channel batch: the success state is now a
+   small stack (confirmation + optional softball note + optional
+   channel button), not a single <p> -- this wrapper just gives them a
+   consistent gap; .lead-success itself keeps its own padding/color
+   unchanged. */
+.lead-success-block { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.lead-success-block-compact { gap: 8px; }
+.lead-success-note { text-align: center; color: #9fc4ac; font-size: 0.85rem; margin: 0; max-width: 420px; }
+.lead-whatsapp-channel-btn { font-size: 0.95rem; padding: 10px 28px; }
+/* A small helper line under a field, distinct from .lead-error (which
+   is a validation failure, not a neutral note like this one). */
+.lead-hint { font-size: 0.72rem; color: #5e8268; margin-top: -2px; }
+
 /* Launch-capture batch: the WhatsApp-community opt-in checkbox, and
    the compact variant used inside the hero (smaller text/gaps so the
    same form fits comfortably under the rotating headline). */

@@ -187,6 +187,10 @@ export interface Database {
           // Manual spray-chart dot positioning batch: team-scoped, not
           // per-game -- see the migration's own comment for why.
           spray_chart_locked: boolean;
+          // Sport-choice batch: chosen at self-serve onboarding, not
+          // null -- defaults to 'baseball' for every team including
+          // ones created before this column existed.
+          sport: "baseball" | "softball" | "both";
         };
         Insert: {
           id?: string;
@@ -194,6 +198,7 @@ export interface Database {
           created_by?: string | null;
           created_at?: string;
           spray_chart_locked?: boolean;
+          sport?: "baseball" | "softball" | "both";
         };
         Update: Partial<Database["public"]["Tables"]["teams"]["Insert"]>;
         Relationships: [];
@@ -210,6 +215,10 @@ export interface Database {
           source: string;
           phone: string | null;
           whatsapp_optin: boolean;
+          // Sport-choice batch: nullable -- null for every lead
+          // captured before this column existed, and for any caller
+          // that never asks for one.
+          sport: "baseball" | "softball" | "both" | null;
         };
         Insert: {
           id?: string;
@@ -222,6 +231,7 @@ export interface Database {
           source?: string;
           phone?: string | null;
           whatsapp_optin?: boolean;
+          sport?: "baseball" | "softball" | "both" | null;
         };
         Update: Partial<Database["public"]["Tables"]["leads"]["Insert"]>;
         Relationships: [];

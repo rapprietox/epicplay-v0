@@ -19,10 +19,15 @@ export const GOVERNING_LAW = "[TODO: governing law jurisdiction not yet determin
 // `WHATSAPP_URL` truthiness and hide the button entirely until it's real.
 export const WHATSAPP_URL = "";
 
-// Launch-capture batch: a WhatsApp *community* invite link (distinct
-// from WHATSAPP_URL above, which is a direct 1:1 contact link) and an
-// Instagram profile link -- both TODO, both empty strings for the same
-// reason as WHATSAPP_URL above, so callers can check truthiness and
-// hide the button entirely until a real URL is set.
-export const WHATSAPP_COMMUNITY_URL = "";
+// Launch-capture batch: a WhatsApp link (distinct from WHATSAPP_URL
+// above, which is a direct 1:1 contact link). Sport-choice/WhatsApp-
+// channel batch: this is a public WhatsApp *channel* (broadcast-only,
+// can't add people to it the way a group invite link would) -- real
+// as of that batch, not a TODO placeholder anymore. Every caller
+// (LaunchBanner's WhatsApp slot, Footer, LaunchLeadForm's post-submit
+// button) already gates on this constant's truthiness, so setting it
+// here is what turns all three on at once, with no other code change
+// needed for them. INSTAGRAM_URL stays an empty TODO -- no real
+// profile link exists yet.
+export const WHATSAPP_COMMUNITY_URL = "https://whatsapp.com/channel/0029Vb9TseuADTOHFcYEyX3S";
 export const INSTAGRAM_URL = "";
