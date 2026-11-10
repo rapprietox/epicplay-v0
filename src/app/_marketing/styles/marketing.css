@@ -5,6 +5,23 @@
    prior artifact builds). Plain CSS, not Tailwind -- imported once from
    MarketingPage.tsx, which Next's App Router scopes to this route. */
 
+/* Banner-redesign batch: self-hosted pixel font for the launch
+   banner's main line (an NES-style look needs a real pixel font, not a
+   system monospace). "Press Start 2P" by CodeMan38, SIL Open Font
+   License 1.1 (see public/fonts/press-start-2p-OFL.txt) -- the exact
+   file Google Fonts serves, downloaded once and committed here instead
+   of loaded from fonts.googleapis.com, so the build never depends on
+   a Google Fonts network call. font-display: swap per the request,
+   so this one small file (~12KB) never blocks the banner's text from
+   rendering while it loads. */
+@font-face {
+  font-family: "Press Start 2P";
+  src: url("/fonts/press-start-2p-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 .hero-section {
   position: relative;
   width: 100%;
@@ -1626,100 +1643,109 @@
 }
 
 /* ============================================================
-   LAUNCH BANNER -- slim, dismissible, baseball-stitched top strip.
-   Fixed above the fixed Nav (z-index above .marketing-nav's 1000);
-   body.has-launch-banner shifts Nav down by this banner's own height
-   while it's visible (see LaunchBanner.tsx's own comment on why a
-   body class is simplest here).
-   ============================================================ */
-/* Bug fix (video-visibility batch): the two stitch SVGs used to be
-   flex children in the same row as the link/dismiss button, each with
-   width="100%" -- as replaced elements they refused to shrink, which
-   squeezed the link text down to ~58px and wrapped it across 7 lines,
-   ballooning this banner to ~186px/164px tall. Restructured so the
-   stitches are absolutely positioned top/bottom edges (out of flow
-   entirely, can't affect the row's height) and the row itself is a
-   fixed, genuinely thin height -- "a thin stitched edge," not a
-   quarter of the viewport. */
+   LAUNCH BANNER -- banner-redesign batch. Gold ground, dark text, a
+   pixel-art baseball frame (top/bottom), a pixel font on the main
+   line. Fixed above the fixed Nav (z-index above .marketing-nav's
+   1000); body.has-launch-banner shifts Nav down by this banner's own
+   height while it's visible (see LaunchBanner.tsx's own comment).
+
+   The pixel-art baseball frame is a background-image, not a DOM
+   element -- the previous (green/stadium-light) version's "inline
+   <svg> as a flex child" approach is exactly what caused that design's
+   blowout bug (a replaced element with width="100%" refusing to
+   shrink in a flex row). A background-image can't be a flex item at
+   all, so that whole bug class is now structurally impossible here,
+   not just avoided by convention. It's rendered at its own native
+   pixel size (background-size matches the SVG's viewBox 1:1) and
+   tiled with background-repeat: repeat-x, which is the standard,
+   distortion-free way to tile a small fixed-size sprite across an
+   arbitrary width -- an inline <svg> stretched via width:100% with a
+   fixed CSS height, by contrast, necessarily distorts a non-matching
+   aspect ratio (confirmed by hand before choosing this approach).
+   8x8-pixel ball, white body + 4 red "stitch" pixels, centered in a
+   24x8 tile (8px of ball, 16px of gold gap) -- still literally inline
+   SVG, just embedded as a data: URI instead of a DOM node. */
 .launch-banner {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 1100;
-  overflow: hidden;
-  background: linear-gradient(90deg, #1a6b3c, #2ecc71);
+  background-color: #F0C060;
 }
-.launch-banner-stitch {
+.launch-banner-frame {
   display: block;
-  position: absolute;
-  left: 0;
-  right: 0;
   height: 6px;
+  background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCA4IiBzaGFwZS1yZW5kZXJpbmc9ImNyaXNwRWRnZXMiPjxnIGZpbGw9IiNGRkZGRkYiPjxyZWN0IHg9IjEwIiB5PSIwIiB3aWR0aD0iNCIgaGVpZ2h0PSIxIi8+PHJlY3QgeD0iOSIgeT0iMSIgd2lkdGg9IjYiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjgiIHk9IjIiIHdpZHRoPSI4IiBoZWlnaHQ9IjEiLz48cmVjdCB4PSI4IiB5PSIzIiB3aWR0aD0iMiIgaGVpZ2h0PSIxIi8+PHJlY3QgeD0iMTEiIHk9IjMiIHdpZHRoPSIyIiBoZWlnaHQ9IjEiLz48cmVjdCB4PSIxNCIgeT0iMyIgd2lkdGg9IjIiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjgiIHk9IjQiIHdpZHRoPSIyIiBoZWlnaHQ9IjEiLz48cmVjdCB4PSIxMSIgeT0iNCIgd2lkdGg9IjIiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjE0IiB5PSI0IiB3aWR0aD0iMiIgaGVpZ2h0PSIxIi8+PHJlY3QgeD0iOCIgeT0iNSIgd2lkdGg9IjgiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjkiIHk9IjYiIHdpZHRoPSI2IiBoZWlnaHQ9IjEiLz48cmVjdCB4PSIxMCIgeT0iNyIgd2lkdGg9IjQiIGhlaWdodD0iMSIvPjwvZz48ZyBmaWxsPSIjRTI0QjRBIj48cmVjdCB4PSIxMCIgeT0iMyIgd2lkdGg9IjEiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjEzIiB5PSIzIiB3aWR0aD0iMSIgaGVpZ2h0PSIxIi8+PHJlY3QgeD0iMTAiIHk9IjQiIHdpZHRoPSIxIiBoZWlnaHQ9IjEiLz48cmVjdCB4PSIxMyIgeT0iNCIgd2lkdGg9IjEiIGhlaWdodD0iMSIvPjwvZz48L3N2Zz4=");
+  background-repeat: repeat-x;
+  background-position: left center;
+  background-size: 18px 6px;
+  /* Shimmer: a slow brightness pulse on the pixel pattern itself --
+     "subtle," no sweep/marquee (not needed, per the request). The
+     global prefers-reduced-motion rule at the bottom of this file
+     already collapses animation-duration to near-zero for a
+     reduced-motion visitor, same as every other animation on this
+     page -- no separate guard needed here. */
+  animation: launchBannerShimmer 6s ease-in-out infinite;
 }
-.launch-banner-stitch-top { top: 0; }
-.launch-banner-stitch-bottom { bottom: 0; transform: scaleY(-1); }
+@keyframes launchBannerShimmer {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.35); }
+}
 .launch-banner-row {
   position: relative;
   z-index: 1;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
-  padding: 7px 40px;
-  font-family: "DM Sans", sans-serif;
-  font-size: 0.85rem;
-  font-weight: 600;
+  column-gap: 20px;
+  row-gap: 2px;
+  padding: 5px 40px;
   text-align: center;
 }
-.launch-banner-link { color: #030a06; text-decoration: underline; }
-.launch-banner-link strong { font-weight: 800; }
+.launch-banner-main {
+  color: #030A06;
+  text-decoration: none;
+  font-family: "Press Start 2P", "DM Sans", monospace;
+  font-size: 9px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+.launch-banner-main:hover { text-decoration: underline; }
+.launch-banner-whatsapp {
+  flex-shrink: 0;
+  color: #030A06;
+  text-decoration: underline;
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
 .launch-banner-dismiss {
   position: absolute;
   z-index: 2;
-  right: 12px;
+  right: 10px;
   top: 50%;
   transform: translateY(-50%);
   background: none;
   border: none;
-  color: #030a06;
-  font-size: 1.1rem;
+  color: #030A06;
+  font-size: 1rem;
   line-height: 1;
   padding: 4px 6px;
   cursor: pointer;
-}
-/* Stadium lights: two soft, blurred cones that sweep across the banner
-   and flicker, CSS-only -- kept subtle (lower opacity, narrower than
-   the first pass) and clipped to the banner's own box (overflow:
-   hidden on .launch-banner above), so they read as a faint light wash
-   on the green gradient and can never reach the hero below it. */
-.launch-banner-light {
-  position: absolute;
-  top: -120%;
-  width: 54px;
-  height: 340%;
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0));
-  filter: blur(6px);
-  mix-blend-mode: screen;
-  pointer-events: none;
-  transform: rotate(16deg);
-}
-.launch-banner-light-a { animation: launchBannerSweep 10s ease-in-out infinite, launchBannerFlicker 3.4s ease-in-out infinite; }
-.launch-banner-light-b { animation: launchBannerSweep 10s ease-in-out infinite 5s, launchBannerFlicker 4.1s ease-in-out infinite 1.3s; }
-@keyframes launchBannerSweep {
-  0%, 100% { left: -12%; }
-  50% { left: 104%; }
-}
-@keyframes launchBannerFlicker {
-  0%, 100% { opacity: 0.3; }
-  40% { opacity: 0.1; }
-  55% { opacity: 0.4; }
-  75% { opacity: 0.16; }
+  font-weight: 700;
 }
 body.has-launch-banner .marketing-nav { top: 40px; }
 @media (max-width: 640px) {
-  .launch-banner-row { font-size: 0.76rem; padding: 7px 36px; min-height: 40px; }
-  body.has-launch-banner .marketing-nav { top: 40px; }
+  .launch-banner-row { padding: 4px 30px; column-gap: 0; row-gap: 1px; }
+  .launch-banner-main { font-size: 7px; line-height: 1.3; flex-basis: 100%; }
+  .launch-banner-whatsapp { font-size: 0.64rem; flex-basis: 100%; }
+  body.has-launch-banner .marketing-nav { top: 46px; }
 }
 
 /* ============================================================

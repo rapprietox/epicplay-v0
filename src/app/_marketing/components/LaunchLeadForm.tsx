@@ -117,7 +117,10 @@ export function LaunchLeadForm({ variant, formId }: { variant: "compact" | "sect
             </label>
           </div>
 
-          <label className="lead-checkbox">
+          {/* id targeted by the banner-redesign batch's WhatsApp slot:
+              when WHATSAPP_COMMUNITY_URL is empty, LaunchBanner scrolls
+              straight to this checkbox instead of linking out. */}
+          <label className="lead-checkbox" id="whatsapp-optin-field">
             <input type="checkbox" name="whatsappOptin" />
             <span>Add me to the EpicPlay WhatsApp community.</span>
           </label>
