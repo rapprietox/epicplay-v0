@@ -1671,7 +1671,71 @@
   left: 0;
   right: 0;
   z-index: 1100;
-  background-color: #F0C060;
+  /* Glossy-restyle batch: polished-metal gold, replacing the flat
+     #F0C060 fill. Purely a background/box-shadow change -- nothing
+     here touches height, padding, or any child's layout. No
+     overflow:hidden on this element on purpose: box-shadow is clipped
+     by an element's own overflow in every major engine, and the outer
+     glow below needs to actually extend past this box's bottom edge,
+     not be cut off at it. The moving-sheen pseudo-element below is
+     sized to stay within the box's own height instead, so it never
+     needed that clipping anyway. */
+  background: linear-gradient(180deg, #FFE9A0 0%, #F0C060 38%, #C9962E 58%, #F6D77E 100%);
+  box-shadow:
+    inset 0 -5px 9px -5px rgba(3, 10, 6, 0.4),
+    0 5px 14px -3px rgba(201, 150, 46, 0.45);
+}
+/* Thin glass-strip highlight, sitting just under the pixel-ball frame
+   (the frame's own white pixels would swallow it if placed at the
+   very top edge). Absolutely positioned -- adds no height, no layout
+   shift for any sibling. */
+.launch-banner::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.4);
+  pointer-events: none;
+  z-index: 1;
+}
+/* Moving shine: a narrow diagonal sheen, via @keyframes + transform
+   (never `left`, per the request -- translateX is composited on the
+   GPU and doesn't trigger layout the way animating `left` would).
+   pointer-events: none so it can never capture a click, and it's
+   visually above .launch-banner-dismiss (z-index 3 > 2) specifically
+   so the sweep is also seen passing over the dismiss button, exactly
+   like a real glossy surface's reflection would -- pointer-events:
+   none is what still keeps that button clickable underneath it. */
+.launch-banner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(75deg, rgba(255, 255, 255, 0) 38%, rgba(255, 255, 255, 0.55) 50%, rgba(255, 255, 255, 0) 62%);
+  transform: translateX(-140%);
+  animation: launchBannerSheen 7s ease-in-out infinite;
+}
+@keyframes launchBannerSheen {
+  0% { transform: translateX(-140%); }
+  55% { transform: translateX(140%); }
+  100% { transform: translateX(140%); }
+}
+/* "Under prefers-reduced-motion, turn it off and show a still
+   highlight" -- the file's existing global reduced-motion rule
+   (bottom of this file) only collapses animation-duration, which
+   would leave this parked at its 0% keyframe (translateX(-140%),
+   fully off-screen and therefore invisible) rather than showing
+   anything. This explicit override is what actually satisfies "show a
+   still highlight": animation off, parked at a visible, centered
+   position instead. */
+@media (prefers-reduced-motion: reduce) {
+  .launch-banner::after {
+    animation: none;
+    transform: translateX(0);
+  }
 }
 .launch-banner-frame {
   display: block;
@@ -1680,17 +1744,15 @@
   background-repeat: repeat-x;
   background-position: left center;
   background-size: 18px 6px;
-  /* Shimmer: a slow brightness pulse on the pixel pattern itself --
-     "subtle," no sweep/marquee (not needed, per the request). The
-     global prefers-reduced-motion rule at the bottom of this file
-     already collapses animation-duration to near-zero for a
-     reduced-motion visitor, same as every other animation on this
-     page -- no separate guard needed here. */
-  animation: launchBannerShimmer 6s ease-in-out infinite;
-}
-@keyframes launchBannerShimmer {
-  0%, 100% { filter: brightness(1); }
-  50% { filter: brightness(1.35); }
+  /* Glossy-restyle batch: the old per-frame brightness-pulse animation
+     is gone -- the new moving shine on .launch-banner::after (above)
+     is now the one "moving" effect on this banner, and the balls get
+     a static soft glow instead, per "give them a soft glow" (a steady
+     treatment, not an animated one, unlike the sweep). drop-shadow
+     (not box-shadow) is what actually glows around the PNG-like
+     opaque pixels themselves rather than the element's own rectangular
+     box -- box-shadow would just outline the whole 18x6 tile. */
+  filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.85)) drop-shadow(0 0 3px rgba(255, 233, 160, 0.5));
 }
 .launch-banner-row {
   position: relative;
@@ -1711,6 +1773,10 @@
   font-size: 9px;
   line-height: 1.4;
   letter-spacing: 0.02em;
+  /* Glossy-restyle batch: same dark color, same everything else --
+     just a tiny light shadow so the text reads as embossed/pressed
+     into the gold surface rather than flat. */
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 .launch-banner-main:hover { text-decoration: underline; }
 .launch-banner-whatsapp {
@@ -1724,6 +1790,7 @@
   border: none;
   cursor: pointer;
   padding: 0;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 .launch-banner-dismiss {
   position: absolute;
@@ -1739,6 +1806,7 @@
   padding: 4px 6px;
   cursor: pointer;
   font-weight: 700;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 body.has-launch-banner .marketing-nav { top: 40px; }
 @media (max-width: 640px) {
