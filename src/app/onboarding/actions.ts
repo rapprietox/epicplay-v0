@@ -5,6 +5,13 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
 export type OnboardResult = { ok: true } | { ok: false; error: string };
 
+// Sport-choice batch: same allowed values as the launch-page lead
+// form (src/app/_marketing/actions.ts). Softball isn't supported yet
+// (see the app's own FAQ) -- this only records the team's choice; it
+// doesn't change any stats/positions/ERA/innings logic, which still
+// assumes baseball rules regardless of what's stored here.
+const ALLOWED_SPORTS = ["baseball", "softball", "both"] as const;
+
 // Launch-audit Fix 1: replaces the manual-SQL-only team/coach bootstrap
 // (see supabase/README.md's old "create a team and onboard yourself"
 // section) with a self-serve path. Returns a result object rather than
@@ -42,14 +49,18 @@ export async function createTeamAndOnboardCoach(formData: FormData): Promise<Onb
 
   const teamName = String(formData.get("teamName") ?? "").trim();
   const yourName = String(formData.get("yourName") ?? "").trim();
+  const sport = String(formData.get("sport") ?? "").trim();
   const jerseyRaw = String(formData.get("jerseyNumber") ?? "").trim();
   if (!teamName) return { ok: false, error: "Team name is required" };
   if (!yourName) return { ok: false, error: "Your name is required" };
+  if (!ALLOWED_SPORTS.includes(sport as (typeof ALLOWED_SPORTS)[number])) {
+    return { ok: false, error: "Select baseball, softball, or both." };
+  }
 
   const adminSupabase = createServiceRoleClient();
   const { data: team, error: teamError } = await adminSupabase
     .from("teams")
-    .insert({ name: teamName, created_by: user.id })
+    .insert({ name: teamName, created_by: user.id, sport: sport as (typeof ALLOWED_SPORTS)[number] })
     .select("id")
     .single();
   if (teamError || !team) return { ok: false, error: teamError?.message ?? "Failed to create team -- try again?" };

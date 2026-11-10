@@ -71,11 +71,11 @@ export function LaunchBanner() {
 
         {WHATSAPP_COMMUNITY_URL ? (
           <a href={WHATSAPP_COMMUNITY_URL} target="_blank" rel="noopener noreferrer" className="launch-banner-whatsapp">
-            Join the WhatsApp community, learn more
+            Join the WhatsApp channel, learn more
           </a>
         ) : (
           <a href="#whatsapp-optin-field" onClick={scrollToWhatsappCheckbox} className="launch-banner-whatsapp">
-            Join the WhatsApp community, learn more
+            Join the WhatsApp channel, learn more
           </a>
         )}
       </div>
