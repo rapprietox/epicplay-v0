@@ -5,6 +5,23 @@
    prior artifact builds). Plain CSS, not Tailwind -- imported once from
    MarketingPage.tsx, which Next's App Router scopes to this route. */
 
+/* Banner-redesign batch: self-hosted pixel font for the launch
+   banner's main line (an NES-style look needs a real pixel font, not a
+   system monospace). "Press Start 2P" by CodeMan38, SIL Open Font
+   License 1.1 (see public/fonts/press-start-2p-OFL.txt) -- the exact
+   file Google Fonts serves, downloaded once and committed here instead
+   of loaded from fonts.googleapis.com, so the build never depends on
+   a Google Fonts network call. font-display: swap per the request,
+   so this one small file (~12KB) never blocks the banner's text from
+   rendering while it loads. */
+@font-face {
+  font-family: "Press Start 2P";
+  src: url("/fonts/press-start-2p-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 .hero-section {
   position: relative;
   width: 100%;
@@ -54,6 +71,14 @@
   text-align: center;
   padding: 0 24px;
   opacity: 0; /* GSAP reveals this */
+  /* Video-visibility fix: a hard ceiling so this can never render wider
+     than its own available width, whatever a child's own max-width
+     math works out to -- the actual bug (a wide, non-shrinking lead
+     form forcing this wider than a narrow phone's viewport) is fixed at
+     its source in .hero-text-block/.hero-lead-form below, but this is
+     the backstop that makes that class of bug impossible here again. */
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .hero-wordmark {
@@ -88,14 +113,55 @@
   letter-spacing: -0.01em;
 }
 
-.hero-tagline {
-  font-family: "DM Sans", sans-serif;
-  font-size: clamp(16px, 2.5vw, 22px);
-  color: #9fc4ac;
-  max-width: 560px;
-  margin: 0 auto 40px;
-  line-height: 1.5;
+/* Video-visibility fix: a clean, contained "readable block" for the
+   headline + form, sitting over the video with its own translucent
+   dark backing (the page-wide overlay was lightened to compensate --
+   see Hero.tsx). `width: min(100%, 460px)` is the key fix for the
+   mobile overflow bug this replaces: a plain `max-width` with no width
+   has no floor, so a wide fixed-width child (the old 480px-capped lead
+   form) could force this whole block -- and .hero-content around it --
+   wider than the viewport on a narrow phone. `min(100%, ...)` means it
+   can never exceed 100% of its own available width, full stop. */
+.hero-text-block {
+  width: min(100%, 460px);
+  margin: 0 auto;
+  background: rgba(3, 10, 6, 0.5);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(46, 204, 113, 0.18);
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-sizing: border-box;
 }
+
+/* Launch-capture batch: the rotating headline. A fixed-height relative
+   box with every headline absolutely positioned inside it (inset: 0,
+   centered) and crossfaded via opacity -- a fixed height is what keeps
+   the form below it from jumping as the 3 headlines wrap to different
+   numbers of lines. The global prefers-reduced-motion rule at the
+   bottom of this file already makes the opacity transition instant for
+   a reduced-motion visitor, on top of Hero.tsx also never starting the
+   rotation timer for them. */
+.hero-tagline-rotator {
+  position: relative;
+  width: 100%;
+  min-height: 92px;
+  margin: 0 auto 20px;
+}
+.hero-tagline {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  font-family: "DM Sans", sans-serif;
+  font-size: clamp(15px, 2.2vw, 19px);
+  color: #c8ead6;
+  line-height: 1.5;
+  margin: 0;
+  text-align: center;
+}
+.hero-tagline.is-active { opacity: 1; }
+
+.hero-lead-form { width: 100%; text-align: left; }
 
 .hero-buttons {
   display: flex;
@@ -803,18 +869,37 @@
   display: none;
 }
 .sticky-mobile-cta.visible { transform: translateY(0); }
+/* Launch-capture batch: was a single full-width <a> button; now a
+   one-line email-capture form (input + submit), same bar height. */
+.sticky-mobile-cta-form { display: flex; gap: 8px; }
+.sticky-mobile-cta-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 14px;
+  height: 44px;
+  background: #050e07;
+  border: 1px solid #1a3d28;
+  border-radius: 50px;
+  color: #eaf7ee;
+  font-family: "DM Sans", sans-serif;
+  font-size: 15px;
+}
+.sticky-mobile-cta-input:focus { outline: none; border-color: #2ecc71; }
 .sticky-mobile-cta-btn {
   display: block;
-  width: 100%;
+  flex-shrink: 0;
   text-align: center;
-  padding: 13px 0;
+  padding: 0 22px;
+  height: 44px;
   background: #f0c060;
   color: #030a06;
   font-family: "Barlow Condensed", sans-serif;
   font-weight: 900;
   font-size: 16px;
+  border: none;
   border-radius: 50px;
   text-decoration: none;
+  cursor: pointer;
 }
 @media (max-width: 640px) {
   .sticky-mobile-cta { display: block; }
@@ -1485,6 +1570,27 @@
 .lead-error { color: #e24b4a; font-size: 0.85rem; margin: 0; }
 .lead-success { text-align: center; color: #2ecc71; font-size: 1.1rem; margin: 0; padding: 20px 0; }
 .lead-submit { align-self: center; margin-top: 4px; }
+
+/* Launch-capture batch: the WhatsApp-community opt-in checkbox, and
+   the compact variant used inside the hero (smaller text/gaps so the
+   same form fits comfortably under the rotating headline). */
+.lead-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #9fc4ac;
+  cursor: pointer;
+}
+.lead-checkbox input[type="checkbox"] { margin-top: 2px; accent-color: #2ecc71; width: 15px; height: 15px; flex-shrink: 0; }
+.lead-form-compact { gap: 12px; }
+.lead-form-compact .lead-row { gap: 10px; }
+.lead-form-compact .lead-input { padding: 9px 11px; font-size: 0.88rem; }
+.lead-form-compact .lead-submit { padding: 12px 36px; font-size: 16px; }
+.lead-success-compact { font-size: 0.95rem; padding: 10px 0; }
+@media (max-width: 640px) {
+  .lead-form-compact .lead-row { grid-template-columns: 1fr; }
+}
 .lead-whatsapp {
   display: block;
   text-align: center;
@@ -1534,6 +1640,180 @@
 }
 @media (max-width: 480px) {
   .marketing-footer { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   LAUNCH BANNER -- banner-redesign batch. Gold ground, dark text, a
+   pixel-art baseball frame (top/bottom), a pixel font on the main
+   line. Fixed above the fixed Nav (z-index above .marketing-nav's
+   1000); body.has-launch-banner shifts Nav down by this banner's own
+   height while it's visible (see LaunchBanner.tsx's own comment).
+
+   The pixel-art baseball frame is a background-image, not a DOM
+   element -- the previous (green/stadium-light) version's "inline
+   <svg> as a flex child" approach is exactly what caused that design's
+   blowout bug (a replaced element with width="100%" refusing to
+   shrink in a flex row). A background-image can't be a flex item at
+   all, so that whole bug class is now structurally impossible here,
+   not just avoided by convention. It's rendered at its own native
+   pixel size (background-size matches the SVG's viewBox 1:1) and
+   tiled with background-repeat: repeat-x, which is the standard,
+   distortion-free way to tile a small fixed-size sprite across an
+   arbitrary width -- an inline <svg> stretched via width:100% with a
+   fixed CSS height, by contrast, necessarily distorts a non-matching
+   aspect ratio (confirmed by hand before choosing this approach).
+   8x8-pixel ball, white body + 4 red "stitch" pixels, centered in a
+   24x8 tile (8px of ball, 16px of gold gap) -- still literally inline
+   SVG, just embedded as a data: URI instead of a DOM node. */
+.launch-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  /* Glossy-restyle batch: polished-metal gold, replacing the flat
+     #F0C060 fill. Purely a background/box-shadow change -- nothing
+     here touches height, padding, or any child's layout. No
+     overflow:hidden on this element on purpose: box-shadow is clipped
+     by an element's own overflow in every major engine, and the outer
+     glow below needs to actually extend past this box's bottom edge,
+     not be cut off at it. The moving-sheen pseudo-element below is
+     sized to stay within the box's own height instead, so it never
+     needed that clipping anyway. */
+  background: linear-gradient(180deg, #FFE9A0 0%, #F0C060 38%, #C9962E 58%, #F6D77E 100%);
+  box-shadow:
+    inset 0 -5px 9px -5px rgba(3, 10, 6, 0.4),
+    0 5px 14px -3px rgba(201, 150, 46, 0.45);
+}
+/* Thin glass-strip highlight, sitting just under the pixel-ball frame
+   (the frame's own white pixels would swallow it if placed at the
+   very top edge). Absolutely positioned -- adds no height, no layout
+   shift for any sibling. */
+.launch-banner::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.4);
+  pointer-events: none;
+  z-index: 1;
+}
+/* Moving shine: a narrow diagonal sheen, via @keyframes + transform
+   (never `left`, per the request -- translateX is composited on the
+   GPU and doesn't trigger layout the way animating `left` would).
+   pointer-events: none so it can never capture a click, and it's
+   visually above .launch-banner-dismiss (z-index 3 > 2) specifically
+   so the sweep is also seen passing over the dismiss button, exactly
+   like a real glossy surface's reflection would -- pointer-events:
+   none is what still keeps that button clickable underneath it. */
+.launch-banner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(75deg, rgba(255, 255, 255, 0) 38%, rgba(255, 255, 255, 0.55) 50%, rgba(255, 255, 255, 0) 62%);
+  transform: translateX(-140%);
+  animation: launchBannerSheen 7s ease-in-out infinite;
+}
+@keyframes launchBannerSheen {
+  0% { transform: translateX(-140%); }
+  55% { transform: translateX(140%); }
+  100% { transform: translateX(140%); }
+}
+/* "Under prefers-reduced-motion, turn it off and show a still
+   highlight" -- the file's existing global reduced-motion rule
+   (bottom of this file) only collapses animation-duration, which
+   would leave this parked at its 0% keyframe (translateX(-140%),
+   fully off-screen and therefore invisible) rather than showing
+   anything. This explicit override is what actually satisfies "show a
+   still highlight": animation off, parked at a visible, centered
+   position instead. */
+@media (prefers-reduced-motion: reduce) {
+  .launch-banner::after {
+    animation: none;
+    transform: translateX(0);
+  }
+}
+.launch-banner-frame {
+  display: block;
+  height: 6px;
+  background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCA4IiBzaGFwZS1yZW5kZXJpbmc9ImNyaXNwRWRnZXMiPjxnIGZpbGw9IiNGRkZGRkYiPjxyZWN0IHg9IjEwIiB5PSIwIiB3aWR0aD0iNCIgaGVpZ2h0PSIxIi8+PHJlY3QgeD0iOSIgeT0iMSIgd2lkdGg9IjYiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjgiIHk9IjIiIHdpZHRoPSI4IiBoZWlnaHQ9IjEiLz48cmVjdCB4PSI4IiB5PSIzIiB3aWR0aD0iMiIgaGVpZ2h0PSIxIi8+PHJlY3QgeD0iMTEiIHk9IjMiIHdpZHRoPSIyIiBoZWlnaHQ9IjEiLz48cmVjdCB4PSIxNCIgeT0iMyIgd2lkdGg9IjIiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjgiIHk9IjQiIHdpZHRoPSIyIiBoZWlnaHQ9IjEiLz48cmVjdCB4PSIxMSIgeT0iNCIgd2lkdGg9IjIiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjE0IiB5PSI0IiB3aWR0aD0iMiIgaGVpZ2h0PSIxIi8+PHJlY3QgeD0iOCIgeT0iNSIgd2lkdGg9IjgiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjkiIHk9IjYiIHdpZHRoPSI2IiBoZWlnaHQ9IjEiLz48cmVjdCB4PSIxMCIgeT0iNyIgd2lkdGg9IjQiIGhlaWdodD0iMSIvPjwvZz48ZyBmaWxsPSIjRTI0QjRBIj48cmVjdCB4PSIxMCIgeT0iMyIgd2lkdGg9IjEiIGhlaWdodD0iMSIvPjxyZWN0IHg9IjEzIiB5PSIzIiB3aWR0aD0iMSIgaGVpZ2h0PSIxIi8+PHJlY3QgeD0iMTAiIHk9IjQiIHdpZHRoPSIxIiBoZWlnaHQ9IjEiLz48cmVjdCB4PSIxMyIgeT0iNCIgd2lkdGg9IjEiIGhlaWdodD0iMSIvPjwvZz48L3N2Zz4=");
+  background-repeat: repeat-x;
+  background-position: left center;
+  background-size: 18px 6px;
+  /* Glossy-restyle batch: the old per-frame brightness-pulse animation
+     is gone -- the new moving shine on .launch-banner::after (above)
+     is now the one "moving" effect on this banner, and the balls get
+     a static soft glow instead, per "give them a soft glow" (a steady
+     treatment, not an animated one, unlike the sweep). drop-shadow
+     (not box-shadow) is what actually glows around the PNG-like
+     opaque pixels themselves rather than the element's own rectangular
+     box -- box-shadow would just outline the whole 18x6 tile. */
+  filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.85)) drop-shadow(0 0 3px rgba(255, 233, 160, 0.5));
+}
+.launch-banner-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  column-gap: 20px;
+  row-gap: 2px;
+  padding: 5px 40px;
+  text-align: center;
+}
+.launch-banner-main {
+  color: #030A06;
+  text-decoration: none;
+  font-family: "Press Start 2P", "DM Sans", monospace;
+  font-size: 9px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  /* Glossy-restyle batch: same dark color, same everything else --
+     just a tiny light shadow so the text reads as embossed/pressed
+     into the gold surface rather than flat. */
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+.launch-banner-main:hover { text-decoration: underline; }
+.launch-banner-whatsapp {
+  flex-shrink: 0;
+  color: #030A06;
+  text-decoration: underline;
+  font-family: "DM Sans", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+.launch-banner-dismiss {
+  position: absolute;
+  z-index: 2;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #030A06;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  font-weight: 700;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+body.has-launch-banner .marketing-nav { top: 40px; }
+@media (max-width: 640px) {
+  .launch-banner-row { padding: 4px 30px; column-gap: 0; row-gap: 1px; }
+  .launch-banner-main { font-size: 7px; line-height: 1.3; flex-basis: 100%; }
+  .launch-banner-whatsapp { font-size: 0.64rem; flex-basis: 100%; }
+  body.has-launch-banner .marketing-nav { top: 46px; }
 }
 
 /* ============================================================

@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Hero } from "./components/Hero";
+import { LaunchBanner } from "./components/LaunchBanner";
 import { Nav } from "./components/Nav";
 // TEMP: pricing hidden until final pricing is decided -- uncomment
 // this import and the <Pricing /> render below to bring it back.
@@ -70,6 +71,7 @@ export function MarketingPage() {
   return (
     <div className="marketing-page" id="top">
       <CursorGlow />
+      <LaunchBanner />
       <Nav />
       <Hero />
       <StickyMobileCta />

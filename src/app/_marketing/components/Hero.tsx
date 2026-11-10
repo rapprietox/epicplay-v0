@@ -2,6 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
+import { LaunchLeadForm } from "./LaunchLeadForm";
+
+// Launch-capture batch: three headlines, cycled every 5s with a fade,
+// paused while hovered, per the request. Kept outside the component so
+// it isn't re-created every render -- the array itself never changes.
+const ROTATING_HEADLINES = [
+  "Your team's stats, finally in one place. Free until Dec 31.",
+  "Track your season. Free until Dec 31. Stats, spray charts and an AI coach for your team.",
+  "Every at-bat. Every stat. Free through December. Built by a coach.",
+];
+// "Show only #3 when prefers-reduced-motion is on" -- #3 (index 2).
+const REDUCED_MOTION_HEADLINE_INDEX = 2;
 
 // Three.js was removed entirely to isolate the hero video from the
 // field-overlay question -- turned out neither the canvas nor this
@@ -24,6 +36,9 @@ export function Hero() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [src, setSrc] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const [headlineIndex, setHeadlineIndex] = useState(0);
+  const [headlinePaused, setHeadlinePaused] = useState(false);
 
   useEffect(() => {
     gsap.fromTo(
@@ -32,6 +47,29 @@ export function Hero() {
       { opacity: 1, y: 0, duration: 1.2, ease: "power2.out", delay: 2 }
     );
   }, []);
+
+  // Rotating headline: cycle every 5s, pause on hover, and never start
+  // the timer at all under prefers-reduced-motion (the global CSS rule
+  // in marketing.css would make the fade instant either way, but the
+  // request asks for #3 specifically, not "every headline, instantly").
+  useEffect(() => {
+    const mql = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const apply = (reduced: boolean) => setReducedMotion(reduced);
+    apply(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => apply(e.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (reducedMotion || headlinePaused) return;
+    const id = setInterval(() => {
+      setHeadlineIndex((i) => (i + 1) % ROTATING_HEADLINES.length);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [reducedMotion, headlinePaused]);
+
+  const activeHeadlineIndex = reducedMotion ? REDUCED_MOTION_HEADLINE_INDEX : headlineIndex;
 
   // Pick (and keep picking, across a phone rotation or a desktop
   // window resize past the breakpoint) which file to load.
@@ -120,14 +158,20 @@ export function Hero() {
         </video>
       )}
 
-      {/* Dark overlay -- slightly stronger on mobile, where the 9:16
-          video fills the whole screen behind the wordmark/buttons and
-          needs a bit more contrast than the desktop crop does. */}
+      {/* Dark overlay -- lightened in the video-visibility fix (was
+          0.4/0.55) so the video reads clearly across the whole hero,
+          not just around its edges. The headline/form now carry their
+          own, more localized dark backing (see .hero-text-block below)
+          for text contrast, instead of leaning on one heavy page-wide
+          overlay to do both jobs at once. Still slightly stronger on
+          mobile, where the 9:16 video fills the whole screen behind
+          the wordmark/text and needs a touch more contrast than the
+          desktop crop does. */}
       <div
         style={{
           position: "absolute",
           inset: 0,
-          background: isMobile ? "rgba(3,10,6,0.55)" : "rgba(3,10,6,0.4)",
+          background: isMobile ? "rgba(3,10,6,0.32)" : "rgba(3,10,6,0.22)",
           zIndex: 1,
         }}
       />
@@ -148,14 +192,31 @@ export function Hero() {
           <span className="wordmark-epic">EPICPLAY</span>
           <span className="wordmark-ai">AI</span>
         </div>
-        <p className="hero-tagline">The Intelligence Layer Amateur Baseball Has Been Missing.</p>
-        <div className="hero-buttons">
-          <a href="/login" className="btn-primary">
-            Start Your Season →
-          </a>
-          <a href="#platform" className="btn-ghost">
-            See How It Works ↓
-          </a>
+        {/* Clean, readable block: the rotating headline and the compact
+            form now sit inside one contained card (its own translucent
+            dark background + blur), not loose over the now-lighter page
+            overlay -- "a clean, readable block... with a lighter dark
+            overlay behind the text," per the fix request. */}
+        <div className="hero-text-block">
+          <div
+            className="hero-tagline-rotator"
+            onMouseEnter={() => setHeadlinePaused(true)}
+            onMouseLeave={() => setHeadlinePaused(false)}
+          >
+            {ROTATING_HEADLINES.map((text, i) => (
+              <p
+                key={text}
+                className={`hero-tagline ${i === activeHeadlineIndex ? "is-active" : ""}`}
+                aria-hidden={i !== activeHeadlineIndex}
+              >
+                {text}
+              </p>
+            ))}
+          </div>
+
+          <div className="hero-lead-form">
+            <LaunchLeadForm variant="compact" formId="hero-lead-form" />
+          </div>
         </div>
       </div>
 

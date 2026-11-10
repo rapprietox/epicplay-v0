@@ -1,4 +1,4 @@
-import { CONTACT_EMAIL } from "@/lib/legal";
+import { CONTACT_EMAIL, WHATSAPP_COMMUNITY_URL, INSTAGRAM_URL } from "@/lib/legal";
 import { Wordmark } from "./Wordmark";
 
 export function Footer() {
@@ -37,6 +37,19 @@ export function Footer() {
         <p className="footer-col-title">Contact</p>
         <div className="footer-links">
           <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
+          {/* Launch-capture batch: both links are TODO/empty in
+              src/lib/legal.ts until a real URL exists for each -- shown
+              only once they're set, per the request. */}
+          {WHATSAPP_COMMUNITY_URL && (
+            <a href={WHATSAPP_COMMUNITY_URL} target="_blank" rel="noopener noreferrer">
+              WhatsApp community
+            </a>
+          )}
+          {INSTAGRAM_URL && (
+            <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer">
+              Instagram
+            </a>
+          )}
         </div>
       </div>
 

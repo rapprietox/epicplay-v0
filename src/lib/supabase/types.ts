@@ -204,20 +204,24 @@ export interface Database {
           created_at: string;
           name: string;
           email: string;
-          role: "coach" | "operator" | "player" | "league_organizer";
+          role: "coach" | "operator" | "player" | "league_organizer" | "parent" | null;
           team_size: number | null;
           message: string | null;
           source: string;
+          phone: string | null;
+          whatsapp_optin: boolean;
         };
         Insert: {
           id?: string;
           created_at?: string;
           name: string;
           email: string;
-          role: "coach" | "operator" | "player" | "league_organizer";
+          role?: "coach" | "operator" | "player" | "league_organizer" | "parent" | null;
           team_size?: number | null;
           message?: string | null;
           source?: string;
+          phone?: string | null;
+          whatsapp_optin?: boolean;
         };
         Update: Partial<Database["public"]["Tables"]["leads"]["Insert"]>;
         Relationships: [];
