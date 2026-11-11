@@ -940,29 +940,65 @@ export async function confirmChainSubstitution(gameId: string, input: ChainSubst
     incomingBattingOrder = decision.incomingBattingOrder;
   }
 
-  const { error: incomingError } = await supabase
-    .from("lineup")
-    .update({ position: input.entryPosition, batting_order: incomingBattingOrder, status: "starting" })
-    .eq("game_id", gameId)
-    .eq("player_id", input.incomingPlayerId);
-  if (incomingError) throw new Error(incomingError.message);
-
+  // Loud-substitutions batch: every lineup update below now chains
+  // .select("id") and checks the returned row count. Supabase/PostgREST
+  // returns no error (and, without .select(), no row count at all) for
+  // an UPDATE whose WHERE clause matches zero rows -- so a stale
+  // incoming/outgoing/moved player id (a race with another device, a
+  // bench list that drifted out of date) would otherwise "succeed"
+  // having silently touched nothing. That's exactly the kind of
+  // zero-row no-op this request asked to turn into a real, thrown error
+  // instead of a reported success.
+  //
+  // Bug found and fixed along the way, via the new replay test's
+  // success case: the outgoing player is now cleared to null BEFORE
+  // the incoming player is written, not after. The previous order
+  // (incoming first) wrote the outgoing player's own batting_order
+  // number onto the incoming row WHILE the outgoing row still held
+  // that same number -- lineup has `unique (game_id, batting_order)`
+  // (20260907120006_lineup.sql), and that constraint isn't deferrable,
+  // so Postgres rejects the duplicate the instant the incoming UPDATE
+  // commits. This isn't a theoretical risk: it's the common case for
+  // this whole feature (a bench player, batting_order already null,
+  // taking over a numbered starter's slot) -- every such substitution
+  // was hitting this and throwing, previously straight into the silent
+  // retry queue. Clearing outgoing first means the slot number is
+  // never claimed by two rows at once, so this can't recur.
   if (input.outgoingPlayerId) {
-    const { error: outgoingError } = await supabase
+    const { data: outgoingUpdated, error: outgoingError } = await supabase
       .from("lineup")
       .update({ position: null, batting_order: null, status: "reserve" })
       .eq("game_id", gameId)
-      .eq("player_id", input.outgoingPlayerId);
+      .eq("player_id", input.outgoingPlayerId)
+      .select("id");
     if (outgoingError) throw new Error(outgoingError.message);
+    if (!outgoingUpdated || outgoingUpdated.length === 0) {
+      throw new Error("Cannot complete this substitution: no lineup row found for the outgoing player.");
+    }
+  }
+
+  const { data: incomingUpdated, error: incomingError } = await supabase
+    .from("lineup")
+    .update({ position: input.entryPosition, batting_order: incomingBattingOrder, status: "starting" })
+    .eq("game_id", gameId)
+    .eq("player_id", input.incomingPlayerId)
+    .select("id");
+  if (incomingError) throw new Error(incomingError.message);
+  if (!incomingUpdated || incomingUpdated.length === 0) {
+    throw new Error("Cannot complete this substitution: no lineup row found for the incoming player.");
   }
 
   for (const move of input.positionMoves) {
-    const { error: moveError } = await supabase
+    const { data: moveUpdated, error: moveError } = await supabase
       .from("lineup")
       .update({ position: move.position })
       .eq("game_id", gameId)
-      .eq("player_id", move.playerId);
+      .eq("player_id", move.playerId)
+      .select("id");
     if (moveError) throw new Error(moveError.message);
+    if (!moveUpdated || moveUpdated.length === 0) {
+      throw new Error("Cannot complete this substitution: no lineup row found for a repositioned player.");
+    }
   }
 
   if (input.outgoingPlayerId) {
@@ -987,6 +1023,21 @@ export async function confirmChainSubstitution(gameId: string, input: ChainSubst
     opponent_player_id: null,
   });
   if (eventError) throw new Error(eventError.message);
+}
+
+// Loud-substitutions batch: called by the client right after a
+// successful confirmChainSubstitution, so the lineup strip reflects
+// exactly what the database now holds instead of the client's own
+// optimistic guess of what the write did. Deliberately a full
+// replacement of every lineup row for this game (not a diff) -- the
+// caller doesn't need to know which rows changed, and a full re-read
+// can't drift from the real state the way hand-patching individual
+// rows locally already proved it could.
+export async function getLineupForGame(gameId: string) {
+  const { supabase } = await requireOperatorGame(gameId);
+  const { data, error } = await supabase.from("lineup").select("*").eq("game_id", gameId);
+  if (error) throw new Error(error.message);
+  return data ?? [];
 }
 
 export async function endGame(gameId: string, notes: string) {
