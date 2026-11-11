@@ -125,7 +125,7 @@ export function FinalCTA() {
       <div className="cta-content">
         <Wordmark size={32} className="cta-wordmark" />
         <h2>Your War Room Is Ready.</h2>
-        <p>Join the teams already using EpicPlay AI to gain the competitive edge.</p>
+        <p>Be one of the first teams on EpicPlay AI.</p>
         <a href="/login" className="btn-primary">
           Start Your Season →
         </a>

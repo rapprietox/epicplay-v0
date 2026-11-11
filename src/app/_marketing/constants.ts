@@ -24,7 +24,7 @@ export const SAMPLE_NAMES = [
 // Strip marquee content.
 export const TRACKED_FEATURES = [
   "Pitch-by-pitch logging",
-  "Batting average heat maps",
+  "Batting average heat maps (pitch-by-pitch games)",
   "Spray charts",
   "AI lineup intelligence",
   "Opponent scouting",

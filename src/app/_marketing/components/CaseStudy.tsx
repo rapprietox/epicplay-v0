@@ -18,7 +18,7 @@ const TIMELINE = [
   {
     year: "Season 1",
     title: "First games logged",
-    text: "The first live games went through the exact same operator screen every team uses today -- pitch by pitch, at-bat by at-bat, no special treatment.",
+    text: "The first live games went through the exact same operator screen every team uses today -- logged live in Quick Mode, one tap per result, with pitch-by-pitch Full Mode available any time that level of detail is wanted.",
   },
   {
     year: "Season 1",

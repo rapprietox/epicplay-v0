@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { FAQ_PRICING_ANSWER } from "@/lib/pricing";
 
 // Every answer here was checked against the actual codebase before
 // being written -- see the session notes for exactly what was verified
@@ -40,7 +41,7 @@ const FAQ: { q: string; a: React.ReactNode }[] = [
   },
   {
     q: "Do players need accounts? How do they get access?",
-    a: "A player signs in with Google using an invite link their coach sends them -- there's no public sign-up. The invite links their account to the right team and roster spot automatically.",
+    a: "A player signs in with Google using an invite link their coach sends them -- there's no public sign-up. The invite links their account to the right team and roster spot automatically. It takes one tap on the invite link.",
   },
   {
     q: "Can I bring in a game I already scored on paper?",
@@ -58,15 +59,13 @@ const FAQ: { q: string; a: React.ReactNode }[] = [
   },
   {
     q: "Does it work for softball?",
-    a: "Not yet. EpicPlay AI is built for baseball today -- softball isn't supported.",
+    a: "Coming soon. Choose softball when you sign up and we'll tell you the day it's ready. Until then, stats use baseball rules, so some numbers, like ERA, won't match softball conventions.",
   },
   {
     q: "What does it cost, and what's free?",
     a: (
       <>
-        We&apos;re finalizing pricing for teams, individual players and leagues. Core coach and operator features
-        are free during our founding period. <a href="#lead-form">Join the founding list</a> and we&apos;ll tell
-        you first.
+        {FAQ_PRICING_ANSWER} <a href="#lead-form">Join the founding list</a>.
       </>
     ),
   },

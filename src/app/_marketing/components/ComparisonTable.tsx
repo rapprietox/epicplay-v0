@@ -8,7 +8,7 @@ gsap.registerPlugin(ScrollTrigger);
 
 const ROWS: { label: string; paper: boolean; sheet: boolean; epicplay: boolean }[] = [
   { label: "Live scoring", paper: false, sheet: false, epicplay: true },
-  { label: "Heat maps", paper: false, sheet: false, epicplay: true },
+  { label: "Heat maps (pitch-by-pitch games)", paper: false, sheet: false, epicplay: true },
   { label: "Spray charts", paper: false, sheet: false, epicplay: true },
   { label: "Lineup analysis", paper: false, sheet: false, epicplay: true },
   { label: "Opponent history", paper: false, sheet: false, epicplay: true },
