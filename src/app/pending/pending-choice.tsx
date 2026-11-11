@@ -33,6 +33,18 @@ export function PendingChoice() {
           dashboard. Opening that link while signed in to this same Google account links you to the team.
         </p>
       )}
+      {/* feature/solo-signup: a third path for someone with no team at
+          all yet -- a parent tracking a kid's practice at-bats, or a
+          player keeping their own stats before any real team exists.
+          Routes into the same /onboarding flow via a mode param rather
+          than a separate page, since it's the same "create a team,
+          become its coach" mechanism underneath. */}
+      <Link
+        href="/onboarding?mode=solo"
+        className="rounded-lg border border-border px-4 py-3 text-sm font-medium text-white transition hover:border-accent-primary"
+      >
+        I&apos;m tracking my own player (parent or player)
+      </Link>
     </div>
   );
 }

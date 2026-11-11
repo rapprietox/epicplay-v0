@@ -98,3 +98,96 @@ export async function createTeamAndOnboardCoach(formData: FormData): Promise<Onb
 
   return { ok: true };
 }
+
+export type SoloSignupResult =
+  | { ok: true; isMinor: boolean; playerName: string; teamLabel: string }
+  | { ok: false; error: string };
+
+// feature/solo-signup, Phase 0: the third /pending path -- a parent or
+// player with no team at all yet. Deliberately the SAME underlying
+// mechanism as createTeamAndOnboardCoach above (service-role client,
+// same "no existing team_id" precondition enforced in application code,
+// same self-serve-onboarding policies left untouched and still
+// effectively unused for the reason documented on that function) --
+// this isn't a new onboarding path at the data layer, just a different
+// form in front of it with one real behavioral difference: a minor
+// never gets profiles.player_id set (so they never see a Clubhouse
+// view -- they have no account to sign into in the first place, since
+// this whole flow never asks them to) and their players.user_id stays
+// null, since no invite was ever issued for them. An adult signing up
+// to track themselves gets both set, since they ARE the account that
+// just signed up.
+export async function createSoloPlayerAccount(formData: FormData): Promise<SoloSignupResult> {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Not signed in -- try signing in again." };
+
+  const { data: profile } = await supabase.from("profiles").select("team_id").eq("id", user.id).single();
+  if (profile?.team_id) return { ok: false, error: "You already belong to a team." };
+
+  const playerName = String(formData.get("playerName") ?? "").trim();
+  const teamLabel = String(formData.get("teamLabel") ?? "").trim();
+  const sport = String(formData.get("sport") ?? "").trim();
+  const jerseyRaw = String(formData.get("jerseyNumber") ?? "").trim();
+  const underEighteen = String(formData.get("underEighteen") ?? "") === "yes";
+  const guardianConfirmed = formData.get("guardianConfirmed") === "on";
+
+  if (!playerName) return { ok: false, error: "The player's first name is required" };
+  if (!teamLabel) return { ok: false, error: "A team label is required" };
+  if (!ALLOWED_SPORTS.includes(sport as (typeof ALLOWED_SPORTS)[number])) {
+    return { ok: false, error: "Select baseball, softball, or both." };
+  }
+  if (String(formData.get("underEighteen") ?? "") === "") {
+    return { ok: false, error: "Let us know whether the player is under 18." };
+  }
+  if (underEighteen && !guardianConfirmed) {
+    return { ok: false, error: "Please confirm you're the player's parent or legal guardian." };
+  }
+
+  const adminSupabase = createServiceRoleClient();
+  const { data: team, error: teamError } = await adminSupabase
+    .from("teams")
+    .insert({ name: teamLabel, created_by: user.id, sport: sport as (typeof ALLOWED_SPORTS)[number] })
+    .select("id")
+    .single();
+  if (teamError || !team) return { ok: false, error: teamError?.message ?? "Failed to create team -- try again?" };
+
+  const { error: profileError } = await adminSupabase
+    .from("profiles")
+    .update({ role: "coach", team_id: team.id })
+    .eq("id", user.id);
+  if (profileError) {
+    return { ok: false, error: `Team was created, but setting up your account failed: ${profileError.message} -- try reloading and signing in again.` };
+  }
+
+  const jerseyNumber = jerseyRaw ? Number(jerseyRaw) : null;
+  // A child never gets user_id set -- there's no invite link for this
+  // row and none is ever generated automatically (see roster-section.tsx:
+  // the "Link Account" button is still a deliberate, separate coach
+  // action). An adult tracking themselves IS the account that just
+  // signed up, so their own players row links back to it directly.
+  const { data: player, error: playerError } = await supabase
+    .from("players")
+    .insert({
+      team_id: team.id,
+      name: playerName,
+      jersey_number: Number.isFinite(jerseyNumber as number) ? jerseyNumber : null,
+      user_id: underEighteen ? null : user.id,
+    })
+    .select("id")
+    .single();
+  if (playerError || !player) {
+    return { ok: false, error: `Team was created, but adding the player failed: ${playerError?.message ?? "unknown error"} -- try again from the Roster page.` };
+  }
+
+  // profiles.player_id (and therefore the Clubhouse) is only ever set
+  // for an adult tracking their own at-bats -- a minor has no account
+  // of their own to attach it to, by design.
+  if (!underEighteen) {
+    await supabase.from("profiles").update({ player_id: player.id }).eq("id", user.id);
+  }
+
+  return { ok: true, isMinor: underEighteen, playerName, teamLabel };
+}
