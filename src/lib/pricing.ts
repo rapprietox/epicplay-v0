@@ -14,6 +14,14 @@ export const PRO_NEXT_PRICE_NOTE = "Founding price. It goes to $30 in January.";
 // needed. TODO: not yet decided -- update this before it's ever shown.
 export const POST_LAUNCH_PRICE_PLACEHOLDER = "[TODO: price after Dec 31, 2026 not yet decided]";
 
+// FAQ copy-fixes batch: the "What does it cost, and what's free?"
+// answer (src/app/_marketing/components/Faq.tsx), kept as its own
+// constant specifically so a real post-founding-period price can be
+// dropped into this one string later without hunting it down inside
+// the FAQ array.
+export const FAQ_PRICING_ANSWER =
+  "Free until Dec 31, 2026. After that, plans start after the founding period, and we'll tell you before anything changes. Your data stays yours.";
+
 // Banner-redesign batch: the sport wording for the launch banner's main
 // line, kept as its own constant per the request rather than hardcoded
 // inline. Checked against the actual codebase before setting this --
