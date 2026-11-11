@@ -49,18 +49,61 @@ export async function addPlayer(formData: FormData) {
   revalidatePath("/coach");
 }
 
-// Clubhouse batch: a plain coach-authenticated write (players is already
-// "coach/operator write" under RLS, no service role needed here -- the
-// service role only comes into play on the player's side of the claim,
-// where profiles/players writes are outside their own session's scope).
-// Re-clicking "Link Account" for an already-linked player just issues a
-// fresh token, invalidating any old unclaimed link -- there's no
-// separate "revoke" action.
-export async function generateInviteLink(playerId: string): Promise<string> {
+// feature/safe-invites: generating a link for a player who already has a
+// linked account used to silently invalidate that account's claim the
+// moment the coach confirmed and a second person used the new link --
+// the old account's own profiles.player_id was never cleared, so it was
+// left pointing at a player someone else now owned. This now requires an
+// explicit second call: the first call (confirmReinvite not set) returns
+// `needs_confirmation` with the currently-linked email instead of
+// issuing a token, and the caller must re-invoke with confirmReinvite:
+// true -- at which point, in the same operation that issues the new
+// token, the old account's profiles.player_id is cleared and players
+// .user_id/invite_token are reset so the roster list immediately shows
+// "Not linked" again rather than a stale "Linked" badge.
+export type GenerateInviteLinkResult =
+  | { status: "ok"; url: string; unlinkedEmail?: string }
+  | { status: "needs_confirmation"; linkedEmail: string };
+
+export async function generateInviteLink(playerId: string, confirmReinvite = false): Promise<GenerateInviteLinkResult> {
   const { supabase, teamId } = await requireCoachTeam();
 
+  const { data: player } = await supabase
+    .from("players")
+    .select("id, user_id")
+    .eq("id", playerId)
+    .eq("team_id", teamId)
+    .single();
+  if (!player) throw new Error("Player not found");
+
+  let unlinkedEmail: string | undefined;
+
+  if (player.user_id) {
+    const { data: linkedProfile } = await supabase
+      .from("profiles")
+      .select("email")
+      .eq("id", player.user_id)
+      .maybeSingle();
+
+    if (!confirmReinvite) {
+      return { status: "needs_confirmation", linkedEmail: linkedProfile?.email ?? "an existing account" };
+    }
+
+    // Coach confirmed: detach the old account in the same operation as
+    // issuing the new token (both below), so there's never a window
+    // where a profile points at a player row someone else is about to
+    // claim.
+    const { error: unlinkError } = await supabase.from("profiles").update({ player_id: null }).eq("id", player.user_id);
+    if (unlinkError) throw new Error(unlinkError.message);
+    unlinkedEmail = linkedProfile?.email ?? undefined;
+  }
+
   const token = crypto.randomUUID();
-  const { error } = await supabase.from("players").update({ invite_token: token }).eq("id", playerId).eq("team_id", teamId);
+  const { error } = await supabase
+    .from("players")
+    .update({ invite_token: token, user_id: null })
+    .eq("id", playerId)
+    .eq("team_id", teamId);
   if (error) throw new Error(error.message);
 
   revalidatePath("/coach");
@@ -72,7 +115,7 @@ export async function generateInviteLink(playerId: string): Promise<string> {
   // link from becoming literally "undefined/invite/<token>" if the var
   // is ever unset, it doesn't correct a wrong value.
   const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-  return `${baseUrl}/invite/${token}`;
+  return { status: "ok", url: `${baseUrl}/invite/${token}`, unlinkedEmail };
 }
 
 export async function extractSchedulePdf(formData: FormData): Promise<ExtractedGame[]> {

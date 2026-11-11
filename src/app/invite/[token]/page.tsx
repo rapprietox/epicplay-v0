@@ -1,14 +1,14 @@
-import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { getInvitePreview, claimInvite } from "@/lib/invites";
-import { SignOutButton } from "@/components/sign-out-button";
+import { getInvitePreview } from "@/lib/invites";
+import { ConfirmClaim } from "./confirm-claim";
 
 // Clubhouse batch: the one intentionally-public, data-bearing route in
 // this app (see src/lib/supabase/middleware.ts's PUBLIC_PATHS). An
-// anonymous visitor sees who the invite is for and a sign-in link; once
-// authenticated, this same page immediately attempts the claim and
-// redirects into the Clubhouse on success.
+// anonymous visitor sees who the invite is for and a sign-in link.
+// feature/safe-invites: once authenticated, this no longer claims
+// automatically -- it hands off to <ConfirmClaim>, which only claims
+// after an explicit "Yes, that's me" tap (see confirm-claim.tsx).
 export default async function InvitePage({ params }: { params: { token: string } }) {
   const invite = await getInvitePreview(params.token);
 
@@ -29,18 +29,15 @@ export default async function InvitePage({ params }: { params: { token: string }
   } = await supabase.auth.getUser();
 
   if (user) {
-    const result = await claimInvite({ token: params.token, userId: user.id });
-    if (result.ok) redirect("/player/clubhouse");
-
     return (
       <InviteShell>
-        <h1 className="text-xl font-semibold text-white">Couldn&apos;t link this account</h1>
-        <p className="max-w-sm text-sm text-foreground/60">
-          {result.reason === "already_linked_elsewhere"
-            ? "This Google account is already linked to a different player. Sign out and try again with the right account, or ask your coach for help."
-            : "This invite link is invalid or has already been used. Ask your coach for a new one."}
-        </p>
-        <SignOutButton />
+        <ConfirmClaim
+          token={params.token}
+          userEmail={user.email ?? "your Google account"}
+          playerName={invite.playerName}
+          jerseyNumber={invite.jerseyNumber}
+          teamName={invite.teamName}
+        />
       </InviteShell>
     );
   }

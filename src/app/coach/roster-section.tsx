@@ -190,15 +190,59 @@ export function RosterSection({ players, className }: { players: Player[]; class
 // the sm:grid-cols-2 breakpoint's narrower card width).
 function LinkAccountBadge({ player }: { player: Player }) {
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [unlinkedEmail, setUnlinkedEmail] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // feature/safe-invites: set only after generateInviteLink reports the
+  // player already has a linked account -- holds the email so the coach
+  // sees exactly who they're about to detach before a new token is issued.
+  const [reinviteConfirm, setReinviteConfirm] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  if (player.user_id) {
+  function generate(confirmReinvite: boolean) {
+    startTransition(async () => {
+      setError(null);
+      try {
+        const result = await generateInviteLink(player.id, confirmReinvite);
+        if (result.status === "needs_confirmation") {
+          setReinviteConfirm(result.linkedEmail);
+        } else {
+          setReinviteConfirm(null);
+          setInviteUrl(result.url);
+          setUnlinkedEmail(result.unlinkedEmail ?? null);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to generate link");
+      }
+    });
+  }
+
+  if (reinviteConfirm) {
     return (
-      <span className="shrink-0 whitespace-nowrap rounded-full border border-accent-green/50 bg-accent-green/10 px-2 py-1 text-[10px] font-semibold text-accent-green">
-        ✅ Linked
-      </span>
+      <div className="flex w-40 shrink-0 flex-col items-end gap-1 text-right" onClick={(e) => e.stopPropagation()}>
+        <p className="text-[10px] text-accent-red">
+          {player.name} is already linked to {reinviteConfirm}. A new link will let someone else replace that account.
+        </p>
+        <div className="flex w-full gap-1">
+          <button
+            type="button"
+            disabled={isPending}
+            onClick={() => setReinviteConfirm(null)}
+            className="flex-1 rounded border border-border px-1.5 py-1 text-[10px] text-foreground/70 hover:border-accent-primary hover:text-white disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={isPending}
+            onClick={() => generate(true)}
+            className="flex-1 rounded border border-accent-red/50 px-1.5 py-1 text-[10px] text-accent-red hover:bg-accent-red/10 disabled:opacity-50"
+          >
+            {isPending ? "…" : "Confirm"}
+          </button>
+        </div>
+        {error && <span className="text-[10px] text-accent-red">{error}</span>}
+      </div>
     );
   }
 
@@ -208,6 +252,9 @@ function LinkAccountBadge({ player }: { player: Player }) {
     )}`;
     return (
       <div className="flex w-32 shrink-0 flex-col items-end gap-1" onClick={(e) => e.stopPropagation()}>
+        {unlinkedEmail && (
+          <p className="text-right text-[10px] text-foreground/50">Unlinked {unlinkedEmail} from this player.</p>
+        )}
         <input
           readOnly
           value={inviteUrl}
@@ -239,6 +286,25 @@ function LinkAccountBadge({ player }: { player: Player }) {
     );
   }
 
+  if (player.user_id) {
+    return (
+      <div className="flex shrink-0 flex-col items-end gap-1" onClick={(e) => e.stopPropagation()}>
+        <span className="whitespace-nowrap rounded-full border border-accent-green/50 bg-accent-green/10 px-2 py-1 text-[10px] font-semibold text-accent-green">
+          ✅ Linked
+        </span>
+        <button
+          type="button"
+          disabled={isPending}
+          onClick={() => generate(false)}
+          className="whitespace-nowrap rounded border border-border px-2 py-1 text-[10px] font-medium text-foreground/60 transition hover:border-accent-red hover:text-accent-red disabled:opacity-50"
+        >
+          {isPending ? "…" : "Replace link"}
+        </button>
+        {error && <span className="text-right text-[10px] text-accent-red">{error}</span>}
+      </div>
+    );
+  }
+
   return (
     <div className="flex shrink-0 flex-col items-end gap-1" onClick={(e) => e.stopPropagation()}>
       <span className="flex items-center gap-1 whitespace-nowrap rounded-full border border-accent-red/50 bg-accent-red/10 px-2 py-1 text-[10px] font-semibold text-accent-red">
@@ -251,16 +317,7 @@ function LinkAccountBadge({ player }: { player: Player }) {
       <button
         type="button"
         disabled={isPending}
-        onClick={() =>
-          startTransition(async () => {
-            setError(null);
-            try {
-              setInviteUrl(await generateInviteLink(player.id));
-            } catch (err) {
-              setError(err instanceof Error ? err.message : "Failed to generate link");
-            }
-          })
-        }
+        onClick={() => generate(false)}
         className="whitespace-nowrap rounded border border-accent-primary px-2 py-1 text-[10px] font-medium text-accent-primary transition hover:bg-accent-primary/10 disabled:opacity-50"
       >
         {isPending ? "…" : "Link Account"}
