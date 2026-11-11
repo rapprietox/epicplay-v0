@@ -1,4 +1,4 @@
-import { WHATSAPP_URL } from "@/lib/legal";
+import { WHATSAPP_COMMUNITY_URL } from "@/lib/legal";
 import { LaunchLeadForm } from "./LaunchLeadForm";
 
 // Launch-capture batch: this is the "Founding Access" section lower on
@@ -20,14 +20,16 @@ export function LeadCapture() {
         <div className="card lead-card cursor-glow">
           <LaunchLeadForm variant="section" formId="lead-form-section" />
 
-          {WHATSAPP_URL ? (
-            <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer" className="lead-whatsapp">
-              Or message us on WhatsApp →
+          {/* Launch-copy batch: was a WHATSAPP_URL (1:1 contact link)
+              fallback that showed "WhatsApp contact coming soon" since
+              that constant has never been set -- replaced with the
+              real, already-live WHATSAPP_COMMUNITY_URL channel link,
+              matching every other WhatsApp-channel touchpoint on this
+              page (banner, footer, post-submit button). */}
+          {WHATSAPP_COMMUNITY_URL && (
+            <a href={WHATSAPP_COMMUNITY_URL} target="_blank" rel="noopener noreferrer" className="lead-whatsapp">
+              Join our WhatsApp channel →
             </a>
-          ) : (
-            <p className="lead-whatsapp lead-whatsapp-disabled" aria-disabled="true">
-              WhatsApp contact coming soon
-            </p>
           )}
         </div>
       </div>

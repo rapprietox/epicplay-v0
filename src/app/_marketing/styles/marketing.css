@@ -1611,7 +1611,6 @@
   font-size: 0.9rem;
   text-decoration: none;
 }
-.lead-whatsapp-disabled { color: #5e8268; cursor: default; }
 @media (max-width: 560px) {
   .lead-row { grid-template-columns: 1fr; }
 }

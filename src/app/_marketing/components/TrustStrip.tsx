@@ -33,7 +33,7 @@ export function TrustStrip() {
           </span>
         ))}
       </div>
-      <p className="trust-line">Built by a coach. Tested in a real league.</p>
+      <p className="trust-line">Built and tested with a real youth team.</p>
     </section>
   );
 }
