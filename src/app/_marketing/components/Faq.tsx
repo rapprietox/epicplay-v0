@@ -63,7 +63,11 @@ const FAQ: { q: string; a: React.ReactNode }[] = [
   },
   {
     q: "What does it cost, and what's free?",
-    a: FAQ_PRICING_ANSWER,
+    a: (
+      <>
+        {FAQ_PRICING_ANSWER} <a href="#lead-form">Join the founding list</a>.
+      </>
+    ),
   },
   {
     q: "Can I export or delete my data?",
