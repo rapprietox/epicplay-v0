@@ -5,6 +5,8 @@ import { createClient } from "@/lib/supabase/server";
 import { stripe } from "@/lib/stripe";
 import { redeemPromoCodeServerSide } from "@/lib/promo-codes";
 import { isClubhouseActive } from "@/lib/clubhouse-access";
+import { getActiveTeamPass } from "@/lib/team-pass-queries";
+import type { CheckoutResult } from "@/lib/checkout-result";
 
 async function requirePlayer() {
   const supabase = createClient();
@@ -20,7 +22,7 @@ async function requirePlayer() {
   return { supabase, teamId: profile.team_id, playerId: profile.player_id };
 }
 
-export type CheckoutResult = { ok: true; url: string } | { ok: false; error: string };
+export type { CheckoutResult };
 
 // Clubhouse Pro batch: uses a real pre-created Stripe Price
 // (STRIPE_PRICE_ID) rather than inline price_data -- the $10 one-time
@@ -38,14 +40,17 @@ export type CheckoutResult = { ok: true; url: string } | { ok: false; error: str
 // whoever can actually fix it.
 export async function createClubhouseCheckoutSession(): Promise<CheckoutResult> {
   try {
-    const { supabase, playerId } = await requirePlayer();
+    const { supabase, teamId, playerId } = await requirePlayer();
 
     const { data: player } = await supabase.from("players").select("name, clubhouse_unlocked, clubhouse_unlocked_until").eq("id", playerId).single();
     if (!player) return { ok: false, error: "Couldn't find your player profile -- try reloading the page." };
     // Pro expiry batch: isClubhouseActive, not the raw boolean -- an
     // expired player (clubhouse_unlocked still true, clubhouse_unlocked_until
-    // in the past) must be able to buy again.
-    if (isClubhouseActive(player)) return { ok: false, error: "Clubhouse Pro is already unlocked for you." };
+    // in the past) must be able to buy again. Team Pass batch: also
+    // checks the team's active pass -- a player already covered by it
+    // shouldn't be prompted to pay individually too.
+    const teamPass = await getActiveTeamPass(supabase, teamId);
+    if (isClubhouseActive(player, teamPass)) return { ok: false, error: "Clubhouse Pro is already unlocked for you." };
 
     const priceId = process.env.STRIPE_PRICE_ID;
     if (!priceId) {

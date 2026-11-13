@@ -9,6 +9,7 @@ import { computeBattingLines, formatAvg } from "@/lib/stats";
 import { computeZoneBattingLines, computeZoneWhiffLines, zoneIndexFromCoords, extendedZoneLabel, zoneLabel9, resultCategory } from "@/lib/heat-map";
 import { isFreePreviewActive, FREE_PREVIEW_KAIROS_MESSAGES } from "@/lib/free-preview";
 import { isClubhouseActive } from "@/lib/clubhouse-access";
+import { getActiveTeamPass } from "@/lib/team-pass-queries";
 import type { AtBatResult, PitchOutcome } from "@/lib/supabase/types";
 
 // Clubhouse Pro enhancement, Part 3. Mirrors src/app/coach/kairos-actions.ts's
@@ -227,7 +228,11 @@ export async function askPlayerKairos(history: KairosMessage[], message: string)
     // spray-chart/game-detail routes already follow. A locked player
     // outside the preview window gets a plain refusal, no Anthropic call.
     const { data: playerRow } = await supabase.from("players").select("clubhouse_unlocked, clubhouse_unlocked_until").eq("id", playerId).single();
-    const unlocked = playerRow ? isClubhouseActive(playerRow) : false;
+    // Team Pass batch: KAIROS limits stay per player (the credit checks
+    // just below are unchanged) -- only the unlock determination itself
+    // also considers the team's active pass now.
+    const teamPass = await getActiveTeamPass(supabase, teamId);
+    const unlocked = playerRow ? isClubhouseActive(playerRow, teamPass) : false;
     const freePreview = !unlocked && isFreePreviewActive();
 
     if (!unlocked && !freePreview) {

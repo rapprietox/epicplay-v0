@@ -1,3 +1,4 @@
+import { formatTimestampDate } from "@/lib/dates";
 import type { GameType, FieldCalibrationPoints, AtBatResult, PitchType, PitchOutcome, SacrificeType } from "@/lib/supabase/types";
 import type { ZoneBattingLine, AtBatWithZone, SprayDot } from "@/lib/heat-map";
 import type { PressureSplits, CountState } from "@/lib/count-stats";
@@ -44,6 +45,7 @@ interface ZonePitch {
 // data.
 export function ProSection({
   unlocked,
+  teamPassUntil,
   priceDisplay,
   freePreviewActive,
   playerId,
@@ -68,6 +70,11 @@ export function ProSection({
   milestones,
 }: {
   unlocked: boolean;
+  // Team Pass batch: set only when `unlocked` is true AND the reason is
+  // specifically the team's pass, not this player's own purchase (see
+  // page.tsx's individualActive/teamPassActive split) -- renders the
+  // "Included with your team's pass until..." banner below.
+  teamPassUntil: string | null;
   // Pro expiry batch: pre-resolved on the server (page.tsx), since
   // deriving it needs stripe.prices.retrieve, which can't run from this
   // client-rendered locked-state branch.
@@ -156,6 +163,12 @@ export function ProSection({
 
   return (
     <>
+      {teamPassUntil && (
+        <section className="glossy rounded-lg border border-accent-gold/30 bg-surface p-4 text-center">
+          <p className="text-sm font-semibold text-accent-gold">Included with your team&apos;s pass until {formatTimestampDate(teamPassUntil)}</p>
+        </section>
+      )}
+
       <StrikeZoneHeatmap battingAtBats={battingZoneAtBats} pitchingAtBats={[]} hasPitchingData={false} />
 
       <ZoneAnalyticsRow battingAvgLines={battingAvgZoneLines} whiffPitches={pitches} locationPitches={pitches} perspective="batter" />

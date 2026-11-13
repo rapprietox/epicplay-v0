@@ -12,3 +12,15 @@ export function formatGameDate(isoDate: string): string {
     day: "numeric",
   });
 }
+
+// Team Pass / Pro expiry batch: formats a full timestamptz (not a plain
+// date like formatGameDate above), for clubhouse_unlocked_until and
+// team_passes.ends_at -- "Dec 31, 2026", no weekday or time-of-day,
+// since neither is meaningful for an expiry date.
+export function formatTimestampDate(isoTimestamp: string): string {
+  return new Date(isoTimestamp).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}

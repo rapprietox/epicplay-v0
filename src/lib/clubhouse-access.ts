@@ -1,3 +1,5 @@
+import { isTeamPassActive, type TeamPassAccessFields } from "@/lib/team-pass";
+
 // Pro expiry batch: one shared check so "is Clubhouse Pro active for
 // this player right now" is never re-derived from the raw
 // clubhouse_unlocked boolean alone -- every call site that used to read
@@ -16,10 +18,26 @@ export interface ClubhouseAccessFields {
   clubhouse_unlocked_until: string | null;
 }
 
-export function isClubhouseActive(player: ClubhouseAccessFields, now: Date = new Date()): boolean {
+// Individual-only check -- unchanged logic from before the Team Pass
+// batch, just renamed/exported so callers that need to tell "unlocked
+// via my own purchase" apart from "unlocked via my team's pass" (the
+// Clubhouse page's "Included with your team's pass until..." banner)
+// can call this and isTeamPassActive separately instead of only ever
+// getting the combined boolean.
+export function isIndividuallyActive(player: ClubhouseAccessFields, now: Date = new Date()): boolean {
   if (!player.clubhouse_unlocked) return false;
   if (player.clubhouse_unlocked_until === null) return true;
   return new Date(player.clubhouse_unlocked_until).getTime() > now.getTime();
+}
+
+// Team Pass batch: the combined check every other call site (header,
+// KAIROS, the individual checkout guard) uses when it just needs "is
+// this player unlocked at all," not which source unlocked them.
+// teamPass defaults to null (not a required parameter) so every
+// pre-existing 1-arg call site keeps compiling unchanged for a player
+// whose team has no pass to check.
+export function isClubhouseActive(player: ClubhouseAccessFields, teamPass: TeamPassAccessFields | null = null, now: Date = new Date()): boolean {
+  return isIndividuallyActive(player, now) || isTeamPassActive(teamPass, now);
 }
 
 // Write-path helper for both unlock sources (Stripe checkout and promo

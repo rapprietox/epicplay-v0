@@ -1,7 +1,6 @@
 import { formatAvg, type BattingLine } from "@/lib/stats";
 import { epsTier, EPS_TIER_LABEL } from "@/lib/eps";
 import { EpsInfoTrigger } from "@/components/eps-info-panel";
-import { isClubhouseActive } from "@/lib/clubhouse-access";
 import type { Database } from "@/lib/supabase/types";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
@@ -13,6 +12,7 @@ export function ClubhouseHeader({
   teamName,
   line,
   eps,
+  clubhouseActive,
 }: {
   player: Player;
   teamName: string;
@@ -20,11 +20,13 @@ export function ClubhouseHeader({
   // Feature 3 (EPS): Clubhouse Pro only -- null here means either not
   // unlocked or under the 5-PA minimum, both rendered as "--".
   eps: number | null;
+  // Team Pass batch: computed once by page.tsx (isClubhouseActive, now
+  // combining the player's own unlock with their team's active pass)
+  // and passed down, rather than re-derived here from `player` alone --
+  // this component has no access to the team's pass row, and shouldn't
+  // need to fetch it just to answer "4 or 5 stat columns."
+  clubhouseActive: boolean;
 }) {
-  // Pro expiry batch: was a raw player.clubhouse_unlocked read -- an
-  // expired player must drop back to the 4-stat (no EPS) layout, same
-  // as never having unlocked.
-  const clubhouseActive = isClubhouseActive(player);
   return (
     <header className="glossy flex flex-col items-center gap-4 rounded-lg border border-border bg-surface p-6 text-center sm:flex-row sm:text-left">
       <div

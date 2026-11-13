@@ -15,6 +15,7 @@ import { TeamAnalytics } from "./team-analytics";
 import { OpponentScoutingSection } from "./opponent-scouting-section";
 import { LineupAnalysisSection } from "./lineup-analysis-section";
 import { KairosWidget } from "./kairos-widget";
+import { TeamPassCard } from "./team-pass-card";
 import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
 import type { AtBatResult } from "@/lib/supabase/types";
 import { isViewSwitchEligible } from "@/lib/view-switch";
@@ -262,6 +263,8 @@ export default async function CoachPage({ searchParams }: { searchParams: { view
         />
 
         <OpponentScoutingSection opponents={opponents ?? []} games={allGames} />
+
+        <TeamPassCard teamId={teamId} />
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <RosterSection players={players ?? []} className={hasSeason ? "lg:col-span-2" : undefined} />

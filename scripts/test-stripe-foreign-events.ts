@@ -36,14 +36,14 @@ console.log("\n=== 2. checkout.session.completed for another price (metadata.pla
   const lookalikeSession = { metadata: { player_id: "player_42" } };
   const futureelLineItemPriceId = "price_futureelMonthlyPlan";
   expect("metadata.player_id is present", extractPlayerIdMetadata(lookalikeSession), "player_42");
-  expect("but its line item price isn't ours -> rejected", isEpicPlayPrice(futureelLineItemPriceId, EPICPLAY_PRICE_ID), false);
+  expect("but its line item price isn't ours -> rejected", isEpicPlayPrice(futureelLineItemPriceId, [EPICPLAY_PRICE_ID]), false);
 }
 
 console.log("\n=== 2b. Positive control: a real EpicPlay session passes both checks ===");
 {
   const epicplaySession = { metadata: { player_id: "player_42" } };
   expect("metadata.player_id is present", extractPlayerIdMetadata(epicplaySession), "player_42");
-  expect("line item price matches STRIPE_PRICE_ID -> accepted", isEpicPlayPrice(EPICPLAY_PRICE_ID, EPICPLAY_PRICE_ID), true);
+  expect("line item price matches STRIPE_PRICE_ID -> accepted", isEpicPlayPrice(EPICPLAY_PRICE_ID, [EPICPLAY_PRICE_ID]), true);
 }
 
 console.log("\n=== 3. charge.refunded whose checkout session has no player_id ===");
@@ -60,7 +60,7 @@ console.log("\n=== 3b. charge.refunded for another price (lookalike metadata, wr
   const lookalikeRefundSession = { metadata: { player_id: "player_42" } };
   const futureelLineItemPriceId = "price_futureelMonthlyPlan";
   expect("metadata.player_id present on the refunded session", extractPlayerIdMetadata(lookalikeRefundSession), "player_42");
-  expect("price mismatch -> refund must NOT be able to expire this id", isEpicPlayPrice(futureelLineItemPriceId, EPICPLAY_PRICE_ID), false);
+  expect("price mismatch -> refund must NOT be able to expire this id", isEpicPlayPrice(futureelLineItemPriceId, [EPICPLAY_PRICE_ID]), false);
 }
 
 console.log("\n=== 3c. charge.refunded with no checkout session at all (e.g. a direct PaymentIntent charge, not via Checkout) ===");
@@ -83,12 +83,12 @@ console.log("\n=== 4b. charge.dispute.created, lookalike metadata but wrong pric
   const lookalikeDisputeSession = { metadata: { player_id: "player_42" } };
   const futureelLineItemPriceId = "price_futureelMonthlyPlan";
   expect("metadata.player_id present on the disputed session", extractPlayerIdMetadata(lookalikeDisputeSession), "player_42");
-  expect("price mismatch -> this dispute must not be logged as player_42's", isEpicPlayPrice(futureelLineItemPriceId, EPICPLAY_PRICE_ID), false);
+  expect("price mismatch -> this dispute must not be logged as player_42's", isEpicPlayPrice(futureelLineItemPriceId, [EPICPLAY_PRICE_ID]), false);
 }
 
 console.log("\n=== 5. isEpicPlayPrice never matches if STRIPE_PRICE_ID itself is unset (misconfiguration must not fail open) ===");
 {
-  expect("undefined configured price -> never matches, even with an identical-looking id", isEpicPlayPrice(EPICPLAY_PRICE_ID, undefined), false);
+  expect("undefined configured price -> never matches, even with an identical-looking id", isEpicPlayPrice(EPICPLAY_PRICE_ID, [undefined]), false);
 }
 
 console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);

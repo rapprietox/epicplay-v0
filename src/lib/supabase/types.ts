@@ -343,6 +343,36 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["promo_codes"]["Insert"]>;
         Relationships: [];
       };
+      // Team Pass batch: see the migration's own comment
+      // (20261113110001_team_passes.sql) -- one row per purchased/
+      // extended term, status flips to 'refunded' (never deleted) on a
+      // full refund.
+      team_passes: {
+        Row: {
+          id: string;
+          team_id: string;
+          starts_at: string;
+          ends_at: string;
+          purchased_by: string | null;
+          stripe_checkout_session_id: string | null;
+          amount_cents: number | null;
+          status: "active" | "refunded";
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          team_id: string;
+          starts_at: string;
+          ends_at: string;
+          purchased_by?: string | null;
+          stripe_checkout_session_id?: string | null;
+          amount_cents?: number | null;
+          status?: "active" | "refunded";
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["team_passes"]["Insert"]>;
+        Relationships: [];
+      };
       games: {
         Row: {
           id: string;

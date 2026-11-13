@@ -14,7 +14,9 @@ import { computeHeadToHead } from "@/lib/head-to-head";
 import { computeMilestones } from "@/lib/milestones";
 import { computeEpsForPlayer } from "@/lib/eps";
 import { isFreePreviewActive } from "@/lib/free-preview";
-import { isClubhouseActive } from "@/lib/clubhouse-access";
+import { isIndividuallyActive } from "@/lib/clubhouse-access";
+import { isTeamPassActive } from "@/lib/team-pass";
+import { getActiveTeamPass } from "@/lib/team-pass-queries";
 import { getClubhouseProPriceDisplay } from "@/lib/clubhouse-price";
 import { ClubhouseHeader } from "./header";
 import { ClubhouseNavBar } from "./clubhouse-nav-bar";
@@ -56,7 +58,17 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   // the raw player.clubhouse_unlocked boolean -- an expired unlock
   // (clubhouse_unlocked still true, clubhouse_unlocked_until in the
   // past) must read as locked, same as never having unlocked at all.
-  const clubhouseActive = isClubhouseActive(player);
+  // Team Pass batch: the team's active pass is fetched once here (not
+  // once per check) and combined with the player's own unlock --
+  // clubhouseActive now means "either source," while individualActive/
+  // teamPassActive stay available separately for the "Included with
+  // your team's pass" banner below, which only applies when the team
+  // pass is the *reason* this player is unlocked.
+  const teamPass = await getActiveTeamPass(supabase, profile.team_id);
+  const individualActive = isIndividuallyActive(player);
+  const teamPassActive = isTeamPassActive(teamPass);
+  const clubhouseActive = individualActive || teamPassActive;
+  const teamPassUntil = !individualActive && teamPassActive ? teamPass!.ends_at : null;
 
   const { data: games } = await supabase.from("games").select("*").eq("team_id", profile.team_id);
   const allGames = games ?? [];
@@ -286,7 +298,7 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
       )}
       <ClubhouseNavBar />
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6">
-        <ClubhouseHeader player={player} teamName={team?.name ?? "Team"} line={seasonLine} eps={eps} />
+        <ClubhouseHeader player={player} teamName={team?.name ?? "Team"} line={seasonLine} eps={eps} clubhouseActive={clubhouseActive} />
 
         <SeasonStatsCard battingLine={seasonLine} pitchingLine={pitchingLine} />
 
@@ -307,6 +319,7 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
         <ProSection
           unlocked={clubhouseActive}
+          teamPassUntil={teamPassUntil}
           priceDisplay={proPriceDisplay}
           freePreviewActive={freePreviewActive}
           playerId={player.id}

@@ -1,7 +1,7 @@
 import "server-only";
 import { unstable_cache } from "next/cache";
 import { stripe } from "@/lib/stripe";
-import { PRO_PRICE_DISPLAY } from "@/lib/pricing";
+import { PRO_PRICE_DISPLAY, TEAM_PASS_PRICE_DISPLAY } from "@/lib/pricing";
 
 // Pro expiry batch: the checkout button used to hardcode PRO_PRICE_DISPLAY
 // ("$10") -- changing the real charged amount (STRIPE_PRICE_ID, or the
@@ -13,17 +13,21 @@ import { PRO_PRICE_DISPLAY } from "@/lib/pricing";
 // amount) changes -- with the pricing.ts constant as a fallback, so a
 // Stripe outage or a missing/invalid price id degrades to the old
 // hardcoded behavior instead of breaking the page.
-async function fetchClubhouseProPriceDisplay(): Promise<string> {
-  const priceId = process.env.STRIPE_PRICE_ID;
-  if (!priceId) return PRO_PRICE_DISPLAY;
+//
+// Team Pass batch: same pattern, reused for TEAM_PASS_PRICE_ID -- one
+// shared fetch-and-format function parameterized by which env var/
+// fallback to use, instead of two near-duplicate copies.
+async function fetchPriceDisplay(envVarName: string, fallback: string): Promise<string> {
+  const priceId = process.env[envVarName];
+  if (!priceId) return fallback;
 
   try {
     const price = await stripe.prices.retrieve(priceId);
-    if (price.unit_amount == null || !price.currency) return PRO_PRICE_DISPLAY;
+    if (price.unit_amount == null || !price.currency) return fallback;
     return formatPriceDisplay(price.unit_amount, price.currency);
   } catch (err) {
-    console.error("[getClubhouseProPriceDisplay] Stripe price retrieve failed, falling back to pricing.ts constant", err);
-    return PRO_PRICE_DISPLAY;
+    console.error(`[clubhouse-price] Stripe price retrieve failed for ${envVarName}, falling back to pricing.ts constant`, err);
+    return fallback;
   }
 }
 
@@ -37,9 +41,15 @@ function formatPriceDisplay(unitAmount: number, currency: string): string {
   }).format(unitAmount / 100);
 }
 
-// Cached for an hour via Next's Data Cache (persists across requests/
-// invocations on Vercel, not just within one render) -- a Stripe Price
-// changes rarely enough that fetching it on every single player-page
-// load would be pure waste, and the whole point of this cache is to
-// keep that Stripe call off the common path.
-export const getClubhouseProPriceDisplay = unstable_cache(fetchClubhouseProPriceDisplay, ["clubhouse-pro-price-display"], { revalidate: 3600 });
+// Both cached for an hour via Next's Data Cache (persists across
+// requests/invocations on Vercel, not just within one render) -- a
+// Stripe Price changes rarely enough that fetching it on every single
+// page load would be pure waste, and the whole point of this cache is
+// to keep that Stripe call off the common path.
+export const getClubhouseProPriceDisplay = unstable_cache(() => fetchPriceDisplay("STRIPE_PRICE_ID", PRO_PRICE_DISPLAY), ["clubhouse-pro-price-display"], {
+  revalidate: 3600,
+});
+
+export const getTeamPassPriceDisplay = unstable_cache(() => fetchPriceDisplay("TEAM_PASS_PRICE_ID", TEAM_PASS_PRICE_DISPLAY), ["team-pass-price-display"], {
+  revalidate: 3600,
+});

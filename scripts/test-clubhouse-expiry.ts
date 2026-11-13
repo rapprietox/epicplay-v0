@@ -60,7 +60,7 @@ console.log("\n=== 4. A full refund expires access immediately ===");
   expect("charge.refunded is true for a full refund", chargeFullRefund.refunded, true);
   const expiredUntil = expireNowIfActive(activeUntil, NOW);
   expect("full refund sets clubhouse_unlocked_until to now", expiredUntil, NOW.toISOString());
-  expect("player reads as inactive once expired", isClubhouseActive({ clubhouse_unlocked: true, clubhouse_unlocked_until: expiredUntil as string }, NOW), false);
+  expect("player reads as inactive once expired", isClubhouseActive({ clubhouse_unlocked: true, clubhouse_unlocked_until: expiredUntil as string }, null, NOW), false);
 }
 
 console.log("\n=== 5. A partial refund doesn't touch the expiry ===");
@@ -97,21 +97,21 @@ console.log("\n=== 6. A dispute only logs -- never calls the revoking function a
   // route's own code must keep: isClubhouseActive is unaffected by a
   // dispute with no accompanying refund.
   const playerBeforeDispute: ClubhouseAccessFields = { clubhouse_unlocked: true, clubhouse_unlocked_until: "2026-12-31T23:59:59Z" };
-  expect("player stays active after a dispute alone (no refund yet)", isClubhouseActive(playerBeforeDispute, NOW), true);
+  expect("player stays active after a dispute alone (no refund yet)", isClubhouseActive(playerBeforeDispute, null, NOW), true);
 }
 
 console.log("\n=== 7. An expired player passes the checkout guard (can buy again) ===");
 {
   const expiredPlayer: ClubhouseAccessFields = { clubhouse_unlocked: true, clubhouse_unlocked_until: "2025-01-01T00:00:00Z" };
   // createClubhouseCheckoutSession's guard is `if (isClubhouseActive(player)) return already-unlocked-error`.
-  const blockedFromBuying = isClubhouseActive(expiredPlayer, NOW);
+  const blockedFromBuying = isClubhouseActive(expiredPlayer, null, NOW);
   expect("expired player is NOT blocked by the already-unlocked guard", blockedFromBuying, false);
 
   const stillActivePlayer: ClubhouseAccessFields = { clubhouse_unlocked: true, clubhouse_unlocked_until: "2026-12-31T23:59:59Z" };
-  expect("still-active player IS blocked by the already-unlocked guard", isClubhouseActive(stillActivePlayer, NOW), true);
+  expect("still-active player IS blocked by the already-unlocked guard", isClubhouseActive(stillActivePlayer, null, NOW), true);
 
   const neverUnlockedUntilNull: ClubhouseAccessFields = { clubhouse_unlocked: true, clubhouse_unlocked_until: null };
-  expect("a no-expiry (grandfathered) unlock never reads as expired", isClubhouseActive(neverUnlockedUntilNull, NOW), true);
+  expect("a no-expiry (grandfathered) unlock never reads as expired", isClubhouseActive(neverUnlockedUntilNull, null, NOW), true);
 }
 
 console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);

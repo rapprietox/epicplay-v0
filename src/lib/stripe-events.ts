@@ -24,11 +24,21 @@ export function extractPlayerIdMetadata(session: { metadata?: Record<string, str
   return typeof playerId === "string" && playerId.length > 0 ? playerId : null;
 }
 
-export function isEpicPlayPrice(lineItemPriceId: string | null | undefined, configuredPriceId: string | undefined): boolean {
-  // A missing configuredPriceId (STRIPE_PRICE_ID unset/misconfigured)
-  // must never accidentally match -- that would turn "we don't know our
-  // own price" into "treat everything as ours," the opposite of this
+// Team Pass batch: generalized from a single configured id to a list --
+// the webhook now has two EpicPlay products (the individual price and
+// TEAM_PASS_PRICE_ID) each priced differently, and a future January
+// price change could briefly mean two valid individual prices at once
+// (old + new) during a transition. Each call site still passes its own
+// specific allow-list (e.g. just [STRIPE_PRICE_ID] for the individual
+// branch, just [TEAM_PASS_PRICE_ID] for the team-pass branch) -- this
+// generalizes the comparison mechanism, not which product an event
+// belongs to (metadata.kind / metadata.player_id still decides that).
+export function isEpicPlayPrice(lineItemPriceId: string | null | undefined, allowedPriceIds: (string | undefined)[]): boolean {
+  if (!lineItemPriceId) return false;
+  // Missing/unset entries (an env var not configured) must never
+  // accidentally match -- that would turn "we don't know one of our own
+  // prices" into "treat everything as ours," the opposite of this
   // check's purpose.
-  if (!configuredPriceId) return false;
-  return lineItemPriceId === configuredPriceId;
+  const configured = allowedPriceIds.filter((id): id is string => Boolean(id));
+  return configured.length > 0 && configured.includes(lineItemPriceId);
 }
