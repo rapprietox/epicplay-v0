@@ -4,6 +4,7 @@ import Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { extendExpiry, expireNowIfActive } from "@/lib/clubhouse-access";
+import { extractPlayerIdMetadata, isEpicPlayPrice } from "@/lib/stripe-events";
 import { PRO_VALID_UNTIL } from "@/lib/pricing";
 
 // Clubhouse Pro batch: App Router Route Handler -- reads the raw body via
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
-    const playerId = session.metadata?.player_id;
+    const playerId = await resolveEpicPlayPlayerId(session, event.type);
     if (playerId) {
       const supabase = createServiceRoleClient();
       const { data: current } = await supabase.from("players").select("clubhouse_unlocked, clubhouse_unlocked_until").eq("id", playerId).single();
@@ -55,7 +56,8 @@ export async function POST(request: Request) {
   if (event.type === "charge.refunded") {
     const charge = event.data.object as Stripe.Charge;
     if (charge.refunded) {
-      const playerId = await findPlayerIdByPaymentIntent(charge.payment_intent);
+      const session = await findCheckoutSessionByPaymentIntent(charge.payment_intent);
+      const playerId = await resolveEpicPlayPlayerId(session, event.type);
       if (playerId) {
         const supabase = createServiceRoleClient();
         const { data: current } = await supabase.from("players").select("clubhouse_unlocked_until").eq("id", playerId).single();
@@ -75,22 +77,54 @@ export async function POST(request: Request) {
   // human to look into, not an automatic revocation (the cardholder's
   // bank, not Stripe or this app, has already pulled the funds; locking
   // the player out on top of that is a product decision, not something
-  // to silently automate here).
+  // to silently automate here). Still runs through resolveEpicPlayPlayerId
+  // so a Futureel dispute is never logged as if it were an EpicPlay
+  // player's -- not a write-path risk (this never writes regardless),
+  // but a correctness one for whoever reads these logs.
   if (event.type === "charge.dispute.created") {
     const dispute = event.data.object as Stripe.Dispute;
-    const playerId = await findPlayerIdByPaymentIntent(dispute.payment_intent);
+    const session = await findCheckoutSessionByPaymentIntent(dispute.payment_intent);
+    const playerId = await resolveEpicPlayPlayerId(session, event.type);
     console.error("[stripe webhook] charge.dispute.created -- access NOT revoked, needs manual review", {
       disputeId: dispute.id,
-      playerId: playerId ?? "unknown (no matching checkout session found)",
+      playerId: playerId ?? "unknown (no matching EpicPlay checkout session found)",
     });
   }
 
   return NextResponse.json({ received: true });
 }
 
-async function findPlayerIdByPaymentIntent(paymentIntent: string | Stripe.PaymentIntent | null): Promise<string | null> {
+async function findCheckoutSessionByPaymentIntent(paymentIntent: string | Stripe.PaymentIntent | null): Promise<Stripe.Checkout.Session | null> {
   const paymentIntentId = typeof paymentIntent === "string" ? paymentIntent : paymentIntent?.id;
   if (!paymentIntentId) return null;
   const sessions = await stripe.checkout.sessions.list({ payment_intent: paymentIntentId, limit: 1 });
-  return sessions.data[0]?.metadata?.player_id ?? null;
+  return sessions.data[0] ?? null;
+}
+
+// Shared-Stripe-account batch: the only place that decides "is this
+// event actually EpicPlay's" -- every write path above calls this
+// instead of reading session.metadata.player_id directly. See
+// src/lib/stripe-events.ts for why both checks (metadata presence, then
+// line item price) are needed; the price check needs its own Stripe
+// call since a webhook payload never carries line items.
+async function resolveEpicPlayPlayerId(session: Stripe.Checkout.Session | null, eventType: string): Promise<string | null> {
+  if (!session) return null;
+
+  const playerId = extractPlayerIdMetadata(session);
+  if (!playerId) {
+    console.log(`[stripe webhook] ignoring ${eventType}: no metadata.player_id (likely a different product on this shared Stripe account)`, { sessionId: session.id });
+    return null;
+  }
+
+  const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 });
+  const priceId = lineItems.data[0]?.price?.id ?? null;
+  if (!isEpicPlayPrice(priceId, process.env.STRIPE_PRICE_ID)) {
+    console.log(`[stripe webhook] ignoring ${eventType}: line item price is not Clubhouse Pro's (likely a different product on this shared Stripe account)`, {
+      sessionId: session.id,
+      priceId: priceId ?? "none",
+    });
+    return null;
+  }
+
+  return playerId;
 }
