@@ -93,8 +93,11 @@ export function narrateStolenBase(runnerName: string): string {
   return `${runnerName} steals a base.`;
 }
 
+// fix/chain-slots: outName can already end in its own period (a last-
+// initial abbreviation from lionsDisplayName, e.g. "Jordan E.") -- don't
+// add a second one when it does.
 export function narrateSubstitution(inName: string, outName: string): string {
-  return `${inName} replaces ${outName}.`;
+  return `${inName} replaces ${outName}${outName.endsWith(".") ? "" : "."}`;
 }
 
 // "Run scores" -- the request's own fixed template, repeated once per

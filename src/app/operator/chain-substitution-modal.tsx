@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { Database, PlayerPositionCalibration, SubReason } from "@/lib/supabase/types";
+import { computeChainSlots, describeSlotError, type SlotRow } from "@/lib/operator/chain-slots";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
 
@@ -60,6 +61,8 @@ export function ChainSubstitutionModal({
   players,
   currentDefense,
   benchPlayerIds,
+  substitutedOutIds,
+  lineupRows,
   fieldPositionsCalibration,
   inning,
   outs,
@@ -75,6 +78,16 @@ export function ChainSubstitutionModal({
   // ChainResult for the parent to persist and apply.
   currentDefense: Record<string, string | null>;
   benchPlayerIds: Set<string>;
+  // fix/chain-slots: every player ever named player_out_id this game --
+  // tags a bench row "(was subbed out)" rather than hiding or disabling
+  // it (re-entry stays allowed, this is purely informational).
+  substitutedOutIds: Set<string>;
+  // fix/chain-slots: the live lineup, in the shape computeChainSlots
+  // needs, so the modal can validate a proposed chain BEFORE handing it
+  // to the parent -- the same check the server now runs, run here first
+  // so the operator sees "Slot 1 has no batter, choose who bats there"
+  // and a picker instead of a server error after the fact.
+  lineupRows: SlotRow[];
   fieldPositionsCalibration: PlayerPositionCalibration | null;
   inning: number;
   outs: number;
@@ -184,8 +197,41 @@ export function ChainSubstitutionModal({
     setChain({ ...chain, movements, mover: occupant, moverFrom: target, menu: null });
   }
 
+  // fix/chain-slots: the same validation the server runs, run here
+  // first against the live lineup -- computed fresh every render off
+  // `finalizing`/`lineupRows` rather than cached, since picking a
+  // player for an open slot (below) changes `finalizing.positionMoves`
+  // and must immediately re-check.
+  const slotCheck = finalizing ? computeChainSlots(lineupRows, finalizing) : null;
+
+  // Which of the 9 defensive positions would have nobody once this
+  // chain's named moves land -- derived the same way the field diagram
+  // above already derives `previewOccupant`, not from computeChainSlots'
+  // own (slot-only) output, since the picker needs an actual position to
+  // assign the chosen player to, not just a slot number.
+  function tentativeDefense(): Record<string, string | null> {
+    if (!finalizing) return currentDefense;
+    const next = { ...currentDefense };
+    for (const pos of Object.keys(next)) {
+      const occ = next[pos];
+      if (occ && (occ === finalizing.outgoingPlayerId || finalizing.positionMoves.some((m) => m.playerId === occ))) {
+        next[pos] = null;
+      }
+    }
+    next[finalizing.entryPosition] = finalizing.incomingPlayerId;
+    for (const m of finalizing.positionMoves) next[m.position] = m.playerId;
+    return next;
+  }
+  const openPositions = slotCheck && !slotCheck.ok ? DEFENSIVE_POSITIONS.filter((pos) => !tentativeDefense()[pos]) : [];
+  const pickedPlayerIds = new Set(finalizing ? [finalizing.incomingPlayerId, ...finalizing.positionMoves.map((m) => m.playerId)] : []);
+  const availableForPicker = players.filter((p) => benchPlayerIds.has(p.id) && !pickedPlayerIds.has(p.id));
+
+  function pickForOpenPosition(position: string, playerId: string) {
+    setFinalizing((f) => (f ? { ...f, positionMoves: [...f.positionMoves, { playerId, position }] } : f));
+  }
+
   function confirmFinal() {
-    if (!finalizing) return;
+    if (!finalizing || !slotCheck || !slotCheck.ok) return;
     const incomingName = playerName(finalizing.incomingPlayerId);
     const parts = [`${incomingName} → ${finalizing.entryPosition} position.`];
     for (const m of finalizing.positionMoves) {
@@ -337,6 +383,7 @@ export function ChainSubstitutionModal({
                         }`}
                       >
                         #{p.jersey_number ?? "—"} {p.name}
+                        {substitutedOutIds.has(p.id) && <span className="ml-1 text-[9px] text-accent-amber">(was subbed out)</span>}
                         {isIncomingWaiting && (
                           <p className="mt-0.5 text-[9px] text-accent-green">Waiting to take {chain?.entryPosition}</p>
                         )}
@@ -357,27 +404,58 @@ export function ChainSubstitutionModal({
                 {finalizing.positionMoves.map((m) => ` · ${playerName(m.playerId)} → ${m.position}`).join("")}
                 {finalizing.outgoingPlayerId ? ` · ${playerName(finalizing.outgoingPlayerId)} → bench` : ""}
               </p>
-              <label className="mt-3 flex flex-col gap-1 text-xs text-foreground/50">
-                Reason
-                <select
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value as SubReason)}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white"
-                >
-                  {REASONS.map((r) => (
-                    <option key={r.value} value={r.value}>
-                      {r.label}
-                    </option>
+
+              {slotCheck && !slotCheck.ok ? (
+                // fix/chain-slots: block the confirm outright -- this chain,
+                // as built so far, would leave a batting slot empty (or
+                // doubled up). Extend the SAME chain by picking who takes
+                // each newly-open position instead of letting it through.
+                <div className="mt-3 rounded-md border border-accent-red/40 bg-accent-red/10 p-3">
+                  <p className="text-sm font-semibold text-accent-red">{describeSlotError(slotCheck)}</p>
+                  {openPositions.map((pos) => (
+                    <div key={pos} className="mt-2">
+                      <p className="text-xs text-foreground/60">Choose who plays {pos}:</p>
+                      <div className="mt-1 flex flex-col gap-1.5">
+                        {availableForPicker.length === 0 && <p className="text-xs text-foreground/30">No one left on the bench.</p>}
+                        {availableForPicker.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => pickForOpenPosition(pos, p.id)}
+                            className="min-h-[44px] rounded-md border border-border bg-background px-3 text-left text-sm text-white hover:border-accent-primary"
+                          >
+                            #{p.jersey_number ?? "—"} {p.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                onClick={confirmFinal}
-                className="mt-3 w-full min-h-[44px] rounded-md bg-accent-primary px-4 text-sm font-semibold text-white"
-              >
-                Confirm
-              </button>
+                </div>
+              ) : (
+                <>
+                  <label className="mt-3 flex flex-col gap-1 text-xs text-foreground/50">
+                    Reason
+                    <select
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value as SubReason)}
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-white"
+                    >
+                      {REASONS.map((r) => (
+                        <option key={r.value} value={r.value}>
+                          {r.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={confirmFinal}
+                    className="mt-3 w-full min-h-[44px] rounded-md bg-accent-primary px-4 text-sm font-semibold text-white"
+                  >
+                    Confirm
+                  </button>
+                </>
+              )}
             </div>
           )}
 

@@ -12,7 +12,7 @@
 // it. The sync-queue case needs no such extraction -- sync-queue.ts has
 // no Next.js/Supabase dependency at all, so it's imported and run as-is.
 
-import { assertGameIsActive, decideChainSubstitutionWrite, GAME_NOT_ACTIVE_ERROR } from "../src/lib/operator/chain-substitution";
+import { assertGameIsActive, GAME_NOT_ACTIVE_ERROR } from "../src/lib/operator/chain-substitution";
 import { withOfflineRetry, pendingCount } from "../src/lib/operator/sync-queue";
 
 let failures = 0;
@@ -51,50 +51,13 @@ async function main() {
     check("assertGameIsActive does NOT throw for status='active'", !threw);
   }
 
-  console.log("\n=== Case 2: confirmChainSubstitution's write decision ===");
-  {
-    // Replays the exact 2026-11-08 incident: a repeat submission for a
-    // pair that already has a substitutions row, where the outgoing
-    // player's batting_order has already been cleared to null by the
-    // first run. Before the fix, confirmChainSubstitution would have
-    // copied that null onto the incoming player's starting row.
-    const repeat = decideChainSubstitutionWrite({
-      existingSubstitutionExists: true,
-      outgoingBattingOrder: null,
-      incomingOwnBattingOrder: 10,
-    });
-    check("a repeat submission is skipped (no duplicate row, no re-derive)", repeat.skip === true);
-
-    // First-time submission, outgoing player still has a real slot --
-    // ordinary case, unaffected by the fix.
-    const normal = decideChainSubstitutionWrite({
-      existingSubstitutionExists: false,
-      outgoingBattingOrder: 8,
-      incomingOwnBattingOrder: null,
-    });
-    check("a normal first-time substitution uses the outgoing player's slot", !normal.skip && normal.incomingBattingOrder === 8);
-
-    // First-time submission, but the outgoing player's slot already
-    // reads null for some other reason (e.g. a second concurrent writer)
-    // -- must fall back to the incoming player's own existing slot
-    // instead of writing null over a row about to become 'starting'.
-    const fallback = decideChainSubstitutionWrite({
-      existingSubstitutionExists: false,
-      outgoingBattingOrder: null,
-      incomingOwnBattingOrder: 10,
-    });
-    check(
-      "outgoing batting_order null -> falls back to incoming player's own slot",
-      !fallback.skip && fallback.incomingBattingOrder === 10
-    );
-
-    // Both null -- refuse outright rather than write null onto a
-    // starting row.
-    const bothNullMsg = await expectThrow(() => {
-      decideChainSubstitutionWrite({ existingSubstitutionExists: false, outgoingBattingOrder: null, incomingOwnBattingOrder: null });
-    });
-    check("both outgoing and incoming batting_order null -> throws instead of writing null", bothNullMsg !== null);
-  }
+  // Case 2 used to test decideChainSubstitutionWrite directly -- removed
+  // along with that function (fix/chain-slots). Its job is now done by
+  // computeChainSlots/applyChainWrites in src/lib/operator/chain-slots.ts,
+  // which runs unconditionally for every chain (no more early skip for
+  // the no-outgoing-player case) and validates the whole lineup's slots
+  // at once. See scripts/test-chain-slots.ts for its replay proof,
+  // including the exact incident this superseded.
 
   console.log("\n=== Case 3: the retry queue drops a permanent 'game not active' failure ===");
   {

@@ -4088,6 +4088,8 @@ export function OperatorConsole({
           players={players}
           currentDefense={currentDefense}
           benchPlayerIds={benchPlayerIds}
+          substitutedOutIds={substitutedOutIds}
+          lineupRows={liveLineup.map((l) => ({ playerId: l.player_id, battingOrder: l.batting_order, position: l.position, status: l.status ?? "reserve" }))}
           fieldPositionsCalibration={fieldPositionsCalibration}
           inning={state.inning}
           outs={state.outs}

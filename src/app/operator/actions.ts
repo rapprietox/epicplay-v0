@@ -9,6 +9,7 @@ import type {
   GameEventType,
   HitType,
   InningHalf,
+  LineupStatus,
   OutType,
   PitchOutcome,
   PitchType,
@@ -19,7 +20,8 @@ import type {
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 import { RESULT_IS_OUT } from "@/lib/operator/types";
 import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
-import { assertGameIsActive, decideChainSubstitutionWrite } from "@/lib/operator/chain-substitution";
+import { assertGameIsActive } from "@/lib/operator/chain-substitution";
+import { computeChainSlots, describeSlotError, applyChainWrites, type SlotRow, type ChainWriteOps } from "@/lib/operator/chain-slots";
 import { parseVoiceCommand, type VoiceCommand } from "@/lib/anthropic";
 import { generatePostGameAnalysis } from "@/lib/post-game-analysis";
 
@@ -904,125 +906,121 @@ export interface ChainSubstitutionInput {
   chainNote: string;
 }
 
+// fix/chain-slots: the whole batting-order-slot decision (previously
+// decideChainSubstitutionWrite, which the no-outgoing-player branch
+// below used to skip calling entirely -- see src/lib/operator/chain-slots.ts's
+// own top comment for why that was exactly the 2026-11-13 incident)
+// now lives in computeChainSlots, run against a single fresh read of
+// the WHOLE lineup rather than two targeted per-player lookups. There
+// is no early skip left to bypass: every call, outgoing player or not,
+// goes through the same validation.
 export async function confirmChainSubstitution(gameId: string, input: ChainSubstitutionInput) {
   const { supabase } = await requireOperatorGame(gameId);
 
-  let incomingBattingOrder: number | null = null;
-  if (input.outgoingPlayerId) {
-    const [{ data: existingSub, error: existingSubError }, { data: outgoingRow, error: outgoingLookupError }, { data: incomingRow, error: incomingLookupError }] =
-      await Promise.all([
-        supabase
-          .from("substitutions")
-          .select("id")
-          .eq("game_id", gameId)
-          .eq("player_out_id", input.outgoingPlayerId)
-          .eq("player_in_id", input.incomingPlayerId)
-          .maybeSingle(),
-        supabase.from("lineup").select("batting_order").eq("game_id", gameId).eq("player_id", input.outgoingPlayerId).maybeSingle(),
-        supabase.from("lineup").select("batting_order").eq("game_id", gameId).eq("player_id", input.incomingPlayerId).maybeSingle(),
-      ]);
-    if (existingSubError) throw new Error(existingSubError.message);
-    if (outgoingLookupError) throw new Error(outgoingLookupError.message);
-    if (incomingLookupError) throw new Error(incomingLookupError.message);
+  const { data: lineupRows, error: lineupError } = await supabase.from("lineup").select("player_id, batting_order, position, status").eq("game_id", gameId);
+  if (lineupError) throw new Error(lineupError.message);
+  const preChainRows: SlotRow[] = (lineupRows ?? []).map((r) => ({ playerId: r.player_id, battingOrder: r.batting_order, position: r.position, status: r.status ?? "reserve" }));
 
-    const decision = decideChainSubstitutionWrite({
-      existingSubstitutionExists: !!existingSub,
-      outgoingBattingOrder: outgoingRow?.batting_order ?? null,
-      incomingOwnBattingOrder: incomingRow?.batting_order ?? null,
-    });
-    if (decision.skip) {
-      // Already recorded by a prior call -- a repeat (retry-queue
-      // replay, a double tap) must not duplicate the substitutions row
-      // or re-derive batting_order from a lineup row a prior run has
-      // already cleared to null. Nothing left to do.
-      return;
-    }
-    incomingBattingOrder = decision.incomingBattingOrder;
-  }
-
-  // Loud-substitutions batch: every lineup update below now chains
-  // .select("id") and checks the returned row count. Supabase/PostgREST
-  // returns no error (and, without .select(), no row count at all) for
-  // an UPDATE whose WHERE clause matches zero rows -- so a stale
-  // incoming/outgoing/moved player id (a race with another device, a
-  // bench list that drifted out of date) would otherwise "succeed"
-  // having silently touched nothing. That's exactly the kind of
-  // zero-row no-op this request asked to turn into a real, thrown error
-  // instead of a reported success.
-  //
-  // Bug found and fixed along the way, via the new replay test's
-  // success case: the outgoing player is now cleared to null BEFORE
-  // the incoming player is written, not after. The previous order
-  // (incoming first) wrote the outgoing player's own batting_order
-  // number onto the incoming row WHILE the outgoing row still held
-  // that same number -- lineup has `unique (game_id, batting_order)`
-  // (20260907120006_lineup.sql), and that constraint isn't deferrable,
-  // so Postgres rejects the duplicate the instant the incoming UPDATE
-  // commits. This isn't a theoretical risk: it's the common case for
-  // this whole feature (a bench player, batting_order already null,
-  // taking over a numbered starter's slot) -- every such substitution
-  // was hitting this and throwing, previously straight into the silent
-  // retry queue. Clearing outgoing first means the slot number is
-  // never claimed by two rows at once, so this can't recur.
-  if (input.outgoingPlayerId) {
-    const { data: outgoingUpdated, error: outgoingError } = await supabase
-      .from("lineup")
-      .update({ position: null, batting_order: null, status: "reserve" })
-      .eq("game_id", gameId)
-      .eq("player_id", input.outgoingPlayerId)
-      .select("id");
-    if (outgoingError) throw new Error(outgoingError.message);
-    if (!outgoingUpdated || outgoingUpdated.length === 0) {
-      throw new Error("Cannot complete this substitution: no lineup row found for the outgoing player.");
-    }
-  }
-
-  const { data: incomingUpdated, error: incomingError } = await supabase
-    .from("lineup")
-    .update({ position: input.entryPosition, batting_order: incomingBattingOrder, status: "starting" })
-    .eq("game_id", gameId)
-    .eq("player_id", input.incomingPlayerId)
-    .select("id");
-  if (incomingError) throw new Error(incomingError.message);
-  if (!incomingUpdated || incomingUpdated.length === 0) {
-    throw new Error("Cannot complete this substitution: no lineup row found for the incoming player.");
-  }
-
-  for (const move of input.positionMoves) {
-    const { data: moveUpdated, error: moveError } = await supabase
-      .from("lineup")
-      .update({ position: move.position })
-      .eq("game_id", gameId)
-      .eq("player_id", move.playerId)
-      .select("id");
-    if (moveError) throw new Error(moveError.message);
-    if (!moveUpdated || moveUpdated.length === 0) {
-      throw new Error("Cannot complete this substitution: no lineup row found for a repositioned player.");
-    }
-  }
-
-  if (input.outgoingPlayerId) {
-    const { error: subError } = await supabase.from("substitutions").insert({
-      game_id: gameId,
-      player_out_id: input.outgoingPlayerId,
-      player_in_id: input.incomingPlayerId,
-      reason: input.reason,
-      inning: input.inning,
-      inning_half: input.inningHalf,
-    });
-    if (subError) throw new Error(subError.message);
-  }
-
-  const { error: eventError } = await supabase.from("game_events").insert({
-    game_id: gameId,
-    inning: input.inning,
-    inning_half: input.inningHalf,
-    event_type: "substitution",
-    note: input.chainNote,
-    player_id: input.incomingPlayerId,
-    opponent_player_id: null,
+  const result = computeChainSlots(preChainRows, {
+    incomingPlayerId: input.incomingPlayerId,
+    entryPosition: input.entryPosition,
+    outgoingPlayerId: input.outgoingPlayerId,
+    positionMoves: input.positionMoves,
   });
-  if (eventError) throw new Error(eventError.message);
+  if (!result.ok) {
+    // Loud by construction: this is the exact guard that used to be
+    // unreachable whenever outgoingPlayerId was null. Every chain, with
+    // or without a named outgoing player, is validated here before a
+    // single row is written.
+    throw new Error(describeSlotError(result));
+  }
+
+  // Retry-safety: a repeat submission of the exact same already-applied
+  // chain (a retry-queue replay, a double tap) naturally recomputes to
+  // no actual change for every touched row once the first attempt has
+  // already landed -- computeChainSlots reads the CURRENT lineup fresh
+  // every time, it never trusts a value a prior run might have already
+  // moved. Detected here as "nothing to write" rather than a separate
+  // existing-substitution lookup, since a multi-hop chain can produce
+  // more than one substitutions pair now, not just the one pair the old
+  // single-lookup check could represent.
+  const preChainByPlayer = new Map(preChainRows.map((r) => [r.playerId, r]));
+  const realUpdates = result.updates.filter((u) => {
+    const before = preChainByPlayer.get(u.playerId);
+    return !before || before.battingOrder !== u.battingOrder || before.position !== u.position || before.status !== u.status;
+  });
+  if (realUpdates.length === 0) return;
+
+  const substitutionPairsToInsert = [];
+  for (const pair of result.substitutionPairs) {
+    const { data: existingSub, error: existingSubError } = await supabase
+      .from("substitutions")
+      .select("id")
+      .eq("game_id", gameId)
+      .eq("player_out_id", pair.playerOutId)
+      .eq("player_in_id", pair.playerInId)
+      .maybeSingle();
+    if (existingSubError) throw new Error(existingSubError.message);
+    if (!existingSub) substitutionPairsToInsert.push(pair);
+  }
+
+  // "Atomic or restored": every lineup row this chain touches is
+  // written, then the substitutions row(s), then the game_events note --
+  // if any single write in that sequence fails, every row this attempt
+  // already changed is written back to its exact pre-chain value, and
+  // any substitutions/game_events rows this attempt already inserted
+  // are deleted, before the error reaches the caller. See
+  // applyChainWrites' own comment for why this is a compensating-write
+  // sequence, not a real database transaction (no migration in this
+  // batch, so no Postgres function to wrap one in).
+  const ops: ChainWriteOps = {
+    async updateLineupRow(playerId, values) {
+      const { data, error } = await supabase
+        .from("lineup")
+        .update({ batting_order: values.battingOrder, position: values.position, status: values.status as LineupStatus })
+        .eq("game_id", gameId)
+        .eq("player_id", playerId)
+        .select("id");
+      if (error) throw new Error(error.message);
+      if (!data || data.length === 0) {
+        throw new Error("Cannot complete this substitution: no lineup row found for a player in this chain.");
+      }
+    },
+    async insertSubstitution(pair) {
+      const { data, error } = await supabase
+        .from("substitutions")
+        .insert({ game_id: gameId, player_out_id: pair.playerOutId, player_in_id: pair.playerInId, reason: input.reason, inning: input.inning, inning_half: input.inningHalf })
+        .select("id")
+        .single();
+      if (error) throw new Error(error.message);
+      return data.id;
+    },
+    async deleteSubstitution(id) {
+      await supabase.from("substitutions").delete().eq("id", id);
+    },
+    async insertGameEvent() {
+      const { data, error } = await supabase
+        .from("game_events")
+        .insert({
+          game_id: gameId,
+          inning: input.inning,
+          inning_half: input.inningHalf,
+          event_type: "substitution",
+          note: input.chainNote,
+          player_id: input.incomingPlayerId,
+          opponent_player_id: null,
+        })
+        .select("id")
+        .single();
+      if (error) throw new Error(error.message);
+      return data.id;
+    },
+    async deleteGameEvent(id) {
+      await supabase.from("game_events").delete().eq("id", id);
+    },
+  };
+
+  await applyChainWrites(ops, preChainRows, { updates: realUpdates, substitutionPairs: substitutionPairsToInsert });
 }
 
 // Loud-substitutions batch: called by the client right after a
