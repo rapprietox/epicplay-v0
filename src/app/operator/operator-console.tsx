@@ -61,6 +61,7 @@ import { formatAvg, type BattingLine } from "@/lib/stats";
 import { loadOperatorStateLocal, saveOperatorStateLocal, clearOperatorStateLocal } from "@/lib/operator/local-storage";
 import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
 import { withOfflineRetry, onQueueChange, pendingCount } from "@/lib/operator/sync-queue";
+import { GAME_NOT_ACTIVE_ERROR } from "@/lib/operator/chain-substitution";
 import { buildInitialStateFromServer } from "./initial-state";
 import {
   adjustScore,
@@ -68,6 +69,7 @@ import {
   confirmChainSubstitution,
   confirmDoublePlay,
   confirmIntentionalWalk,
+  getLineupForGame,
   incrementAtBatRbi,
   logGameEvent,
   logPitch,
@@ -346,6 +348,20 @@ export function OperatorConsole({
   // prop so a chain's effects show up immediately, the same
   // optimistic-local-first pattern as substitutionLog/lateArrivalIds.
   const [liveLineup, setLiveLineup] = useState<Lineup[]>(lineup);
+  // Loud-substitutions batch: liveLineup/substitutionLog no longer
+  // update optimistically the instant a chain resolves -- they wait for
+  // confirmChainSubstitution to actually succeed (see
+  // runChainSubstitution below). These two track that in-between state:
+  // pendingChainSubIds names the rows the lineup strip should show as
+  // "Saving…" while the request is in flight (the outgoing player and
+  // anyone else whose position is changing -- the incoming player has
+  // no visible row to mark pending, since they don't appear in the
+  // batting-order strip until the swap actually lands); chainSubError
+  // is the one active failure banner, if any (null the rest of the
+  // time), carrying its own retry closure when the failure is one a
+  // retry could plausibly fix.
+  const [pendingChainSubIds, setPendingChainSubIds] = useState<Set<string>>(new Set());
+  const [chainSubError, setChainSubError] = useState<{ message: string; retryable: boolean; retry: () => void } | null>(null);
   // Feature 2 (lineup-status batch): the chain-substitution modal opens
   // via the existing SET_PANEL "substitution" reducer action (renamed in
   // spirit, not in code, from the old dropdown-based panel it replaces);
@@ -1615,47 +1631,47 @@ export function OperatorConsole({
   // rather than a new one -- swapping a base's occupant is exactly what
   // that action already does.
   // Feature 2 (lineup-status batch): replaces the old dropdown-based
-  // handleSubstitutionConfirm -- ChainSubstitutionModal already resolves
-  // the entire chain (arbitrarily many position-only movers plus one
-  // real in/out pair) before calling back here, so this only needs to
-  // apply that finished result: update the local lineup mirror, feed
-  // substitutedOutIds' no-re-entry bookkeeping, persist, and (same Fix 2
-  // bug this replaces) swap a baserunner's dot if the outgoing player
-  // happened to be on base.
+  // Loud-substitutions batch: this used to apply the chain to liveLineup
+  // optimistically and fire confirmChainSubstitution through the silent
+  // offline-retry queue (void withOfflineRetry(...), result never
+  // checked) -- a coach saw the lineup strip update instantly no matter
+  // what the server call actually did, including when it failed outright
+  // (a permanent "game not active" rejection was dropped with zero
+  // trace) or kept failing forever in the background queue (a generic,
+  // easy-to-miss "N syncing…" chip, named to nothing in particular).
+  // Rewritten so the strip only ever shows what's actually saved:
+  // handleChainResolved itself now only closes the panel and kicks off
+  // runChainSubstitution, which awaits the real result before touching
+  // liveLineup/substitutionLog at all.
   function handleChainResolved(result: ChainResult) {
-    setLiveLineup((prev) => {
-      const next = prev.map((l) => ({ ...l }));
-      const row = (playerId: string) => next.find((l) => l.player_id === playerId);
+    dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
+    void runChainSubstitution(result);
+  }
 
-      let inheritedBattingOrder: number | null = null;
-      if (result.outgoingPlayerId) {
-        const outgoingRow = row(result.outgoingPlayerId);
-        inheritedBattingOrder = outgoingRow?.batting_order ?? null;
-        if (outgoingRow) {
-          outgoingRow.position = null;
-          outgoingRow.batting_order = null;
-          outgoingRow.status = "reserve";
-        }
-      }
-      const incomingRow = row(result.incomingPlayerId);
-      if (incomingRow) {
-        incomingRow.position = result.entryPosition;
-        incomingRow.batting_order = inheritedBattingOrder;
-        incomingRow.status = "starting";
-      }
-      for (const move of result.positionMoves) {
-        const r = row(move.playerId);
-        if (r) r.position = move.position;
-      }
-      return next;
-    });
+  async function runChainSubstitution(result: ChainResult) {
+    // Rows the lineup strip should show as "Saving…" while this is in
+    // flight -- the outgoing player (still visible, about to be
+    // replaced) and anyone else whose position is changing. The
+    // incoming player has no row to mark pending: a bench/reserve
+    // player has no batting_order, so they don't appear in the
+    // batting-order strip at all until the swap actually lands.
+    const pendingIds = new Set<string>();
+    if (result.outgoingPlayerId) pendingIds.add(result.outgoingPlayerId);
+    for (const move of result.positionMoves) pendingIds.add(move.playerId);
+    setPendingChainSubIds(pendingIds);
+    setChainSubError(null);
 
-    if (result.outgoingPlayerId) {
-      setSubstitutionLog((log) => [...log, { player_out_id: result.outgoingPlayerId!, player_in_id: result.incomingPlayerId }]);
-    }
+    const nameOf = (id: string | null) => (id ? players.find((p) => p.id === id)?.name ?? "Player" : "Player");
+    const subLabel = result.outgoingPlayerId
+      ? `${nameOf(result.incomingPlayerId)} for ${nameOf(result.outgoingPlayerId)}`
+      : nameOf(result.incomingPlayerId);
 
-    void withOfflineRetry(`chainsub-${game.id}-${Date.now()}`, () =>
-      confirmChainSubstitution(game.id, {
+    try {
+      // Awaited directly -- deliberately NOT routed through
+      // withOfflineRetry/the silent queue, per the request. A network
+      // blip is just another failure this surfaces with a Retry button,
+      // not a reason to queue it invisibly.
+      await confirmChainSubstitution(game.id, {
         incomingPlayerId: result.incomingPlayerId,
         entryPosition: result.entryPosition,
         outgoingPlayerId: result.outgoingPlayerId,
@@ -1664,42 +1680,83 @@ export function OperatorConsole({
         inning: state.inning,
         inningHalf: state.inningHalf,
         chainNote: result.chainNote,
-      })
-    );
+      });
 
-    dispatch({ type: "SET_PANEL", panel: "substitution", open: false });
+      // Success: re-read the lineup from the database and replace the
+      // local mirror wholesale, instead of trusting an optimistic patch
+      // applied before the write was even sent -- the strip always
+      // shows what the database actually holds now, not a guess of
+      // what the write probably did.
+      const freshLineup = await getLineupForGame(game.id);
+      setLiveLineup(freshLineup);
+      setPendingChainSubIds(new Set());
 
-    // Pitcher auto-default: a substitution can change who plays P too
-    // (the incoming player entering right at P, or an existing player
-    // getting moved there as part of the same chain) -- keep
-    // current_pitcher_id in sync with that the instant it happens,
-    // same reasoning as the end-of-inning default above. Only acts when
-    // this chain actually places someone new at P; a sub that leaves P
-    // untouched (the far more common case) is a no-op here.
-    const newPitcherId =
-      result.entryPosition === "P" ? result.incomingPlayerId : result.positionMoves.find((m) => m.position === "P")?.playerId ?? null;
-    if (newPitcherId && newPitcherId !== state.currentPitcherId) {
-      dispatch({ type: "SET_PITCHER", playerId: newPitcherId });
-      void withOfflineRetry(`subpitcher-${game.id}-${Date.now()}`, () =>
-        syncGameState(game.id, { current_pitcher_id: newPitcherId, pitch_count_for_current_pitcher: 0 })
+      if (result.outgoingPlayerId) {
+        setSubstitutionLog((log) => [...log, { player_out_id: result.outgoingPlayerId!, player_in_id: result.incomingPlayerId }]);
+      }
+
+      // Pitcher auto-default: a substitution can change who plays P too
+      // (the incoming player entering right at P, or an existing player
+      // getting moved there as part of the same chain) -- keep
+      // current_pitcher_id in sync with that the instant it happens,
+      // same reasoning as the end-of-inning default above. Only acts when
+      // this chain actually places someone new at P; a sub that leaves P
+      // untouched (the far more common case) is a no-op here. Now gated
+      // on the substitution having actually saved -- deriving this from
+      // a chain that never landed would be wrong, not just optimistic.
+      const newPitcherId =
+        result.entryPosition === "P" ? result.incomingPlayerId : result.positionMoves.find((m) => m.position === "P")?.playerId ?? null;
+      if (newPitcherId && newPitcherId !== state.currentPitcherId) {
+        dispatch({ type: "SET_PITCHER", playerId: newPitcherId });
+        void withOfflineRetry(`subpitcher-${game.id}-${Date.now()}`, () =>
+          syncGameState(game.id, { current_pitcher_id: newPitcherId, pitch_count_for_current_pitcher: 0 })
+        );
+      }
+
+      if (!result.outgoingPlayerId) return;
+      const occupiedBase = (["first", "second", "third"] as Base[]).find(
+        (b) => state.runners[b]?.type === "player" && state.runners[b]?.id === result.outgoingPlayerId
       );
+      if (!occupiedBase) return;
+
+      const incoming = players.find((p) => p.id === result.incomingPlayerId);
+      const newRunner: RunnerState = {
+        type: "player",
+        id: result.incomingPlayerId,
+        name: incoming?.name ?? "Pinch runner",
+        jersey: incoming?.jersey_number ? String(incoming.jersey_number) : null,
+      };
+      dispatch({ type: "SET_RUNNER", base: occupiedBase, runner: newRunner });
+      syncRunners({ ...state.runners, [occupiedBase]: newRunner });
+    } catch (err) {
+      setPendingChainSubIds(new Set());
+      // Re-read the lineup on failure too, not just success: a failure
+      // partway through confirmChainSubstitution (the outgoing player's
+      // slot cleared, then the incoming write itself failed) leaves a
+      // real partial state in the database -- the strip should show
+      // that honestly rather than keep displaying stale pre-attempt
+      // data while a red "didn't save" banner contradicts it. Best-
+      // effort: if even this fails (likely the same outage that just
+      // failed the substitution), fall back to leaving liveLineup as-is
+      // rather than let a second error here hide the first.
+      try {
+        setLiveLineup(await getLineupForGame(game.id));
+      } catch {
+        // Nothing better to do -- the error banner below still reports
+        // the original failure regardless.
+      }
+      const message = err instanceof Error ? err.message : "Something went wrong.";
+      // GAME_NOT_ACTIVE_ERROR is the one error requireOperatorGame throws
+      // that will never succeed on a later retry (see chain-substitution.ts) --
+      // every other failure (a network blip, a transient DB error, a
+      // zero-row update) is worth offering a retry for.
+      const permanent = message === GAME_NOT_ACTIVE_ERROR;
+      setChainSubError({
+        message: permanent ? `${subLabel} didn't save — ${message}` : `${subLabel} didn't save. ${message}`,
+        retryable: !permanent,
+        retry: () => void runChainSubstitution(result),
+      });
     }
-
-    if (!result.outgoingPlayerId) return;
-    const occupiedBase = (["first", "second", "third"] as Base[]).find(
-      (b) => state.runners[b]?.type === "player" && state.runners[b]?.id === result.outgoingPlayerId
-    );
-    if (!occupiedBase) return;
-
-    const incoming = players.find((p) => p.id === result.incomingPlayerId);
-    const newRunner: RunnerState = {
-      type: "player",
-      id: result.incomingPlayerId,
-      name: incoming?.name ?? "Pinch runner",
-      jersey: incoming?.jersey_number ? String(incoming.jersey_number) : null,
-    };
-    dispatch({ type: "SET_RUNNER", base: occupiedBase, runner: newRunner });
-    syncRunners({ ...state.runners, [occupiedBase]: newRunner });
   }
 
   // Feature 1 (lineup-status batch): "Add to Reserve" or "Out of Game" --
@@ -3096,6 +3153,36 @@ export function OperatorConsole({
             <p className="font-heading text-xs font-semibold text-accent-green">{summaryFlash}</p>
           </div>
         )}
+        {/* Loud-substitutions batch: replaces total silence (a permanent
+            "game not active" rejection) or an indefinitely-retrying,
+            unnamed "N syncing…" chip with a banner that names the
+            substitution, says plainly whether a retry can help, and
+            offers one when it can. Persists until retried/dismissed/
+            superseded -- unlike summaryFlash, this never auto-clears,
+            since an unsaved substitution isn't a "fyi," it's a problem
+            that needs a decision. */}
+        {chainSubError && (
+          <div className="glossy pointer-events-auto flex min-h-[48px] w-full max-w-[380px] items-center gap-2 rounded-md border border-accent-red/50 bg-accent-red/15 px-3 py-2">
+            <p className="flex-1 text-left text-xs font-semibold text-accent-red">{chainSubError.message}</p>
+            {chainSubError.retryable && (
+              <button
+                type="button"
+                onClick={chainSubError.retry}
+                className="shrink-0 rounded bg-accent-red px-2 py-1 text-[11px] font-bold text-white"
+              >
+                Retry
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setChainSubError(null)}
+              aria-label="Dismiss"
+              className="shrink-0 text-xs text-accent-red/70"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         {pendingSync > 0 && (
           <span className="pointer-events-auto rounded-full bg-accent-amber/20 px-3 py-1 text-[10px] text-accent-amber">{pendingSync} syncing…</span>
         )}
@@ -3158,6 +3245,7 @@ export function OperatorConsole({
             players={players}
             seasonBattingLines={seasonBattingLines}
             battedThisHalfInning={battedThisHalfInning}
+            pendingChainSubIds={pendingChainSubIds}
             collapsed={lineupStripCollapsed}
             onToggleCollapsed={() => setLineupStripCollapsed((c) => !c)}
             onPick={startQuickPick}
@@ -4212,6 +4300,7 @@ function QuickModeLeftPanel({
   players,
   seasonBattingLines,
   battedThisHalfInning,
+  pendingChainSubIds,
   collapsed,
   onToggleCollapsed,
   onPick,
@@ -4230,6 +4319,11 @@ function QuickModeLeftPanel({
   players: Player[];
   seasonBattingLines: Record<string, BattingLine>;
   battedThisHalfInning: Set<number>;
+  // Loud-substitutions batch: player ids whose lineup row is mid-save
+  // (a chain substitution awaiting confirmChainSubstitution) -- shown
+  // as "Saving…" in place of their usual on-deck/at-bat/done markers,
+  // so the strip never implies a swap has landed before it actually has.
+  pendingChainSubIds: Set<string>;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   onPick: (def: QuickModeButtonDef) => void;
@@ -4341,21 +4435,39 @@ function QuickModeLeftPanel({
                 const isCurrent = slot.batting_order === state.battingOrderPosition;
                 const isOnDeck = !isCurrent && slot.batting_order === nextBattingOrder;
                 const done = battedThisHalfInning.has(slot.batting_order) && !isCurrent;
+                const isSaving = pendingChainSubIds.has(slot.player_id);
                 const line = p ? seasonBattingLines[p.id] : undefined;
                 return (
                   <div
                     key={slot.id}
                     className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${
-                      isCurrent ? "bg-accent-green/15 text-white" : isOnDeck ? "bg-accent-primary/10 text-white" : "text-foreground/60"
+                      isSaving
+                        ? "bg-accent-amber/10 text-accent-amber opacity-70"
+                        : isCurrent
+                          ? "bg-accent-green/15 text-white"
+                          : isOnDeck
+                            ? "bg-accent-primary/10 text-white"
+                            : "text-foreground/60"
                     }`}
                   >
                     <span className="w-4 shrink-0 text-right font-mono text-foreground/40">{slot.batting_order}</span>
                     <span className="w-6 shrink-0 font-mono">#{p?.jersey_number ?? "—"}</span>
                     <span className="min-w-0 flex-1 truncate">{p?.name ?? "—"}</span>
-                    {line && <span className="shrink-0 font-mono text-[10px] text-foreground/40">{formatAvg(line.avg)}</span>}
-                    {isCurrent && <span className="shrink-0 text-[10px] font-bold text-accent-green">AT BAT</span>}
-                    {isOnDeck && <span className="shrink-0 text-[10px] font-bold text-accent-primary">ON DECK</span>}
-                    {done && <span className="shrink-0 text-accent-green">✓</span>}
+                    {/* Loud-substitutions batch: while a chain substitution
+                        involving this player is mid-save, replace every
+                        other marker with a plain "Saving…" -- there's
+                        nothing else worth showing about a row whose real
+                        state is still in flight. */}
+                    {isSaving ? (
+                      <span className="shrink-0 text-[10px] font-bold text-accent-amber">Saving…</span>
+                    ) : (
+                      <>
+                        {line && <span className="shrink-0 font-mono text-[10px] text-foreground/40">{formatAvg(line.avg)}</span>}
+                        {isCurrent && <span className="shrink-0 text-[10px] font-bold text-accent-green">AT BAT</span>}
+                        {isOnDeck && <span className="shrink-0 text-[10px] font-bold text-accent-primary">ON DECK</span>}
+                        {done && <span className="shrink-0 text-accent-green">✓</span>}
+                      </>
+                    )}
                   </div>
                 );
               })}
