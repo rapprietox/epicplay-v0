@@ -274,6 +274,11 @@ export interface Database {
           // clubhouse_unlocked is a one-time flip, never re-locked.
           invite_token: string | null;
           clubhouse_unlocked: boolean;
+          // Pro expiry batch: see the migration's own comment
+          // (20261113100001_clubhouse_unlocked_until.sql) -- null means
+          // no expiry, otherwise isClubhouseActive() checks this against
+          // now(). Never read directly outside that helper.
+          clubhouse_unlocked_until: string | null;
           // Clubhouse Pro enhancement, Part 3: see the migration's own
           // comment (20260929120001_players_kairos_and_atbats_situational.sql)
           // -- messages_used/reset_date drive the monthly credit budget,
@@ -305,6 +310,7 @@ export interface Database {
           throwing_hand?: ThrowingHand | null;
           invite_token?: string | null;
           clubhouse_unlocked?: boolean;
+          clubhouse_unlocked_until?: string | null;
           kairos_messages_used?: number;
           kairos_messages_reset_date?: string;
           kairos_initial_assessment?: string | null;

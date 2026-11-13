@@ -1,6 +1,7 @@
 import { formatAvg, type BattingLine } from "@/lib/stats";
 import { epsTier, EPS_TIER_LABEL } from "@/lib/eps";
 import { EpsInfoTrigger } from "@/components/eps-info-panel";
+import { isClubhouseActive } from "@/lib/clubhouse-access";
 import type { Database } from "@/lib/supabase/types";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
@@ -20,6 +21,10 @@ export function ClubhouseHeader({
   // unlocked or under the 5-PA minimum, both rendered as "--".
   eps: number | null;
 }) {
+  // Pro expiry batch: was a raw player.clubhouse_unlocked read -- an
+  // expired player must drop back to the 4-stat (no EPS) layout, same
+  // as never having unlocked.
+  const clubhouseActive = isClubhouseActive(player);
   return (
     <header className="glossy flex flex-col items-center gap-4 rounded-lg border border-border bg-surface p-6 text-center sm:flex-row sm:text-left">
       <div
@@ -34,12 +39,12 @@ export function ClubhouseHeader({
           #{player.jersey_number ?? "—"} · {player.position ?? "—"} · {teamName}
         </p>
       </div>
-      <div className={`grid shrink-0 gap-4 sm:gap-6 ${player.clubhouse_unlocked ? "grid-cols-5" : "grid-cols-4"}`}>
+      <div className={`grid shrink-0 gap-4 sm:gap-6 ${clubhouseActive ? "grid-cols-5" : "grid-cols-4"}`}>
         <SnapshotStat label="AVG" value={line ? formatAvg(line.avg) : "—"} />
         <SnapshotStat label="HR" value={line ? String(line.hr) : "—"} />
         <SnapshotStat label="RBI" value={line ? String(line.rbi) : "—"} />
         <SnapshotStat label="OPS" value={line ? line.ops.toFixed(3) : "—"} />
-        {player.clubhouse_unlocked && (
+        {clubhouseActive && (
           <SnapshotStat
             label={
               <span className="inline-flex items-center gap-1">

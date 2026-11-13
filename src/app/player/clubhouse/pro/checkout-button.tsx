@@ -2,9 +2,13 @@
 
 import { useState, useTransition } from "react";
 import { createClubhouseCheckoutSession } from "../actions";
-import { PRO_PRICE_DISPLAY, PRO_VALID_UNTIL_LABEL, PRO_NEXT_PRICE_NOTE } from "@/lib/pricing";
+import { PRO_VALID_UNTIL_LABEL, PRO_NEXT_PRICE_NOTE } from "@/lib/pricing";
 
-export function CheckoutButton() {
+// Pro expiry batch: priceDisplay now comes from the server (page.tsx ->
+// ProSection), derived from the live Stripe Price rather than the old
+// hardcoded PRO_PRICE_DISPLAY import -- Stripe retrieval needs the
+// secret key, which can't happen in this "use client" component.
+export function CheckoutButton({ priceDisplay }: { priceDisplay: string }) {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -29,7 +33,7 @@ export function CheckoutButton() {
         className="glossy min-h-[52px] w-full max-w-xs rounded-lg px-6 text-base font-bold uppercase tracking-wide text-background transition disabled:opacity-50"
         style={{ backgroundColor: "#F0C060" }}
       >
-        {isPending ? "Loading…" : `Unlock Clubhouse Pro — ${PRO_PRICE_DISPLAY}`}
+        {isPending ? "Loading…" : `Unlock Clubhouse Pro — ${priceDisplay}`}
       </button>
       <p className="text-center text-xs text-foreground/50">One-time payment. Valid until {PRO_VALID_UNTIL_LABEL}. No subscription.</p>
       <p className="text-center text-xs text-accent-gold/70">{PRO_NEXT_PRICE_NOTE}</p>

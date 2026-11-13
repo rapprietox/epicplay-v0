@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { stripe } from "@/lib/stripe";
 import { redeemPromoCodeServerSide } from "@/lib/promo-codes";
+import { isClubhouseActive } from "@/lib/clubhouse-access";
 
 async function requirePlayer() {
   const supabase = createClient();
@@ -39,9 +40,12 @@ export async function createClubhouseCheckoutSession(): Promise<CheckoutResult> 
   try {
     const { supabase, playerId } = await requirePlayer();
 
-    const { data: player } = await supabase.from("players").select("name, clubhouse_unlocked").eq("id", playerId).single();
+    const { data: player } = await supabase.from("players").select("name, clubhouse_unlocked, clubhouse_unlocked_until").eq("id", playerId).single();
     if (!player) return { ok: false, error: "Couldn't find your player profile -- try reloading the page." };
-    if (player.clubhouse_unlocked) return { ok: false, error: "Clubhouse Pro is already unlocked for you." };
+    // Pro expiry batch: isClubhouseActive, not the raw boolean -- an
+    // expired player (clubhouse_unlocked still true, clubhouse_unlocked_until
+    // in the past) must be able to buy again.
+    if (isClubhouseActive(player)) return { ok: false, error: "Clubhouse Pro is already unlocked for you." };
 
     const priceId = process.env.STRIPE_PRICE_ID;
     if (!priceId) {

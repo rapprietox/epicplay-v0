@@ -14,6 +14,8 @@ import { computeHeadToHead } from "@/lib/head-to-head";
 import { computeMilestones } from "@/lib/milestones";
 import { computeEpsForPlayer } from "@/lib/eps";
 import { isFreePreviewActive } from "@/lib/free-preview";
+import { isClubhouseActive } from "@/lib/clubhouse-access";
+import { getClubhouseProPriceDisplay } from "@/lib/clubhouse-price";
 import { ClubhouseHeader } from "./header";
 import { ClubhouseNavBar } from "./clubhouse-nav-bar";
 import { PregameCard } from "./pregame-card";
@@ -49,6 +51,12 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
     supabase.from("teams").select("name").eq("id", profile.team_id).single(),
   ]);
   if (!player) redirect("/player");
+
+  // Pro expiry batch: resolved once, used everywhere below instead of
+  // the raw player.clubhouse_unlocked boolean -- an expired unlock
+  // (clubhouse_unlocked still true, clubhouse_unlocked_until in the
+  // past) must read as locked, same as never having unlocked at all.
+  const clubhouseActive = isClubhouseActive(player);
 
   const { data: games } = await supabase.from("games").select("*").eq("team_id", profile.team_id);
   const allGames = games ?? [];
@@ -100,7 +108,7 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   // EPS batch: SB_success_rate needs caught-stealing counts, only in
   // game_events -- Clubhouse Pro only (gated below), so skip the query
   // entirely for a free-tier player.
-  const { data: caughtStealingEvents } = player.clubhouse_unlocked && gameIds.length
+  const { data: caughtStealingEvents } = clubhouseActive && gameIds.length
     ? await supabase.from("game_events").select("event_type, player_id, game_id").eq("player_id", player.id).in("game_id", gameIds).eq("event_type", "caught_stealing")
     : { data: [] };
 
@@ -119,10 +127,10 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
 
   const seasonLine = computeBattingLines(confirmedAtBats, stolenBases ?? []).get(player.id);
   // Feature 3 (EPS): Clubhouse Pro only, per the request's own scoping.
-  const eps = player.clubhouse_unlocked ? computeEpsForPlayer(player.id, confirmedAtBats, caughtStealingEvents ?? []) : null;
+  const eps = clubhouseActive ? computeEpsForPlayer(player.id, confirmedAtBats, caughtStealingEvents ?? []) : null;
   // Free preview batch: only meaningful for a still-locked player -- a
   // Pro player's view never changes because of it.
-  const freePreviewActive = !player.clubhouse_unlocked && isFreePreviewActive();
+  const freePreviewActive = !clubhouseActive && isFreePreviewActive();
 
   // Zone data for the mini Map 1 panel + ZoneAnalyticsRow, mirroring the
   // same "last pitch of the at-bat is the zone" derivation the coach's
@@ -178,7 +186,13 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   // actually unlocked -- an unlocked player is the only one who'll ever
   // see it, so there's no reason to spend an Anthropic call (or wait on
   // one) for a locked player.
-  const kairosAssessment = player.clubhouse_unlocked ? await getOrCreateInitialAssessment() : "";
+  const kairosAssessment = clubhouseActive ? await getOrCreateInitialAssessment() : "";
+
+  // Pro expiry batch: derived from the live Stripe Price, with the
+  // pricing.ts constant as its own internal fallback -- only worth
+  // fetching for a still-locked player, since an active Pro player
+  // never sees the checkout button at all.
+  const proPriceDisplay = clubhouseActive ? "" : await getClubhouseProPriceDisplay();
 
   // Games this player actually appeared in, most recent first -- "game
   // history" is personal ("their line"), so a game they didn't bat in
@@ -289,10 +303,11 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
           viewerPlayerId={player.id}
         />
 
-        {searchParams.unlocked === "1" && !player.clubhouse_unlocked && <UnlockingBanner />}
+        {searchParams.unlocked === "1" && !clubhouseActive && <UnlockingBanner />}
 
         <ProSection
-          unlocked={player.clubhouse_unlocked}
+          unlocked={clubhouseActive}
+          priceDisplay={proPriceDisplay}
           freePreviewActive={freePreviewActive}
           playerId={player.id}
           battingAvgZoneLines={battingAvgZoneLines}

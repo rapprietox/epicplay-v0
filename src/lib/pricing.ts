@@ -5,6 +5,14 @@ export const PRO_PRICE_DISPLAY = "$10";
 export const PRO_VALID_UNTIL_LABEL = "the end of the 2026 season";
 export const PRO_NEXT_PRICE_NOTE = "Founding price. It goes to $30 in January.";
 
+// Pro expiry batch: the single source of truth for "when does a fresh
+// unlock expire" -- both write paths (the Stripe webhook's
+// checkout.session.completed handler and promo-code redemption) read
+// this one constant rather than each hardcoding the season-end date.
+// Matches PRO_VALID_UNTIL_LABEL's "the end of the 2026 season" copy
+// above as an actual enforced timestamp, not just marketing text.
+export const PRO_VALID_UNTIL = "2026-12-31T23:59:59Z";
+
 // Launch-capture batch: the main platform is free until Dec 31, 2026
 // (see Hero.tsx/LaunchBanner.tsx copy) with no pricing shown anywhere
 // on the launch page yet -- "Pricing stays hidden." This is a

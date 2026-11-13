@@ -8,6 +8,7 @@ import { ensureInitialAssessment, regenerateAssessment, type AssessmentZoneInput
 import { computeBattingLines, formatAvg } from "@/lib/stats";
 import { computeZoneBattingLines, computeZoneWhiffLines, zoneIndexFromCoords, extendedZoneLabel, zoneLabel9, resultCategory } from "@/lib/heat-map";
 import { isFreePreviewActive, FREE_PREVIEW_KAIROS_MESSAGES } from "@/lib/free-preview";
+import { isClubhouseActive } from "@/lib/clubhouse-access";
 import type { AtBatResult, PitchOutcome } from "@/lib/supabase/types";
 
 // Clubhouse Pro enhancement, Part 3. Mirrors src/app/coach/kairos-actions.ts's
@@ -61,7 +62,7 @@ function extractText(message: Anthropic.Message): string {
 
 async function fetchPlayerContext(supabase: ReturnType<typeof createClient>, teamId: string, playerId: string) {
   const [{ data: player }, { data: team }, { data: games }] = await Promise.all([
-    supabase.from("players").select("name, position, clubhouse_unlocked").eq("id", playerId).single(),
+    supabase.from("players").select("name, position, clubhouse_unlocked, clubhouse_unlocked_until").eq("id", playerId).single(),
     supabase.from("teams").select("name").eq("id", teamId).single(),
     supabase.from("games").select("*").eq("team_id", teamId),
   ]);
@@ -225,8 +226,8 @@ export async function askPlayerKairos(history: KairosMessage[], message: string)
     // ever goes to this signed-in player, scoped by the server" rule the
     // spray-chart/game-detail routes already follow. A locked player
     // outside the preview window gets a plain refusal, no Anthropic call.
-    const { data: playerRow } = await supabase.from("players").select("clubhouse_unlocked").eq("id", playerId).single();
-    const unlocked = Boolean(playerRow?.clubhouse_unlocked);
+    const { data: playerRow } = await supabase.from("players").select("clubhouse_unlocked, clubhouse_unlocked_until").eq("id", playerId).single();
+    const unlocked = playerRow ? isClubhouseActive(playerRow) : false;
     const freePreview = !unlocked && isFreePreviewActive();
 
     if (!unlocked && !freePreview) {

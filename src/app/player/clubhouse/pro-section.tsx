@@ -44,6 +44,7 @@ interface ZonePitch {
 // data.
 export function ProSection({
   unlocked,
+  priceDisplay,
   freePreviewActive,
   playerId,
   battingAvgZoneLines,
@@ -67,6 +68,10 @@ export function ProSection({
   milestones,
 }: {
   unlocked: boolean;
+  // Pro expiry batch: pre-resolved on the server (page.tsx), since
+  // deriving it needs stripe.prices.retrieve, which can't run from this
+  // client-rendered locked-state branch.
+  priceDisplay: string;
   // Free preview batch: whether src/lib/free-preview.ts's
   // isFreePreviewActive() is currently true -- only meaningful when
   // !unlocked (a Pro player's view never changes because of it).
@@ -141,7 +146,7 @@ export function ProSection({
           <WhatYouGet />
 
           <div className="mt-6 flex flex-col items-center gap-4">
-            <CheckoutButton />
+            <CheckoutButton priceDisplay={priceDisplay} />
             <PromoCodeForm />
           </div>
         </section>

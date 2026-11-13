@@ -1,5 +1,7 @@
 import "server-only";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { extendExpiry } from "@/lib/clubhouse-access";
+import { PRO_VALID_UNTIL } from "@/lib/pricing";
 
 export type RedeemPromoCodeResult = { ok: true } | { ok: false; error: string };
 
@@ -67,7 +69,20 @@ export async function redeemPromoCodeServerSide({
     }
     if (!claimed) return { ok: false, error: GENERIC_ERROR };
 
-    const { error: unlockError } = await supabase.from("players").update({ clubhouse_unlocked: true }).eq("id", playerId).eq("team_id", teamId);
+    // Pro expiry batch: same "extend, not shorten" rule the Stripe
+    // webhook follows -- a promo code redeemed by a player whose Stripe
+    // purchase already covers them further out than PRO_VALID_UNTIL
+    // (shouldn't normally happen, but a promo code has no "already
+    // active" guard the way checkout does) must not shorten their
+    // existing expiry.
+    const { data: beforeUnlock } = await supabase.from("players").select("clubhouse_unlocked, clubhouse_unlocked_until").eq("id", playerId).single();
+    const nextUntil = extendExpiry(beforeUnlock ?? { clubhouse_unlocked: false, clubhouse_unlocked_until: null }, PRO_VALID_UNTIL);
+
+    const { error: unlockError } = await supabase
+      .from("players")
+      .update({ clubhouse_unlocked: true, clubhouse_unlocked_until: nextUntil })
+      .eq("id", playerId)
+      .eq("team_id", teamId);
     if (unlockError) {
       console.error("[redeemPromoCodeServerSide] players.clubhouse_unlocked update failed", { playerId, teamId, error: unlockError });
       return { ok: false, error: GENERIC_ERROR };
