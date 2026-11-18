@@ -6,7 +6,9 @@ import { computeBattingLines, formatAvg } from "@/lib/stats";
 import { generateOpponentInsight, type OpponentInsightInput } from "@/lib/anthropic";
 import { createClient } from "@/lib/supabase/server";
 import { computePitchArsenal, computeBatterLinesVsPitcher, computeBatterLinesByPitchType, teamAvgAgainst } from "@/lib/opponent-scouting";
-import type { PitchType } from "@/lib/supabase/types";
+import { fetchInChunks } from "@/lib/supabase/safe-fetch";
+import { DataLoadError } from "@/components/data-load-error";
+import type { PitchOutcome, PitchType } from "@/lib/supabase/types";
 
 type Game = Database["public"]["Tables"]["games"]["Row"];
 type AtBat = Database["public"]["Tables"]["at_bats"]["Row"];
@@ -76,7 +78,7 @@ export async function NextGamePanel({
       .map((g) => g.id)
   );
 
-  const { text: insight, pitcherReport } = await buildInsight(nextGame, allGames, atBats, players, pastGameIds);
+  const { text: insight, pitcherReport, pitcherReportError } = await buildInsight(nextGame, allGames, atBats, players, pastGameIds);
 
   return (
     <section className="glossy rounded-lg border border-accent-amber/40 bg-surface p-6">
@@ -113,7 +115,13 @@ export async function NextGamePanel({
           renders once a specific opposing pitcher has actually been
           identified against us (opponent_pitcher_id set on a real
           at-bat) -- a roster position guess alone isn't "known" here. */}
-      {pitcherReport && (
+      {pitcherReportError && (
+        <div className="mt-5">
+          <DataLoadError label="Couldn't load the opposing pitcher's data. Try again." />
+        </div>
+      )}
+
+      {!pitcherReportError && pitcherReport && (
         <div className="mt-5 rounded-md border border-accent-primary/30 bg-background/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-accent-primary">
             Known Pitcher: #{pitcherReport.jerseyNumber ?? "—"} {pitcherReport.pitcherName}
@@ -153,9 +161,13 @@ async function buildInsight(
   atBats: AtBat[],
   players: Player[],
   pastGameIds: Set<string>
-): Promise<{ text: string; pitcherReport: OpponentInsightInput["pitcherReport"] }> {
+): Promise<{ text: string; pitcherReport: OpponentInsightInput["pitcherReport"]; pitcherReportError: boolean }> {
   if (pastGameIds.size === 0) {
-    return { text: `No history against ${nextGame.opponent_name} yet — this will be our first matchup.`, pitcherReport: null };
+    return {
+      text: `No history against ${nextGame.opponent_name} yet — this will be our first matchup.`,
+      pitcherReport: null,
+      pitcherReportError: false,
+    };
   }
 
   const pastGames = allGames
@@ -184,7 +196,21 @@ async function buildInsight(
     .sort((a, b) => b.avg - a.avg)
     .slice(0, 5);
 
-  const pitcherReport = await buildPitcherReport(relevantAtBats, players);
+  // Data-reliability batch: a thrown fetch here (the pitches lookup
+  // inside buildPitcherReport) used to be unguarded -- it would have
+  // crashed this whole panel's render. Caught here specifically because
+  // this is the one place that knows the difference between "no known
+  // pitcher yet" (pitcherReport === null, a real and common state) and
+  // "couldn't load pitcher data" (pitcherReportError === true) -- the
+  // component below shows a retry notice only for the latter.
+  let pitcherReport: OpponentInsightInput["pitcherReport"] = null;
+  let pitcherReportError = false;
+  try {
+    pitcherReport = await buildPitcherReport(relevantAtBats, players);
+  } catch (err) {
+    console.error(`[next-game-panel] pitcher report fetch failed for ${nextGame.opponent_name}`, err);
+    pitcherReportError = true;
+  }
 
   try {
     const text = await generateOpponentInsight({
@@ -193,7 +219,7 @@ async function buildInsight(
       playerPerformances,
       pitcherReport,
     });
-    if (text) return { text, pitcherReport };
+    if (text) return { text, pitcherReport, pitcherReportError };
   } catch {
     // Fall through to the static summary below.
   }
@@ -209,7 +235,7 @@ async function buildInsight(
   }-${pastGames.filter((g) => g.result === "L").length}${
     playerPerformances[0] ? `. ${playerPerformances[0].playerName} has hit ${formatAvg(playerPerformances[0].avg)} against them.` : "."
   }${pitcherSentence}`;
-  return { text, pitcherReport };
+  return { text, pitcherReport, pitcherReportError };
 }
 
 // Opponent pitcher intelligence batch: null whenever there's no known
@@ -229,15 +255,20 @@ async function buildPitcherReport(relevantAtBats: AtBat[], players: Player[]): P
   const theseAtBats = withKnownPitcher.filter((ab) => ab.opponent_pitcher_id === pitcherId);
 
   const supabase = createClient();
-  const [{ data: pitcherInfo }, { data: pitches }] = await Promise.all([
+  // Data-reliability batch: chunked + checked -- at-bats faced against one
+  // opposing pitcher can grow over a long rivalry, the same audited risk
+  // as the other pitch-location fetches. Lets the real error propagate
+  // (not caught here) so the caller -- which knows the difference between
+  // "no known pitcher yet" and "couldn't load" -- decides how to show it.
+  const [{ data: pitcherInfo }, pitches] = await Promise.all([
     supabase.from("opponent_players").select("name, jersey_number").eq("id", pitcherId).maybeSingle(),
-    supabase
-      .from("pitches")
-      .select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome")
-      .in(
-        "at_bat_id",
-        theseAtBats.map((ab) => ab.id)
-      ),
+    fetchInChunks<{ at_bat_id: string; pitch_number: number; pitch_type: PitchType | null; zone_x: number | null; zone_y: number | null; outcome: PitchOutcome }>(
+      supabase,
+      "pitches",
+      "at_bat_id",
+      theseAtBats.map((ab) => ab.id),
+      "at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome"
+    ),
   ]);
   if (!pitcherInfo) return null;
 

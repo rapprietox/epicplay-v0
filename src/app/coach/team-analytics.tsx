@@ -56,7 +56,24 @@ function declutterDots<T extends { x: number; y: number }>(dots: T[]): T[] {
     const cy = cluster.reduce((sum, k) => sum + dots[k].y, 0) / cluster.length;
     cluster.forEach((k, n) => {
       const angle = (n / cluster.length) * Math.PI * 2;
-      result[k] = { ...dots[k], x: cx + Math.cos(angle) * DOT_SPREAD_RADIUS, y: cy + Math.sin(angle) * DOT_SPREAD_RADIUS };
+      // AI-coach modal fix (root cause): Math.cos/Math.sin aren't
+      // guaranteed bit-identical between Node's SSR render and the
+      // browser's hydration pass -- same V8 family, different build, and
+      // transcendental functions are where that shows up. Unrounded, the
+      // last float digit could differ (e.g. cy="15.14115427318801" server
+      // vs "15.141154273188011" client), which is a real hydration
+      // mismatch: React discards the server-rendered SVG and replaces it
+      // with a fresh client render, and that replacement was what was
+      // actually corrupting an unrelated scrollable element's horizontal
+      // scroll position elsewhere on this same /coach page (traced with a
+      // page-wide MutationObserver -- see kairos-chat.tsx's own comment).
+      // Rounding to 3 decimals removes sub-pixel noise no one could see
+      // anyway and makes the two renders agree exactly.
+      result[k] = {
+        ...dots[k],
+        x: Math.round((cx + Math.cos(angle) * DOT_SPREAD_RADIUS) * 1000) / 1000,
+        y: Math.round((cy + Math.sin(angle) * DOT_SPREAD_RADIUS) * 1000) / 1000,
+      };
     });
   }
   return result;

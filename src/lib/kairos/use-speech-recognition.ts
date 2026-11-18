@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 // KAIROS batch: Web Speech API, per spec ("for now -- Deepgram later").
 // There's no standard TypeScript lib type for SpeechRecognition (it's
@@ -30,8 +30,23 @@ function getSpeechRecognitionCtor(): (new () => MinimalSpeechRecognition) | null
 
 export function useSpeechRecognition(onResult: (transcript: string) => void) {
   const [listening, setListening] = useState(false);
-  const supportedRef = useRef<boolean | null>(null);
-  if (supportedRef.current === null) supportedRef.current = getSpeechRecognitionCtor() !== null;
+  // AI-coach modal fix (root cause): this used to read window.SpeechRecognition
+  // during render via a lazy ref -- `typeof window === "undefined"` is true
+  // on the server (supported=false) but false on the very first CLIENT
+  // render too (Next hydrates with window already defined), so a
+  // Chromium-based browser flipped straight to supported=true on hydration
+  // itself, mismatching the server-rendered false. React's recovery from a
+  // hydration mismatch is to discard the server-rendered DOM for that
+  // subtree and replace it with a fresh client render -- which is what was
+  // actually corrupting the KAIROS modal's horizontal scroll position (see
+  // kairos-chat.tsx's own comment), not the modal's CSS by itself. The fix
+  // is the standard SSR-safe pattern: start both renders at the same
+  // value (false) and only read the real capability in an effect, which
+  // never runs during SSR or the hydration pass.
+  const [supported, setSupported] = useState(false);
+  useEffect(() => {
+    setSupported(getSpeechRecognitionCtor() !== null);
+  }, []);
   const recognitionRef = useRef<MinimalSpeechRecognition | null>(null);
 
   const start = useCallback(() => {
@@ -57,5 +72,5 @@ export function useSpeechRecognition(onResult: (transcript: string) => void) {
     setListening(false);
   }, []);
 
-  return { supported: supportedRef.current, listening, start, stop };
+  return { supported, listening, start, stop };
 }

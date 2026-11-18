@@ -111,7 +111,18 @@ export function KairosWidget({ teamId }: { teamId: string }) {
                 ✕
               </button>
             </div>
-            <div className="mt-3 flex-1 overflow-y-auto">
+            {/* AI-coach modal fix: this wrapper's content (KairosChat's
+                message bubbles included) could be intrinsically wider than
+                the wrapper itself -- a flex child's default min-width:auto
+                lets a wide descendant push it past its own column width.
+                Once that happens, this element (overflow-y-auto; when one
+                axis is non-"visible" the other's "visible" computes to
+                "auto" too, per spec) becomes horizontally scrollable, and a
+                new reply arriving could leave it scrolled to that overflow's
+                max instead of 0 -- clipping the left edge of every line.
+                min-w-0 stops the push, overflow-x-hidden removes the X
+                scroll entirely as a backstop. */}
+            <div className="mt-3 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
               <KairosChat teamId={teamId} variant="modal" />
             </div>
           </div>

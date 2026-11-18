@@ -16,9 +16,10 @@ import { OpponentScoutingSection } from "./opponent-scouting-section";
 import { LineupAnalysisSection } from "./lineup-analysis-section";
 import { KairosWidget } from "./kairos-widget";
 import { zoneIndexFromCoords, resultCategory, type AtBatWithZone, type SprayDot } from "@/lib/heat-map";
-import type { AtBatResult } from "@/lib/supabase/types";
+import type { AtBatResult, Database } from "@/lib/supabase/types";
 import { isViewSwitchEligible } from "@/lib/view-switch";
 import { enableViewAsPlayer } from "@/lib/view-switch-actions";
+import { fetchAllRows } from "@/lib/supabase/safe-fetch";
 
 export default async function CoachPage({ searchParams }: { searchParams: { view_switch?: string } }) {
   const supabase = createClient();
@@ -49,25 +50,35 @@ export default async function CoachPage({ searchParams }: { searchParams: { view
 
   const allGames = games ?? [];
   const gameIds = allGames.map((g) => g.id);
-  const [{ data: atBats }, { data: stolenBases }, { data: lineupRows }, { data: gameEvents }, { data: substitutions }] = gameIds.length
+  // Data-reliability batch: this was `select("*")` with no pagination --
+  // PostgREST's default 1000-row cap silently truncated it once this
+  // team's confirmed at_bats passed that count (confirmed live: it had,
+  // understating every player's AB here the same way it understated
+  // KAIROS's roster line -- see buildSystemPrompt's own comment on the
+  // same bug). fetchAllRows pages through the real total instead.
+  const [atBats, [{ data: stolenBases }, { data: lineupRows }, { data: gameEvents }, { data: substitutions }]] = gameIds.length
     ? await Promise.all([
-        supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null),
-        supabase.from("stolen_bases").select("*").in("game_id", gameIds),
-        supabase.from("lineup").select("*").in("game_id", gameIds).eq("status", "starting"),
-        // EPS batch: SB_success_rate needs caught-stealing counts, which
-        // only live in game_events, not stolen_bases. Hitting-table batch:
-        // widened from "event_type = caught_stealing only" to every event
-        // row, carrying scorer_player_id/runs_scored too -- the Runs
-        // card/column needs those for runs that score outside any at-bat
-        // (wild pitch, passed ball, balk, a bare "Scored" tap).
-        // computeBattingLines/caughtStealingFor each filter the rows they
-        // care about out of this same set, so one broader query serves
-        // both instead of two narrower ones.
-        supabase.from("game_events").select("event_type, player_id, game_id, scorer_player_id, runs_scored").in("game_id", gameIds),
-        // Update 3 (Substitutes & Reserves): resolves "subbed in for slot X".
-        supabase.from("substitutions").select("game_id, player_in_id, player_out_id").in("game_id", gameIds),
+        fetchAllRows<Database["public"]["Tables"]["at_bats"]["Row"]>(supabase, "at_bats", "*", (q) =>
+          q.in("game_id", gameIds).not("confirmed_at", "is", null)
+        ),
+        Promise.all([
+          supabase.from("stolen_bases").select("*").in("game_id", gameIds),
+          supabase.from("lineup").select("*").in("game_id", gameIds).eq("status", "starting"),
+          // EPS batch: SB_success_rate needs caught-stealing counts, which
+          // only live in game_events, not stolen_bases. Hitting-table batch:
+          // widened from "event_type = caught_stealing only" to every event
+          // row, carrying scorer_player_id/runs_scored too -- the Runs
+          // card/column needs those for runs that score outside any at-bat
+          // (wild pitch, passed ball, balk, a bare "Scored" tap).
+          // computeBattingLines/caughtStealingFor each filter the rows they
+          // care about out of this same set, so one broader query serves
+          // both instead of two narrower ones.
+          supabase.from("game_events").select("event_type, player_id, game_id, scorer_player_id, runs_scored").in("game_id", gameIds),
+          // Update 3 (Substitutes & Reserves): resolves "subbed in for slot X".
+          supabase.from("substitutions").select("game_id, player_in_id, player_out_id").in("game_id", gameIds),
+        ]),
       ])
-    : [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }];
+    : [[] as Database["public"]["Tables"]["at_bats"]["Row"][], [{ data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }, { data: [] as never[] }]];
   const activeGame = allGames.find((g) => g.status === "active") ?? null;
   const today = new Date().toISOString().slice(0, 10);
   const nextGame =

@@ -484,3 +484,107 @@ export const ZONE_MAP_PITCH_FILTERS: { value: PitchType | "all"; label: string }
   { value: "changeup", label: "Changeup" },
   { value: "slider", label: "Slider" },
 ];
+
+// KAIROS zone-query tool: a per-9-zone profile combining pitches seen,
+// swings, whiffs (a per-PITCH fact, every pitch counts) with batting
+// average (a per-AT-BAT fact, only the deciding pitch's zone counts) and a
+// split by pitch type -- same two granularities computeZoneBattingLines/
+// computeZoneWhiffLines already keep separate, just read together here so
+// the coach assistant can answer "where does this player struggle" without
+// a human cross-referencing two different charts. Deliberately reuses
+// zoneIndexFromCoords/zoneLabel9/computeZoneBattingLines verbatim (the same
+// 9-zone strike-zone-only grid the coach's own Strike Zone Heat Map
+// renders, not the 25-zone ball-zone-ring grid the whiff-rate map uses) so
+// this tool's answer and the heat map a coach is looking at can never
+// disagree about what a zone contains. A pitch outside the strike zone
+// (zoneIndexFromCoords returns null -- the ball-zone ring) has nothing to
+// bucket here and is excluded, same as every other 9-zone consumer.
+export interface ZoneKairosAtBat {
+  id: string;
+  result: AtBatResult | null;
+}
+
+export interface ZoneKairosPitch {
+  at_bat_id: string;
+  pitch_number: number;
+  pitch_type: PitchType | null;
+  zone_x: number | null;
+  zone_y: number | null;
+  outcome: PitchOutcome;
+  swing: boolean | null;
+}
+
+export interface ZonePitchTypeSplit {
+  pitches: number;
+  swings: number;
+  whiffs: number;
+}
+
+export interface ZoneKairosLine {
+  zoneIndex: number;
+  zoneLabel: string;
+  pitches: number;
+  swings: number;
+  whiffs: number;
+  ab: number;
+  hits: number;
+  avg: number | null; // null (not 0) when ab === 0 -- nothing decided here yet
+  byPitchType: Partial<Record<PitchType, ZonePitchTypeSplit>>;
+}
+
+export function computeZoneKairosProfile(atBats: ZoneKairosAtBat[], pitches: ZoneKairosPitch[]): ZoneKairosLine[] {
+  // Same "last pitch of the at-bat" convention every other zone-by-average
+  // consumer in this codebase uses (player-breakdown-client.tsx, the
+  // player Clubhouse's own system-prompt builder) -- ported here rather
+  // than imported since it's a few lines of plain array reduction, not
+  // worth a shared helper for.
+  const lastPitchByAtBat = new Map<string, ZoneKairosPitch>();
+  for (const p of pitches) {
+    const current = lastPitchByAtBat.get(p.at_bat_id);
+    if (!current || p.pitch_number > current.pitch_number) lastPitchByAtBat.set(p.at_bat_id, p);
+  }
+  const atBatZoneLines: AtBatWithZone[] = atBats
+    .filter((ab): ab is ZoneKairosAtBat & { result: AtBatResult } => ab.result !== null)
+    .map((ab) => {
+      const last = lastPitchByAtBat.get(ab.id);
+      const zoneIndex = last && last.zone_x !== null && last.zone_y !== null ? zoneIndexFromCoords(last.zone_x, last.zone_y) : null;
+      return { result: ab.result, zoneIndex };
+    });
+  const battingLines = computeZoneBattingLines(atBatZoneLines);
+
+  const lines: ZoneKairosLine[] = battingLines.map((b, i) => ({
+    zoneIndex: i,
+    zoneLabel: zoneLabel9(i),
+    pitches: 0,
+    swings: 0,
+    whiffs: 0,
+    ab: b.ab,
+    hits: b.h,
+    avg: b.ab > 0 ? b.avg : null,
+    byPitchType: {},
+  }));
+
+  for (const p of pitches) {
+    if (p.zone_x === null || p.zone_y === null) continue;
+    const index = zoneIndexFromCoords(p.zone_x, p.zone_y);
+    if (index === null) continue;
+    const line = lines[index];
+    line.pitches += 1;
+    const isSwing = p.swing === true;
+    if (isSwing) line.swings += 1;
+    // Same miss definition as computeZoneWhiffLines: a swing that ended in
+    // a called-strike-shaped outcome (strike/foul_tip) missed the ball; a
+    // plain "foul" means contact was made, so it's a swing but not a miss.
+    const isWhiff = isSwing && (p.outcome === "strike" || p.outcome === "foul_tip");
+    if (isWhiff) line.whiffs += 1;
+
+    if (p.pitch_type) {
+      const split = line.byPitchType[p.pitch_type] ?? { pitches: 0, swings: 0, whiffs: 0 };
+      split.pitches += 1;
+      if (isSwing) split.swings += 1;
+      if (isWhiff) split.whiffs += 1;
+      line.byPitchType[p.pitch_type] = split;
+    }
+  }
+  return lines;
+}
