@@ -136,6 +136,30 @@ export const KAIROS_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    // KAIROS zone-query batch: fixes the gap behind "I don't have pitch-
+    // location data" for a player whose games genuinely do have it --
+    // query_team_stats above never looked at pitches/zone_x/zone_y at
+    // all, only at-bat-level batting/pitching lines. This is the only
+    // KAIROS_TOOLS entry that reads the pitches table.
+    name: "get_zone_breakdown",
+    description:
+      "Look up a real, data-backed breakdown of pitch locations in the 9-cell strike zone grid for one of our own players (or the whole team) -- per zone: pitches seen, swings, whiffs, batting average, and a split by pitch type (fastball/curveball/changeup/slider/2seam/other), plus the 3 weakest and 3 strongest zones with their sample size and a confidence label. Use this for ANY question about where a player (or the team) is strong or weak by pitch location, hits well/poorly in a specific zone, or struggles against a specific pitch type by location -- always call this before answering a zone/location question, never guess or invent a hot/cold zone. Works for a batter (pitches he saw) or a pitcher (pitches he threw, i.e. what opposing batters did against him) -- set role accordingly. Only reflects games logged in Full Mode (pitch-by-pitch); a player with only Quick Mode games will come back with zero pitches, which is a real, correct answer -- say so plainly rather than treating it as missing data.",
+    input_schema: {
+      type: "object",
+      properties: {
+        player_name: {
+          type: "string",
+          description: "A specific player's name. Omit for a team-wide zone breakdown across every batter (or pitcher, per role) on the roster.",
+        },
+        role: {
+          type: "string",
+          enum: ["batter", "pitcher"],
+          description: "'batter' (default): pitches this player/team saw at the plate. 'pitcher': pitches this player/team threw -- use this for a question about what a pitcher gives up.",
+        },
+      },
+    },
+  },
+  {
     // KAIROS fixes batch, Fix 2 (second fixes batch). Writes directly
     // (games.logging_mode, same as create_single_game's reasoning for
     // skipping the propose/confirm pattern) -- switching modes mid-game

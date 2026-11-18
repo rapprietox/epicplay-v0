@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { computeBattingLines, computePitchingLines, formatAvg } from "@/lib/stats";
 import { computeBatterLinesVsPitcher, teamAvgAgainst } from "@/lib/opponent-scouting";
 import { recordAgainstOpponent, formatRecord } from "@/lib/opponent-history";
+import { computeZoneKairosProfile, type ZoneKairosLine } from "@/lib/heat-map";
 import { KAIROS_TOOLS } from "@/lib/kairos/tools";
 import type { Database, GameType, LoggingMode } from "@/lib/supabase/types";
 
@@ -56,6 +57,23 @@ export interface KairosResponse {
   text: string;
   pendingRosterImport?: PendingRosterPlayer[];
   pendingScheduleImport?: { seasonName: string; seasonYear: number; games: PendingScheduleGame[] };
+  // KAIROS zone-query batch: surfaced so a token-cost test harness can
+  // report real numbers (see askKairos's own comment) -- the production
+  // chat UI (kairos-chat.tsx) never reads this field, it just stays unused
+  // there, same as any other optional response field it doesn't render.
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+}
+
+// KAIROS zone-query batch: lets askKairos be called from outside a real
+// Next.js request (a test script has no cookies for requireCoachTeam's
+// createClient() to read) by handing it an already-built client + team id
+// directly -- the exact "injectable client" the server action needs for a
+// real, non-mocked test. Never used by the production chat UI (it only
+// ever calls askKairos(history, message)), which keeps going through
+// requireCoachTeam()/cookie auth exactly as before.
+export interface KairosTestOverride {
+  supabase: SupabaseClient;
+  teamId: string;
 }
 
 function extractText(message: Anthropic.Message): string {
@@ -228,6 +246,29 @@ active game's id from your own context above unless the user names a
 different game. After it succeeds, tell the user the operator screen
 needs a refresh to pick up the change (it doesn't update live).
 
+For ANY question about where a player (or the team) is strong or weak by
+pitch location -- "where does X struggle", "what zone should X expect",
+"is X better up or down in the zone", "how does X do against fastballs
+inside" -- call get_zone_breakdown. Never say you lack pitch-location data
+without having called it first: if this team has any Full Mode (pitch-by-
+pitch) games logged, real zone data exists and this tool is how you reach
+it. Only say pitch-location data isn't available if the tool itself comes
+back with zero pitches for that scope (every game logged was Quick Mode,
+or the player hasn't played yet) -- that's a real, correct answer, not a
+missing capability. Every zone and every weakest/strongest entry the tool
+returns carries a sampleConfidence of "low", "medium", or "high" --
+state plainly when you're citing a "low" confidence zone (say so in the
+same sentence, e.g. "only 2 pitches there, too few to really trust") rather
+than presenting a small sample as a settled fact. When you suggest a drill
+based on a weak zone, frame it explicitly as a suggestion worth trying --
+never claim a drill is proven to fix what the data shows, since the data
+shows the symptom, not that any specific drill is the cure. For a
+question about a PITCHER (role: "pitcher"), report exactly what the tool
+returns for him -- zones where he's gotten hit, pitch types that whiff
+batters for him -- and nothing you didn't get from the tool; don't infer
+a "weakness" or "strength" for a pitcher from his batting zone data or
+vice versa, they're separate roles even for a two-way player.
+
 Keep responses concise. Use real numbers from the data. Be specific, not
 generic. A coach doesn't want "Carlos is a good hitter" -- they want "Carlos
 is batting .412 with 3 HR in the last 5 games."`;
@@ -394,6 +435,155 @@ async function executeQueryStats(supabase: SupabaseClient, teamId: string, input
   return { splitNote, direction, minAbToQualify: LEADER_MIN_AB, leaders: ranked, playersWithNoAtBats: zeroAbPlayers };
 }
 
+interface ZoneBreakdownInput {
+  player_name?: string;
+  role?: "batter" | "pitcher";
+}
+
+// Pitch count, not at-bat count: a zone a batter has only ever fouled off
+// or taken for a ball still has real swing/miss signal worth citing, even
+// with zero decided at-bats there yet (avg stays null in that case -- see
+// computeZoneKairosProfile). Deliberately a new, zone-local scale, not a
+// reuse of calculateReliability (src/lib/reliability.ts) -- that one
+// blends games/total-AB/opponents-faced for a whole team-season; this is
+// "how many pitches actually landed in THIS one zone," a different signal
+// entirely, so blending them into one formula would have been
+// apples-to-oranges, not a simplification.
+const ZONE_HIGH_CONFIDENCE_PITCHES = 15;
+const ZONE_MEDIUM_CONFIDENCE_PITCHES = 5;
+
+function zoneSampleConfidence(pitches: number): "low" | "medium" | "high" {
+  if (pitches >= ZONE_HIGH_CONFIDENCE_PITCHES) return "high";
+  if (pitches >= ZONE_MEDIUM_CONFIDENCE_PITCHES) return "medium";
+  return "low";
+}
+
+// Same badness weighting findWeaknessAndStrengthZones (heat-map.ts) already
+// uses for the coach player page's own "weakest zone" callout -- a low
+// average weighted more heavily than a high whiff rate, whiff rate folded
+// in on top when the zone has enough swings to compute one. Not reused
+// directly since that function expects its two inputs pre-matched by zone
+// label string from two separately-fetched lists; here both numbers
+// already live on the same ZoneKairosLine, so matching by label would be
+// pure overhead.
+function zoneBadness(z: ZoneKairosLine): number {
+  const whiffRate = z.swings > 0 ? z.whiffs / z.swings : 0;
+  return (1 - (z.avg ?? 0)) * 0.6 + whiffRate * 0.4;
+}
+
+function zoneSummary(z: ZoneKairosLine) {
+  return {
+    zone: z.zoneLabel,
+    avg: formatAvg(z.avg ?? 0),
+    ab: z.ab,
+    pitches: z.pitches,
+    whiffRatePct: z.swings > 0 ? Math.round((z.whiffs / z.swings) * 100) : null,
+    sampleConfidence: zoneSampleConfidence(z.pitches),
+  };
+}
+
+// KAIROS zone-query batch. Joins pitches to at_bats exactly like the
+// coach's own Strike Zone Heat Map does (computeZoneKairosProfile reuses
+// that same zoneIndexFromCoords/zoneLabel9/computeZoneBattingLines code),
+// so this tool's zones and the heat map a coach is looking at can never
+// disagree about what a zone means. Team-scoped throughout: every query
+// below is already narrowed to this team's own game_ids before any
+// player/role filter is applied, the same pattern executeQueryStats uses.
+async function executeGetZoneBreakdown(supabase: SupabaseClient, teamId: string, input: ZoneBreakdownInput) {
+  const role = input.role ?? "batter";
+  const { data: games } = await supabase.from("games").select("id").eq("team_id", teamId);
+  const gameIds = (games ?? []).map((g) => g.id);
+
+  let playerId: string | null = null;
+  let playerName: string | null = null;
+  if (input.player_name) {
+    const { data: player } = await supabase.from("players").select("id, name").eq("team_id", teamId).ilike("name", input.player_name).maybeSingle();
+    if (!player) return { error: `No player named "${input.player_name}" found on this roster.` };
+    playerId = player.id;
+    playerName = player.name;
+  }
+
+  if (gameIds.length === 0) {
+    return {
+      scope: playerId ? "player" : "team",
+      role,
+      player: playerName,
+      totalPitches: 0,
+      totalAtBats: 0,
+      zones: [],
+      weakestZones: [],
+      strongestZones: [],
+      note: "No games logged for this team yet.",
+    };
+  }
+
+  const mode = role === "pitcher" ? "pitching" : "hitting";
+  let atBatsQuery = supabase.from("at_bats").select("id, result").eq("mode", mode).in("game_id", gameIds).not("confirmed_at", "is", null);
+  atBatsQuery = playerId
+    ? role === "pitcher"
+      ? atBatsQuery.eq("pitcher_id", playerId)
+      : atBatsQuery.eq("player_id", playerId)
+    : atBatsQuery;
+  const { data: atBats } = await atBatsQuery;
+  const atBatRows = atBats ?? [];
+  const atBatIds = atBatRows.map((ab) => ab.id);
+
+  const { data: pitchRows } = atBatIds.length
+    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", atBatIds)
+    : { data: [] };
+  const pitches = pitchRows ?? [];
+
+  const zoneLines = computeZoneKairosProfile(atBatRows, pitches);
+
+  const zones = zoneLines.map((z) => ({
+    zone: z.zoneLabel,
+    pitches: z.pitches,
+    swings: z.swings,
+    whiffs: z.whiffs,
+    whiffRatePct: z.swings > 0 ? Math.round((z.whiffs / z.swings) * 100) : null,
+    ab: z.ab,
+    hits: z.hits,
+    avg: z.avg !== null ? formatAvg(z.avg) : null,
+    sampleConfidence: zoneSampleConfidence(z.pitches),
+    // Sparse on purpose (cap the output size) -- a pitch type never thrown
+    // in this zone simply has no key here, rather than a zeroed-out entry
+    // for all 6 known types in all 9 zones.
+    byPitchType: Object.fromEntries(
+      Object.entries(z.byPitchType).map(([type, split]) => [
+        type,
+        { pitches: split.pitches, whiffs: split.whiffs, whiffRatePct: split.swings > 0 ? Math.round((split.whiffs / split.swings) * 100) : null },
+      ])
+    ),
+  }));
+
+  // Only zones with a decided at-bat (avg !== null) are gradable for a
+  // "weakest/strongest" call -- a zone that's only ever been fouled off or
+  // taken has nothing to rank by average yet, same reasoning
+  // findWeaknessAndStrengthZones already applies.
+  const gradable = zoneLines.filter((z) => z.avg !== null);
+  const sortedByBadness = [...gradable].sort((a, b) => zoneBadness(b) - zoneBadness(a));
+  const weakestZones = sortedByBadness.slice(0, 3).map(zoneSummary);
+  const strongestZones = [...sortedByBadness].reverse().slice(0, 3).map(zoneSummary);
+
+  const totalPitches = pitches.length;
+  const totalAtBats = atBatRows.filter((ab) => ab.result !== null).length;
+
+  return {
+    scope: playerId ? "player" : "team",
+    role,
+    player: playerName,
+    totalPitches,
+    totalAtBats,
+    zones,
+    weakestZones,
+    strongestZones,
+    note:
+      totalPitches === 0
+        ? "Zero pitches with location data for this scope -- only Full Mode (pitch-by-pitch) games capture pitch location. This is a real result, not a missing feature: either every game in scope was logged in Quick Mode, or this player/team hasn't played yet."
+        : null,
+  };
+}
+
 async function executeSuggestLineup(supabase: SupabaseClient, teamId: string, input: { pitcher_hand_filter?: "left" | "right" }) {
   const { data: games } = await supabase.from("games").select("id").eq("team_id", teamId);
   const gameIds = (games ?? []).map((g) => g.id);
@@ -508,21 +698,54 @@ async function executeSwitchGameMode(supabase: SupabaseClient, teamId: string, i
   return { switched: true, gameId: game.id, opponentName: game.opponent_name, newMode: input.new_mode };
 }
 
-export async function askKairos(history: KairosMessage[], message: string): Promise<KairosResponse> {
-  const { supabase, teamId } = await requireCoachTeam();
+export async function askKairos(history: KairosMessage[], message: string, testOverride?: KairosTestOverride): Promise<KairosResponse> {
+  const { supabase, teamId } = testOverride ?? (await requireCoachTeam());
   const system = await buildSystemPrompt(supabase, teamId);
 
   const messages: Anthropic.MessageParam[] = [...history.map((h) => ({ role: h.role, content: h.content }) as Anthropic.MessageParam), { role: "user", content: message }];
 
-  const first = await client.messages.create({ model: MODEL, max_tokens: 1024, system, tools: KAIROS_TOOLS, messages });
+  // KAIROS zone-query batch: 1024 -> 4096. Found by testing, not guessed --
+  // claude-sonnet-5 uses extended thinking by default even without it being
+  // requested here, and for some questions (confirmed live: "who's our most
+  // reliable bat against fastballs?") the thinking alone ran past 1024
+  // output tokens, leaving no room to finish deciding on a tool call or
+  // write any visible text -- stop_reason came back "max_tokens" with no
+  // text block at all, which askKairos then has no choice but to report as
+  // "I couldn't come up with a response." 4096 leaves real headroom for
+  // thinking plus a full tool_use block or a real answer; a short answer
+  // still only costs what it actually uses; this is a ceiling, not a
+  // target.
+  const first = await client.messages.create({ model: MODEL, max_tokens: 4096, system, tools: KAIROS_TOOLS, messages });
+  const firstUsage = { input: first.usage.input_tokens, output: first.usage.output_tokens };
 
-  const toolUse = first.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-  if (first.stop_reason !== "tool_use" || !toolUse) {
-    return { text: extractText(first) || "I couldn't come up with a response to that -- try rephrasing?" };
+  const toolUses = first.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+  if (first.stop_reason !== "tool_use" || toolUses.length === 0) {
+    return {
+      text: extractText(first) || "I couldn't come up with a response to that -- try rephrasing?",
+      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output },
+    };
   }
 
-  if (toolUse.name === "propose_roster_import") {
-    const parsed = toolUse.input as { players: { name: string; jersey_number?: string; position?: string }[] };
+  // KAIROS zone-query batch: the model can and does call more than one tool
+  // in the same turn now that get_zone_breakdown exists -- e.g. "who's most
+  // reliable against fastballs" naturally invites checking several players'
+  // zone data side by side, instead of the one-lookup-per-question shape
+  // every earlier tool fit. The Anthropic API requires a tool_result for
+  // EVERY tool_use block issued in a turn (a request with only some of them
+  // answered is rejected outright, confirmed live -- a real 400 from
+  // exactly this gap before this loop existed), so every entry in toolUses
+  // gets executed and answered, not just the first. propose_roster_import/
+  // propose_schedule_import are the one exception: they hand the proposed
+  // data straight back to the client for a human confirm step rather than
+  // round-tripping through a second model call, so if either is present it
+  // takes over the whole turn -- those two tools are also the only ones
+  // this system prompt ever asks the model to call alone, never alongside
+  // another tool, so this doesn't strand any other tool_use id unanswered
+  // in practice.
+  const firstToolUse = toolUses[0];
+
+  if (firstToolUse.name === "propose_roster_import") {
+    const parsed = firstToolUse.input as { players: { name: string; jersey_number?: string; position?: string }[] };
     const { data: existing } = await supabase.from("players").select("name").eq("team_id", teamId);
     const existingNames = new Set((existing ?? []).map((p) => p.name.toLowerCase().trim()));
     const rosterPlayers: PendingRosterPlayer[] = parsed.players.map((p) => ({
@@ -536,41 +759,64 @@ export async function askKairos(history: KairosMessage[], message: string): Prom
     const text = `I found ${rosterPlayers.length} player${rosterPlayers.length === 1 ? "" : "s"}. ${
       dupes.length > 0 ? `${dupes.map((d) => d.name).join(", ")} ${dupes.length === 1 ? "is" : "are"} already in your roster -- flagged below. ` : ""
     }Should I add ${dupes.length > 0 ? "the new ones" : "these"} to your ${team?.name ?? "team's"} roster?`;
-    return { text, pendingRosterImport: rosterPlayers };
+    return {
+      text,
+      pendingRosterImport: rosterPlayers,
+      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output },
+    };
   }
 
-  if (toolUse.name === "propose_schedule_import") {
-    const parsed = toolUse.input as { season_name: string; season_year: number; games: PendingScheduleGame[] };
+  if (firstToolUse.name === "propose_schedule_import") {
+    const parsed = firstToolUse.input as { season_name: string; season_year: number; games: PendingScheduleGame[] };
     const text = `I found ${parsed.games.length} game${parsed.games.length === 1 ? "" : "s"} in your schedule. Review them below -- should I add these to ${parsed.season_name}?`;
-    return { text, pendingScheduleImport: { seasonName: parsed.season_name, seasonYear: parsed.season_year, games: parsed.games } };
+    return {
+      text,
+      pendingScheduleImport: { seasonName: parsed.season_name, seasonYear: parsed.season_year, games: parsed.games },
+      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output },
+    };
   }
 
-  let toolResult: unknown;
-  if (toolUse.name === "query_team_stats") {
-    toolResult = await executeQueryStats(supabase, teamId, toolUse.input as QueryStatsInput);
-  } else if (toolUse.name === "suggest_lineup") {
-    toolResult = await executeSuggestLineup(supabase, teamId, toolUse.input as { pitcher_hand_filter?: "left" | "right" });
-  } else if (toolUse.name === "create_single_game") {
-    toolResult = await executeCreateSingleGame(supabase, teamId, toolUse.input as CreateSingleGameInput);
-  } else if (toolUse.name === "switch_game_mode") {
-    toolResult = await executeSwitchGameMode(supabase, teamId, toolUse.input as SwitchGameModeInput);
-  } else {
-    toolResult = { error: "Unknown tool" };
+  async function executeOneTool(toolUse: Anthropic.ToolUseBlock): Promise<unknown> {
+    if (toolUse.name === "query_team_stats") {
+      return executeQueryStats(supabase, teamId, toolUse.input as QueryStatsInput);
+    } else if (toolUse.name === "get_zone_breakdown") {
+      return executeGetZoneBreakdown(supabase, teamId, toolUse.input as ZoneBreakdownInput);
+    } else if (toolUse.name === "suggest_lineup") {
+      return executeSuggestLineup(supabase, teamId, toolUse.input as { pitcher_hand_filter?: "left" | "right" });
+    } else if (toolUse.name === "create_single_game") {
+      return executeCreateSingleGame(supabase, teamId, toolUse.input as CreateSingleGameInput);
+    } else if (toolUse.name === "switch_game_mode") {
+      return executeSwitchGameMode(supabase, teamId, toolUse.input as SwitchGameModeInput);
+    }
+    return { error: "Unknown tool" };
   }
+
+  const toolResultBlocks: Anthropic.ToolResultBlockParam[] = await Promise.all(
+    toolUses.map(async (toolUse) => ({
+      type: "tool_result" as const,
+      tool_use_id: toolUse.id,
+      content: JSON.stringify(await executeOneTool(toolUse)),
+    }))
+  );
 
   const second = await client.messages.create({
     model: MODEL,
-    max_tokens: 1024,
+    max_tokens: 4096,
     system,
     tools: KAIROS_TOOLS,
     messages: [
       ...messages,
       { role: "assistant", content: first.content },
-      { role: "user", content: [{ type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify(toolResult) }] },
+      { role: "user", content: toolResultBlocks },
     ],
   });
 
-  return { text: extractText(second) || "I looked that up but couldn't put together a response -- try asking again?" };
+  const totalInput = firstUsage.input + second.usage.input_tokens;
+  const totalOutput = firstUsage.output + second.usage.output_tokens;
+  return {
+    text: extractText(second) || "I looked that up but couldn't put together a response -- try asking again?",
+    usage: { inputTokens: totalInput, outputTokens: totalOutput, totalTokens: totalInput + totalOutput },
+  };
 }
 
 export async function confirmKairosRosterImport(players: { name: string; jersey_number: string | null; position: string | null }[]) {
