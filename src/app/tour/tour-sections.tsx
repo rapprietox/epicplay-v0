@@ -114,6 +114,10 @@ export const TOUR_SECTIONS: TourSection[] = [
             <small>Who&apos;s producing, with a reliability score on the data behind it.</small>
           </li>
           <li>
+            Performance Score
+            <small>One number per player (EPS), with a tier label from Beginner up through Elite and Legendary.</small>
+          </li>
+          <li>
             Opponent scouting
             <small>Matchup history and the next opponent&apos;s roster.</small>
           </li>
@@ -233,8 +237,8 @@ export const TOUR_SECTIONS: TourSection[] = [
         <div className="tour-quote">
           <p className="tour-quote-q">Asked the AI coach, live: &ldquo;Where should Derek Foster expect to see pitches he struggles with?&rdquo;</p>
           <p className="tour-quote-a">
-            The screenshot below is the real, unedited answer — including the AI being upfront about what it can and
-            can&apos;t see from this team&apos;s data, instead of guessing.
+            The screenshot below is the real, unedited answer — including the AI flagging its own secondary reads as
+            lower-confidence (small sample size) instead of stating everything with the same certainty.
           </p>
         </div>
         <div className="tour-shots-grid" style={{ marginTop: 14 }}>
