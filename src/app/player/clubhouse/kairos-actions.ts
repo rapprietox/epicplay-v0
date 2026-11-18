@@ -8,6 +8,7 @@ import { ensureInitialAssessment, regenerateAssessment, type AssessmentZoneInput
 import { computeBattingLines, formatAvg } from "@/lib/stats";
 import { computeZoneBattingLines, computeZoneWhiffLines, zoneIndexFromCoords, extendedZoneLabel, zoneLabel9, resultCategory } from "@/lib/heat-map";
 import { isFreePreviewActive, FREE_PREVIEW_KAIROS_MESSAGES } from "@/lib/free-preview";
+import { fetchInChunks } from "@/lib/supabase/safe-fetch";
 import type { AtBatResult, PitchOutcome } from "@/lib/supabase/types";
 
 // Clubhouse Pro enhancement, Part 3. Mirrors src/app/coach/kairos-actions.ts's
@@ -48,8 +49,13 @@ export interface KairosMessage {
 // renders a KAIROS entry point for a locked player once the preview has
 // ended, but the server re-checks unlocked/preview status on every
 // request regardless of what the client thinks it can show.
+// Prompt-caching batch: usage surfaced the same way the coach assistant's
+// KairosResponse does, for the same reason (a token-cost measurement
+// harness) -- the player Clubhouse chat UI doesn't read it.
+type KairosUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number };
+
 export type AskPlayerKairosResult =
-  | { ok: true; text: string; remaining: number; limit: number; source: "pro" | "free_preview" }
+  | { ok: true; text: string; remaining: number; limit: number; source: "pro" | "free_preview"; usage?: KairosUsage }
   | { ok: false; reason: "credits_exhausted"; message: string; source: "pro" | "free_preview" }
   | { ok: false; reason: "locked"; message: string }
   | { ok: false; reason: "error"; error: string };
@@ -76,10 +82,32 @@ async function fetchPlayerContext(supabase: ReturnType<typeof createClient>, tea
   const confirmedAtBats = atBats ?? [];
   const atBatIds = confirmedAtBats.map((ab) => ab.id);
 
-  const { data: pitchRows } = atBatIds.length
-    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", atBatIds)
-    : { data: [] };
-  const pitches = pitchRows ?? [];
+  // Data-reliability batch: chunked + checked (src/lib/supabase/safe-fetch.ts)
+  // instead of one unbounded `.in("at_bat_id", ids)` -- this player's own
+  // at-bats across every game can run into the hundreds over a season or
+  // two, the same audited risk as the coach-side player breakdown page.
+  // Throws on failure now, same as that page; callers below decide how to
+  // surface it (askPlayerKairos already has its own try/catch and a real
+  // error response the chat UI shows; the one unguarded call site,
+  // page.tsx's getOrCreateInitialAssessment(), is wrapped there instead
+  // of changed here, since a plain SSR-time throw would otherwise crash
+  // the whole Clubhouse page rather than just that one panel).
+  interface PitchRow {
+    at_bat_id: string;
+    pitch_number: number;
+    pitch_type: string | null;
+    zone_x: number | null;
+    zone_y: number | null;
+    outcome: PitchOutcome;
+    swing: boolean | null;
+  }
+  const pitches = await fetchInChunks<PitchRow>(
+    supabase,
+    "pitches",
+    "at_bat_id",
+    atBatIds,
+    "at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing"
+  );
 
   // Fix: stolen bases were never fetched here either (same gap as
   // coach/kairos-actions.ts) -- every computeBattingLines call below
@@ -262,15 +290,31 @@ export async function askPlayerKairos(history: KairosMessage[], message: string)
     }
 
     const system = await buildPlayerSystemPrompt(supabase, teamId, playerId);
+    // Prompt-caching batch: no tool loop here (this file's own top
+    // comment), so there's only ever one call per question -- caching
+    // can't make THIS call cheaper the way it does for the coach
+    // assistant's doubled system+tools resend, but it's still a real win
+    // across a player's own back-and-forth: this system prompt is rebuilt
+    // from the same player's stats on every message, byte-identical until
+    // something in their data actually changes, so a quick follow-up
+    // question reads it from cache instead of paying full price again.
+    const cachedSystem: Anthropic.TextBlockParam[] = [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
     const messages: Anthropic.MessageParam[] = [
       ...history.map((h) => ({ role: h.role, content: h.content }) as Anthropic.MessageParam),
       { role: "user", content: message },
     ];
 
-    const response = await client.messages.create({ model: MODEL, max_tokens: 1024, system, messages });
+    const response = await client.messages.create({ model: MODEL, max_tokens: 1024, system: cachedSystem, messages });
     const text = extractText(response) || "I couldn't come up with a response to that -- try rephrasing?";
     const limit = source === "pro" ? 20 : FREE_PREVIEW_KAIROS_MESSAGES;
-    return { ok: true, text, remaining, limit, source };
+    const usage: KairosUsage = {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      totalTokens: response.usage.input_tokens + response.usage.output_tokens,
+      cacheCreationInputTokens: response.usage.cache_creation_input_tokens ?? 0,
+      cacheReadInputTokens: response.usage.cache_read_input_tokens ?? 0,
+    };
+    return { ok: true, text, remaining, limit, source, usage };
   } catch (err) {
     console.error("[askPlayerKairos] unexpected error", err);
     return { ok: false, reason: "error", error: err instanceof Error ? err.message : "KAIROS couldn't respond -- try again?" };

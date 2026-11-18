@@ -7,6 +7,7 @@ import { computeBatterLinesVsPitcher, teamAvgAgainst } from "@/lib/opponent-scou
 import { recordAgainstOpponent, formatRecord } from "@/lib/opponent-history";
 import { computeZoneKairosProfile, type ZoneKairosLine, type ZoneKairosPitch } from "@/lib/heat-map";
 import { KAIROS_TOOLS } from "@/lib/kairos/tools";
+import { fetchInChunks, fetchAllRows } from "@/lib/supabase/safe-fetch";
 import type { Database, GameType, LoggingMode } from "@/lib/supabase/types";
 
 // KAIROS batch. Model: the request specified "claude-sonnet-4-6", which
@@ -61,7 +62,12 @@ export interface KairosResponse {
   // report real numbers (see askKairos's own comment) -- the production
   // chat UI (kairos-chat.tsx) never reads this field, it just stays unused
   // there, same as any other optional response field it doesn't render.
-  usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  // cacheCreationInputTokens/cacheReadInputTokens added for the prompt-
+  // caching batch, summed the same way across both calls when a tool is
+  // used -- 0 for both on a cold cache (nothing to read yet), a real
+  // cacheCreationInputTokens on the call that first writes the cache
+  // entry, and a real cacheReadInputTokens on any call that hits it.
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number };
 }
 
 // KAIROS zone-query batch: lets askKairos be called from outside a real
@@ -79,6 +85,26 @@ export interface KairosTestOverride {
 function extractText(message: Anthropic.Message): string {
   const block = message.content.find((b): b is Anthropic.TextBlock => b.type === "text");
   return block?.text.trim() ?? "";
+}
+
+// Data-reliability batch: pulled out of buildSystemPrompt specifically so
+// a regression test can call the SAME code KAIROS's roster line is built
+// from, rather than a hand-rewritten copy that could silently drift from
+// it. Self-contained (does its own `games` fetch rather than taking one
+// in) so a test can call it with nothing but a team id. Team-wide, every
+// game ever -- matching coach/page.tsx's own default (unscoped-by-season)
+// view, which is the whole point: this is what "the numbers always
+// agree" means in practice. See scripts/test-kairos-roster-scope.ts.
+export async function computeKairosRosterBattingLines(supabase: SupabaseClient, teamId: string): Promise<Map<string, ReturnType<typeof computeBattingLines> extends Map<string, infer V> ? V : never>> {
+  const { data: games } = await supabase.from("games").select("id").eq("team_id", teamId);
+  const gameIds = (games ?? []).map((g) => g.id);
+  if (gameIds.length === 0) return new Map();
+
+  const atBats = await fetchAllRows<Database["public"]["Tables"]["at_bats"]["Row"]>(supabase, "at_bats", "*", (q) =>
+    q.in("game_id", gameIds).eq("mode", "hitting").not("confirmed_at", "is", null)
+  );
+  const { data: stolenBases } = await supabase.from("stolen_bases").select("player_id").in("game_id", gameIds);
+  return computeBattingLines(atBats, stolenBases ?? []);
 }
 
 // System prompt variables built from real data, per the request's own
@@ -102,43 +128,66 @@ async function buildSystemPrompt(supabase: SupabaseClient, teamId: string): Prom
   const today = now.toISOString().slice(0, 10);
   const currentSeason = (seasons ?? []).find((s) => s.start_date <= today && s.end_date >= today) ?? (seasons ?? [])[0] ?? null;
 
+  // "Current season" record (wins/losses) stays season-scoped -- that's a
+  // narrative fact ("what season is this"), not the per-player stat line
+  // below, and nothing reported it as wrong.
   const seasonGames = currentSeason ? (games ?? []).filter((g) => g.season_id === currentSeason.id) : (games ?? []);
   const completed = seasonGames.filter((g) => g.status === "completed");
   const wins = completed.filter((g) => g.our_score > g.opponent_score).length;
   const losses = completed.filter((g) => g.our_score < g.opponent_score).length;
 
+  // Data-reliability batch: the roster stat line below used to scope to
+  // `seasonGames` too, which is what "Jordan Blake: 47 AB" (real total 67)
+  // looked like a season-boundary bug -- it wasn't. This team has exactly
+  // one season covering all of its games, so seasonGames was already every
+  // game; the real cause was the next line down never paginating a query
+  // that can return more than PostgREST's 1000-row default (confirmed
+  // live: this team's own at_bats table is past that now). Fixed with
+  // fetchAllRows. Separately, and for the same reason the dashboard and
+  // KAIROS need to "always agree": coach/page.tsx's own Team Leaders/Team
+  // Hitting/Lineup Analysis default view is NOT season-scoped at all --
+  // `.eq("team_id", teamId)` with no season filter, i.e. every game ever.
+  // Scoping the roster line to `allGameIds` here instead of `seasonGames`
+  // is what actually makes the two match, including for a team with more
+  // than one season on record (where the old `seasonGames` scope would
+  // have silently disagreed with the dashboard even without the row cap).
+  //
   // KAIROS fixes batch, Fix 4: every player's full line, not just a top-3
   // summary -- "KAIROS should NEVER say 'I don't have data on that
   // player' if that player is on the roster." A 0-AB player still gets a
   // line (ab: 0), explicitly, rather than being silently omitted, so
   // Fix 5's "no at-bats logged yet" case is something the model can see
   // directly instead of inferring from an absence.
-  const gameIds = seasonGames.map((g) => g.id);
-  const { data: atBats } = gameIds.length
-    ? await supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null)
-    : { data: [] };
-  const hittingAtBats = (atBats ?? []).filter((ab) => ab.mode === "hitting");
-  const pitchingAtBats = (atBats ?? []).filter((ab) => ab.mode === "pitching");
+  const allGameIds = (games ?? []).map((g) => g.id);
   // Fix: stolen bases were never fetched here, so computeBattingLines was
   // always called with [] for stolenBases -- every player's own `sb`
   // silently computed to 0 regardless of what src/lib/stats.ts's own
   // counter does with real rows (same function the Team Leaders card
   // uses). Caught stealing only lives in game_events (no stolen_bases
   // equivalent), tallied the same way coach/page.tsx's EPS fetch already
-  // does, so the two SB figures stay in sync with that card too.
-  const { data: stolenBases } = gameIds.length
-    ? await supabase.from("stolen_bases").select("player_id").in("game_id", gameIds)
-    : { data: [] };
-  const { data: caughtStealingEvents } = gameIds.length
-    ? await supabase.from("game_events").select("player_id").in("game_id", gameIds).eq("event_type", "caught_stealing")
+  // does, so the two SB figures stay in sync with that card too. Now
+  // folded into computeKairosRosterBattingLines above, the same function
+  // the new regression test calls directly.
+  const battingLines = await computeKairosRosterBattingLines(supabase, teamId);
+  const pitchingAtBats = allGameIds.length
+    ? await fetchAllRows<Database["public"]["Tables"]["at_bats"]["Row"]>(supabase, "at_bats", "*", (q) =>
+        q.in("game_id", allGameIds).eq("mode", "pitching").not("confirmed_at", "is", null)
+      )
+    : [];
+  const { data: caughtStealingEvents } = allGameIds.length
+    ? await supabase.from("game_events").select("player_id").in("game_id", allGameIds).eq("event_type", "caught_stealing")
     : { data: [] };
   const caughtStealingByPlayer = new Map<string, number>();
   for (const ev of caughtStealingEvents ?? []) {
     if (!ev.player_id) continue;
     caughtStealingByPlayer.set(ev.player_id, (caughtStealingByPlayer.get(ev.player_id) ?? 0) + 1);
   }
-  const battingLines = computeBattingLines(hittingAtBats, stolenBases ?? []);
-  const pitchingLines = computePitchingLines(pitchingAtBats, seasonGames);
+  // `pitchingAtBats` is now scoped to every game (see allGameIds above),
+  // not just seasonGames -- winning_pitcher_id lookups need the matching
+  // full `games` list, or a pitcher's win from an earlier season could
+  // silently fail to credit (the game it happened in wouldn't be in this
+  // list at all).
+  const pitchingLines = computePitchingLines(pitchingAtBats, games ?? []);
 
   const rosterStats = (players ?? [])
     .map((p) => {
@@ -149,7 +198,7 @@ async function buildSystemPrompt(supabase: SupabaseClient, teamId: string): Prom
       const sbText = sb > 0 || cs > 0 ? `, ${sb} SB${cs > 0 ? `, ${cs} CS` : ""}` : "";
       const battingText = b && b.ab > 0
         ? `${b.ab} AB, ${formatAvg(b.avg)} AVG, ${b.hr} HR, ${b.rbi} RBI, ${formatAvg(b.obp)} OBP, ${formatAvg(b.slg)} SLG, ${b.ops.toFixed(3)} OPS${sbText}`
-        : `no at-bats logged yet this season${sbText}`;
+        : `no at-bats logged yet${sbText}`;
       const pitchingText = pitch && pitch.ip > 0 ? ` | Pitching: ${pitch.ipDisplay} IP, ${pitch.era?.toFixed(2) ?? "—"} ERA, ${pitch.whip?.toFixed(2) ?? "—"} WHIP, ${pitch.k} K` : "";
       return `#${p.jersey_number ?? "—"} ${p.name} (${p.position ?? "—"}): ${battingText}${pitchingText}`;
     })
@@ -468,27 +517,17 @@ async function executeQueryStats(supabase: SupabaseClient, teamId: string, input
 // plausible-looking but wrong answer, not a crash -- exactly the kind of
 // mistake this app's own "never guess" rule exists to prevent, so this
 // had to be fixed at the source rather than caught by a confidence label.
-// Chunking the id list and concatenating keeps every request's URL
-// comfortably sized; get_zone_breakdown's own team-wide (no player_name)
-// query has the same ~800-id shape and used the same unchecked pattern,
-// so both now share this one fix.
-const AT_BAT_ID_CHUNK_SIZE = 150;
+//
+// Data-reliability batch: the local chunking helper this comment used to
+// describe is now `fetchInChunks` in src/lib/supabase/safe-fetch.ts --
+// pulled out to a shared location once the audit found the exact same
+// unchunked/unchecked `.in("at_bat_id", ...)` shape at four more call
+// sites across the app (heat maps, the player Clubhouse, opponent
+// scouting, the next-game pitcher report).
+const PITCH_SELECT = "at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing";
 
 async function fetchPitchesForAtBats(supabase: SupabaseClient, atBatIds: string[]): Promise<ZoneKairosPitch[]> {
-  if (atBatIds.length === 0) return [];
-  const chunks: string[][] = [];
-  for (let i = 0; i < atBatIds.length; i += AT_BAT_ID_CHUNK_SIZE) {
-    chunks.push(atBatIds.slice(i, i + AT_BAT_ID_CHUNK_SIZE));
-  }
-  const results = await Promise.all(
-    chunks.map((chunk) => supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", chunk))
-  );
-  const rows: ZoneKairosPitch[] = [];
-  for (const r of results) {
-    if (r.error) throw new Error(`Failed to fetch pitches: ${r.error.message}`);
-    rows.push(...(r.data ?? []));
-  }
-  return rows;
+  return fetchInChunks<ZoneKairosPitch>(supabase, "pitches", "at_bat_id", atBatIds, PITCH_SELECT);
 }
 
 interface ZoneBreakdownInput {
@@ -966,6 +1005,16 @@ async function executeSwitchGameMode(supabase: SupabaseClient, teamId: string, i
 export async function askKairos(history: KairosMessage[], message: string, testOverride?: KairosTestOverride): Promise<KairosResponse> {
   const { supabase, teamId } = testOverride ?? (await requireCoachTeam());
   const system = await buildSystemPrompt(supabase, teamId);
+  // Data-reliability batch: cache_control on the system prompt -- a
+  // second breakpoint, after the one on KAIROS_TOOLS (see that file's own
+  // comment). This team's roster stats change over the season, so this
+  // cache entry rotates with them, but it's byte-identical between the
+  // `first` and `second` calls below (the exact same `system` variable,
+  // reused) -- that alone makes the second call's own system+tools
+  // content, which otherwise has to be resent and re-billed in full just
+  // to continue this one exchange, nearly free, regardless of whether
+  // anything was cached from a previous, separate question.
+  const cachedSystem: Anthropic.TextBlockParam[] = [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
 
   const messages: Anthropic.MessageParam[] = [...history.map((h) => ({ role: h.role, content: h.content }) as Anthropic.MessageParam), { role: "user", content: message }];
 
@@ -980,14 +1029,19 @@ export async function askKairos(history: KairosMessage[], message: string, testO
   // thinking plus a full tool_use block or a real answer; a short answer
   // still only costs what it actually uses; this is a ceiling, not a
   // target.
-  const first = await client.messages.create({ model: MODEL, max_tokens: 4096, system, tools: KAIROS_TOOLS, messages });
-  const firstUsage = { input: first.usage.input_tokens, output: first.usage.output_tokens };
+  const first = await client.messages.create({ model: MODEL, max_tokens: 4096, system: cachedSystem, tools: KAIROS_TOOLS, messages });
+  const firstUsage = {
+    input: first.usage.input_tokens,
+    output: first.usage.output_tokens,
+    cacheCreation: first.usage.cache_creation_input_tokens ?? 0,
+    cacheRead: first.usage.cache_read_input_tokens ?? 0,
+  };
 
   const toolUses = first.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
   if (first.stop_reason !== "tool_use" || toolUses.length === 0) {
     return {
       text: extractText(first) || "I couldn't come up with a response to that -- try rephrasing?",
-      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output },
+      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output, cacheCreationInputTokens: firstUsage.cacheCreation, cacheReadInputTokens: firstUsage.cacheRead },
     };
   }
 
@@ -1027,7 +1081,7 @@ export async function askKairos(history: KairosMessage[], message: string, testO
     return {
       text,
       pendingRosterImport: rosterPlayers,
-      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output },
+      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output, cacheCreationInputTokens: firstUsage.cacheCreation, cacheReadInputTokens: firstUsage.cacheRead },
     };
   }
 
@@ -1037,7 +1091,7 @@ export async function askKairos(history: KairosMessage[], message: string, testO
     return {
       text,
       pendingScheduleImport: { seasonName: parsed.season_name, seasonYear: parsed.season_year, games: parsed.games },
-      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output },
+      usage: { inputTokens: firstUsage.input, outputTokens: firstUsage.output, totalTokens: firstUsage.input + firstUsage.output, cacheCreationInputTokens: firstUsage.cacheCreation, cacheReadInputTokens: firstUsage.cacheRead },
     };
   }
 
@@ -1071,7 +1125,7 @@ export async function askKairos(history: KairosMessage[], message: string, testO
   const second = await client.messages.create({
     model: MODEL,
     max_tokens: 4096,
-    system,
+    system: cachedSystem,
     tools: KAIROS_TOOLS,
     messages: [
       ...messages,
@@ -1082,9 +1136,17 @@ export async function askKairos(history: KairosMessage[], message: string, testO
 
   const totalInput = firstUsage.input + second.usage.input_tokens;
   const totalOutput = firstUsage.output + second.usage.output_tokens;
+  const totalCacheCreation = firstUsage.cacheCreation + (second.usage.cache_creation_input_tokens ?? 0);
+  const totalCacheRead = firstUsage.cacheRead + (second.usage.cache_read_input_tokens ?? 0);
   return {
     text: extractText(second) || "I looked that up but couldn't put together a response -- try asking again?",
-    usage: { inputTokens: totalInput, outputTokens: totalOutput, totalTokens: totalInput + totalOutput },
+    usage: {
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
+      totalTokens: totalInput + totalOutput,
+      cacheCreationInputTokens: totalCacheCreation,
+      cacheReadInputTokens: totalCacheRead,
+    },
   };
 }
 
