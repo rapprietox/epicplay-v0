@@ -79,6 +79,13 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
   const whatsappOptin = formData.get("whatsappOptin") === "on";
   const teamSizeRaw = String(formData.get("teamSize") ?? "").trim();
   const message = String(formData.get("message") ?? "").trim();
+  // Tour-page batch: LaunchLeadForm now accepts an optional hidden
+  // "source" field so a non-launch-page caller (the /tour page) can be
+  // told apart from the launch page's own submissions in the leads
+  // table -- every existing caller omits the field entirely and keeps
+  // getting "launch", unchanged.
+  const sourceRaw = String(formData.get("source") ?? "").trim();
+  const source = sourceRaw || "launch";
 
   if (!name) return { ok: false, error: "Enter your name." };
   if (!email || !EMAIL_RE.test(email)) return { ok: false, error: "Enter a valid email." };
@@ -124,7 +131,7 @@ export async function submitLead(formData: FormData): Promise<LeadResult> {
       message: message || null,
       phone: phone || null,
       whatsapp_optin: whatsappOptin,
-      source: "launch",
+      source,
     });
     if (error) {
       // 23505 = unique_violation on leads_email_unique_idx (lower(email))

@@ -1,0 +1,566 @@
+/* /tour page -- scoped under .tour-root so nothing here can leak onto
+   any other route and nothing from any other route's global CSS can
+   accidentally override a generic class name like .btn here. */
+
+.tour-root {
+  background: #030a06;
+  color: #c8f0d5;
+  min-height: 100vh;
+}
+
+.tour-root a {
+  color: inherit;
+}
+
+/* ---------- top bar ---------- */
+
+.tour-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px max(16px, env(safe-area-inset-left, 0px)) 12px max(16px, env(safe-area-inset-right, 0px));
+  background: linear-gradient(to bottom, rgba(3, 10, 6, 0.95), rgba(3, 10, 6, 0.75));
+  border-bottom: 1px solid #1a3d28;
+  backdrop-filter: blur(6px);
+}
+
+.tour-root .tour-wordmark {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 13px;
+  color: #f0c060;
+  white-space: nowrap;
+}
+
+.tour-present-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #2ecc71;
+  color: #2ecc71;
+  background: transparent;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  min-height: 36px;
+}
+
+.tour-present-btn:hover {
+  background: rgba(46, 204, 113, 0.12);
+}
+
+.tour-kbd {
+  display: inline-block;
+  border: 1px solid #1a3d28;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #9fcbac;
+  margin-left: 2px;
+}
+
+/* ---------- scroll mode ---------- */
+
+.tour-scroll {
+  padding-top: 64px;
+}
+
+.tour-section {
+  padding-block: 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid rgba(26, 61, 40, 0.6);
+}
+
+.tour-section-inner {
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.tour-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #2ecc71;
+  margin-bottom: 10px;
+}
+
+.tour-h2 {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #f0c060;
+  font-size: clamp(26px, 5vw, 40px);
+  line-height: 1.08;
+  text-wrap: balance;
+  margin-bottom: 18px;
+}
+
+.tour-lede {
+  font-size: clamp(15px, 2.2vw, 18px);
+  color: #c8f0d5;
+  max-width: 65ch;
+  line-height: 1.6;
+}
+
+.tour-body p {
+  font-size: 15px;
+  line-height: 1.7;
+  color: #a9d9b9;
+  max-width: 65ch;
+}
+
+.tour-body p + p {
+  margin-top: 10px;
+}
+
+.tour-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 20px;
+  margin-top: 18px;
+  list-style: none;
+  padding: 0;
+}
+
+@media (max-width: 640px) {
+  .tour-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tour-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  color: #dcf5e4;
+  border-left: 2px solid #2ecc71;
+  padding-left: 10px;
+}
+
+.tour-list li small {
+  display: block;
+  color: #6f9a7d;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+/* ---------- chips / badges ---------- */
+
+.tour-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tour-chip-dev {
+  background: rgba(239, 159, 39, 0.15);
+  border: 1px solid #ef9f27;
+  color: #ef9f27;
+}
+
+.tour-chip-sample {
+  background: rgba(3, 10, 6, 0.8);
+  border: 1px solid #1a3d28;
+  color: #9fcbac;
+}
+
+/* ---------- screenshots ---------- */
+
+.tour-shot {
+  margin: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #1a3d28;
+  background: #071a0e;
+  position: relative;
+}
+
+.tour-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tour-shot figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #9fcbac;
+  border-top: 1px solid #1a3d28;
+}
+
+.tour-shots-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 22px;
+}
+
+@media (max-width: 720px) {
+  .tour-shots-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tour-shots-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 960px) {
+  .tour-shots-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .tour-shots-grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- video ---------- */
+
+.tour-video-frame {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  aspect-ratio: 9 / 16;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid #1a3d28;
+  background: #071a0e;
+}
+
+.tour-video-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.tour-who-grid {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.tour-who-text {
+  flex: 1;
+  min-width: 240px;
+}
+
+/* ---------- quote block (AI coach / weak-zone story) ---------- */
+
+.tour-quote {
+  margin-top: 18px;
+  border-left: 3px solid #f0c060;
+  background: rgba(240, 192, 96, 0.06);
+  border-radius: 0 8px 8px 0;
+  padding: 14px 16px;
+}
+
+.tour-quote-q {
+  font-size: 13px;
+  color: #6f9a7d;
+  font-style: italic;
+}
+
+.tour-quote-a {
+  margin-top: 6px;
+  font-size: 14px;
+  color: #dcf5e4;
+  line-height: 1.6;
+}
+
+/* ---------- founding access ---------- */
+
+.tour-founding {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .tour-founding {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tour-price-card {
+  border: 1px solid #2ecc71;
+  border-radius: 12px;
+  background: rgba(46, 204, 113, 0.06);
+  padding: 18px;
+}
+
+.tour-price-card .tour-price {
+  font-family: var(--font-heading);
+  font-size: 36px;
+  font-weight: 900;
+  color: #2ecc71;
+}
+
+.tour-price-card .tour-price-note {
+  font-size: 12px;
+  color: #9fcbac;
+  margin-top: 4px;
+}
+
+/* ---------- lead form (reuses LaunchLeadForm's markup/classes) ---------- */
+
+.tour-root .lead-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tour-root .lead-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tour-root .lead-field {
+  flex: 1;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: #9fcbac;
+}
+
+.tour-root .lead-input {
+  background: #06150a;
+  border: 1px solid #1a3d28;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #ffffff;
+  font-size: 14px;
+  outline: none;
+}
+
+.tour-root .lead-input:focus {
+  border-color: #2ecc71;
+}
+
+.tour-root .lead-honeypot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tour-root .lead-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #a9d9b9;
+}
+
+.tour-root .lead-hint {
+  font-size: 11px;
+  color: #5a7a64;
+}
+
+.tour-root .lead-error {
+  font-size: 12px;
+  color: #e24b4a;
+}
+
+.tour-root .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #2ecc71;
+  color: #04120a;
+  font-weight: 700;
+  border: none;
+  border-radius: 999px;
+  padding: 11px 20px;
+  font-size: 14px;
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.tour-root .btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tour-root .lead-success-block {
+  border: 1px solid #2ecc71;
+  border-radius: 10px;
+  padding: 18px;
+  background: rgba(46, 204, 113, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tour-root .lead-success {
+  color: #dcf5e4;
+  font-size: 14px;
+}
+
+.tour-root .lead-success-note {
+  font-size: 12px;
+  color: #ef9f27;
+}
+
+/* ---------- presenter mode ---------- */
+
+.tour-present {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #030a06;
+  display: flex;
+  flex-direction: column;
+}
+
+.tour-present-stage {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  padding: 90px max(24px, env(safe-area-inset-left, 0px)) 70px max(24px, env(safe-area-inset-right, 0px));
+}
+
+.tour-present-stage .tour-section-inner {
+  margin: auto;
+  width: 100%;
+}
+
+.tour-present-slide {
+  width: 100%;
+  animation: tour-slide-in 320ms ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-present-slide {
+    animation: none;
+  }
+}
+
+@keyframes tour-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tour-present-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px max(16px, env(safe-area-inset-left, 0px)) max(10px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-right, 0px));
+  background: rgba(7, 26, 14, 0.9);
+  border-top: 1px solid #1a3d28;
+  font-size: 12px;
+  color: #9fcbac;
+}
+
+.tour-present-bar .tour-progress {
+  font-family: var(--font-mono);
+}
+
+.tour-present-nav-btn {
+  background: transparent;
+  border: 1px solid #1a3d28;
+  color: #c8f0d5;
+  border-radius: 8px;
+  padding: 7px 12px;
+  min-height: 36px;
+  min-width: 44px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.tour-present-nav-btn:hover {
+  border-color: #2ecc71;
+}
+
+.tour-notes {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 52px;
+  z-index: 115;
+  max-height: 40vh;
+  overflow-y: auto;
+  margin: 0 max(16px, env(safe-area-inset-left, 0px)) 10px max(16px, env(safe-area-inset-right, 0px));
+  padding: 14px 16px;
+  background: #0a2214;
+  border: 1px solid #f0c060;
+  border-radius: 10px;
+  color: #f5e3bd;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.tour-notes h3 {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  color: #f0c060;
+  margin-bottom: 6px;
+}
+
+.tour-notes ul {
+  margin: 6px 0 0 16px;
+  padding: 0;
+}
+
+.tour-exit-hint {
+  position: fixed;
+  top: 10px;
+  right: max(14px, env(safe-area-inset-right, 0px));
+  z-index: 120;
+  font-size: 11px;
+  color: #6f9a7d;
+}

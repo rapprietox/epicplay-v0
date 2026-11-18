@@ -106,6 +106,13 @@ export async function updateSession(request: NextRequest) {
     pathname === "/" ||
     pathname === "/privacy" ||
     pathname === "/terms" ||
+    // /tour: the public, noindex sales-tour page (src/app/tour). Exact
+    // match, same as /privacy and /terms above, not folded into
+    // PUBLIC_PATHS's prefix matching -- it's a single page, not a
+    // section, and "/tour" should never accidentally admit some future
+    // "/tour-group" or similar unrelated route the way a startsWith
+    // check would.
+    pathname === "/tour" ||
     PUBLIC_PATHS.some((path) => pathname.startsWith(path));
 
   if (!user && !isPublicPath) {

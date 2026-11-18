@@ -33,7 +33,17 @@ const PREFILL_EMAIL_KEY = "epicplay_lead_email";
 // same submitLead action; role is optional there (see actions.ts) so a
 // name+email-only hero submission isn't rejected for a field it never
 // asked for.
-export function LaunchLeadForm({ variant, formId }: { variant: "compact" | "section"; formId?: string }) {
+export function LaunchLeadForm({
+  variant,
+  formId,
+  source,
+}: {
+  variant: "compact" | "section";
+  formId?: string;
+  // Tour-page batch: lets a non-launch-page caller tag its leads
+  // ("tour") instead of the default "launch" -- see actions.ts.
+  source?: string;
+}) {
   const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -118,6 +128,7 @@ export function LaunchLeadForm({ variant, formId }: { variant: "compact" | "sect
           script filling every input will fill it, and submitLead()
           silently no-ops on any non-empty value. */}
       <input type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" className="lead-honeypot" />
+      {source && <input type="hidden" name="source" value={source} />}
 
       <div className="lead-row">
         <label className="lead-field">
