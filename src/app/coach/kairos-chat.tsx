@@ -153,7 +153,22 @@ export function KairosChat({ teamId, variant = "dashboard" }: { teamId: string; 
           MAX_SHOWN_MESSAGES), only the visible window's height changed. */}
       <div
         ref={scrollRef}
-        className={`flex flex-col gap-1.5 overflow-y-auto ${isDashboard ? "max-h-[140px]" : "max-h-[40vh]"}`}
+        // AI-coach modal fix: `overflow-y-auto` alone left the browser free
+        // to treat the X axis as scrollable too (per spec, when one axis is
+        // non-"visible" the other's "visible" computes to "auto") -- this
+        // container's content was consistently ~46px wider than it (a
+        // flex row's default min-width:auto lets a wide child push its
+        // row past the column's own width), and the scroll-to-bottom
+        // effect below (scrollTo({top, behavior:'smooth'})) left scrollLeft
+        // pinned at that same ~46px max instead of 0, clipping the first
+        // ~46px of every line in the modal variant specifically (the
+        // dashboard variant's shorter lines rarely got wide enough to
+        // trigger it, which is why this read as modal-only). `min-w-0`
+        // keeps a message row from ever forcing the column wider than its
+        // own max-w-[80%] children need, and `overflow-x-hidden` removes
+        // the X scrollbar entirely as a hard backstop -- there is nothing
+        // in here that should ever need to scroll sideways.
+        className={`flex min-w-0 flex-col gap-1.5 overflow-y-auto overflow-x-hidden ${isDashboard ? "max-h-[140px]" : "max-h-[40vh]"}`}
       >
         {shown.length === 0 && !loading && (
           <p className="px-1 py-1 text-xs text-[#9FCBAC]">
@@ -161,9 +176,9 @@ export function KairosChat({ teamId, variant = "dashboard" }: { teamId: string; 
           </p>
         )}
         {shown.map((m, i) => (
-          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+          <div key={i} className={`flex min-w-0 ${m.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
-              className={`max-w-[80%] whitespace-pre-wrap rounded-lg text-sm ${isDashboard ? "px-2 py-1" : "px-3 py-2"} ${
+              className={`max-w-[80%] min-w-0 whitespace-pre-wrap break-words rounded-lg text-sm ${isDashboard ? "px-2 py-1" : "px-3 py-2"} ${
                 m.role === "user" ? "bg-[#0F2A17] text-[#C8F0D5]" : "border-l-2 border-l-accent-green bg-[#0D2412] text-[#DCF5E4]"
               }`}
             >
@@ -172,7 +187,7 @@ export function KairosChat({ teamId, variant = "dashboard" }: { teamId: string; 
           </div>
         ))}
         {loading && (
-          <div className="flex justify-start">
+          <div className="flex min-w-0 justify-start">
             <div className="rounded-lg border-l-2 border-l-accent-green bg-[#0D2412] px-3 py-2 text-sm text-[#9FCBAC]">KAIROS is thinking…</div>
           </div>
         )}
@@ -241,7 +256,7 @@ export function KairosChat({ teamId, variant = "dashboard" }: { teamId: string; 
       {importDone && <p className="mt-2 text-xs text-accent-green">{importDone}</p>}
       {error && <p className="mt-2 text-xs text-accent-red">{error}</p>}
 
-      <div className={`${isDashboard ? "mt-1.5" : "mt-3"} flex flex-col gap-2 sm:flex-row`}>
+      <div className={`${isDashboard ? "mt-1.5" : "mt-3"} flex min-w-0 flex-col gap-2 sm:flex-row`}>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -253,7 +268,18 @@ export function KairosChat({ teamId, variant = "dashboard" }: { teamId: string; 
           }}
           placeholder="Ask Kairos anything about your team..."
           rows={variant === "modal" ? 2 : 1}
-          className={`w-full resize-none rounded-md border border-[#1A3D28] bg-[#06150A] text-sm text-white outline-none placeholder:text-[#5A7A64] focus:border-accent-green ${
+          // AI-coach modal fix (actual root cause): a <textarea> with no
+          // min-width keeps its own historical default intrinsic content
+          // width (akin to its cols attribute, ~20 characters) as a flex
+          // item's floor, regardless of w-full -- at the modal's ~404px
+          // content width that alone forced this row (and the overflow-y-
+          // auto ancestors stacked above it, all the way up through
+          // kairos-widget.tsx's own wrapper) about 46px wider than
+          // available, which is what was actually clipping the left edge
+          // of the reply text above it, not anything about the message
+          // bubbles themselves. min-w-0 lets w-full's intended shrink
+          // actually take effect.
+          className={`w-full min-w-0 resize-none rounded-md border border-[#1A3D28] bg-[#06150A] text-sm text-white outline-none placeholder:text-[#5A7A64] focus:border-accent-green ${
             isDashboard ? "px-2 py-1.5" : "px-3 py-2"
           }`}
         />
@@ -274,7 +300,19 @@ export function KairosChat({ teamId, variant = "dashboard" }: { teamId: string; 
             type="button"
             onClick={() => void send(input)}
             disabled={loading || !input.trim()}
-            className="min-h-[40px] shrink-0 rounded-full bg-accent-green px-5 text-sm font-semibold text-background transition hover:bg-accent-green/90 disabled:cursor-not-allowed disabled:opacity-50"
+            // AI-coach modal fix: shrink-0 here was the real, final piece of
+            // the overflow -- at the modal's own ~404px content width (not
+            // narrow enough to drop into flex-col, since sm:flex-row keys
+            // off the viewport, not this container), this button's own
+            // intrinsic width plus the mic button and the textarea's
+            // minimum simply didn't fit, and shrink-0 was what turned that
+            // from "a bit tight" into genuine overflow every ancestor up to
+            // kairos-widget.tsx's modal wrapper inherited. Letting it
+            // shrink (its text still wraps/truncates only in the extreme
+            // case; in practice there's always enough room once it's
+            // allowed to give up a few px of padding first) is what
+            // actually closes the gap.
+            className="min-h-[40px] shrink rounded-full bg-accent-green px-5 text-sm font-semibold text-background transition hover:bg-accent-green/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Ask Kairos →
           </button>

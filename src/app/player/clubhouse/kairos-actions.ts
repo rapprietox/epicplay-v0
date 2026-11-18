@@ -149,15 +149,22 @@ async function buildPlayerSystemPrompt(supabase: ReturnType<typeof createClient>
   const whiffZones = computeZoneWhiffLines(pitches)
     .map((line, i) => ({ zoneLabel: extendedZoneLabel(i), rate: line.rate }))
     .filter((z): z is { zoneLabel: string; rate: number } => z.rate !== null);
+  // KAIROS zone-query batch: 2 -> 3 each way, plus the AB count (sample
+  // size) on every entry -- this assistant has no tool loop (see this
+  // file's own top comment), so "best/worst three zones with sample
+  // sizes" has to be baked into the prompt text directly rather than
+  // looked up on demand the way the coach assistant's new
+  // get_zone_breakdown tool does it. Still just two numbers appended per
+  // line, well within the existing prompt's size.
   const sortedByAvg = [...battingZones].sort((a, b) => a.avg - b.avg);
-  const weakZones = sortedByAvg.slice(0, 2).map((z) => {
+  const weakZones = sortedByAvg.slice(0, 3).map((z) => {
     const whiff = whiffZones.find((w) => w.zoneLabel === z.zoneLabel);
-    return `${z.zoneLabel} (${formatAvg(z.avg)} AVG${whiff ? `, ${(whiff.rate * 100).toFixed(0)}% whiff rate` : ""})`;
+    return `${z.zoneLabel} (${formatAvg(z.avg)} AVG, ${z.ab} AB${whiff ? `, ${(whiff.rate * 100).toFixed(0)}% whiff rate` : ""})`;
   });
   const strongZones = [...sortedByAvg]
     .reverse()
-    .slice(0, 2)
-    .map((z) => `${z.zoneLabel} (${formatAvg(z.avg)} AVG)`);
+    .slice(0, 3)
+    .map((z) => `${z.zoneLabel} (${formatAvg(z.avg)} AVG, ${z.ab} AB)`);
 
   const recentGames = Array.from(new Set(decided.map((ab) => ab.game_id)))
     .map((id) => gameById.get(id))
