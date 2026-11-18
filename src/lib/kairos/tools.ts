@@ -160,6 +160,36 @@ export const KAIROS_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    // Spray-tool batch: the companion gap to get_zone_breakdown -- pull vs.
+    // opposite-field is a batted-ball LANDING SPOT question (field_x/
+    // field_y), not a pitch-location question (zone_x/zone_y); neither
+    // existing tool could ever answer it.
+    name: "get_spray_tendencies",
+    description:
+      "Look up real pull / middle / opposite-field tendencies for one of our own hitters (or the whole team), from where their batted balls actually landed -- the same field_x/field_y data the spray chart itself plots, read with the same geometry, so this can never disagree with what a coach sees on that chart. Returns, per hitter: balls in play with a saved landing spot, the share pulled/up-the-middle/opposite-field (using their batting hand -- a right-handed batter pulls to the LEFT side of the field, a lefty pulls RIGHT), the sample size, and a confidence label. A switch hitter or a player with no recorded batting hand comes back with raw field thirds and no pull/opposite label at all -- report that honestly rather than guessing a side. Use this for ANY pull/opposite-field/spray question. Only covers games with a saved landing spot (both Quick and Full Mode capture this on a ball in play) -- if a hitter has none yet, say so plainly rather than treating it as missing data.",
+    input_schema: {
+      type: "object",
+      properties: {
+        player_name: {
+          type: "string",
+          description: "A specific player's name. Omit for a team-wide breakdown across every hitter with at least one saved landing spot.",
+        },
+      },
+    },
+  },
+  {
+    // Team-comparison batch: the system prompt below points every "who's
+    // best/worst at X" question here instead of letting the model call
+    // get_zone_breakdown once per player it wants to compare -- that
+    // per-player-call pattern is what ran a single 3-hitter fastball
+    // comparison up to ~22,000 tokens before this tool existed. One call,
+    // one pass over the team's at-bats/pitches, every hitter's line at once.
+    name: "get_team_zone_summary",
+    description:
+      "Get a compact, one-call comparison table across the WHOLE roster: every hitter's fastballs seen, fastball whiff rate, and their single overall weakest and strongest strike-zone cell (each with its sample size). Use this for any 'who is best/worst at X' or multi-player comparison question -- NEVER call get_zone_breakdown once per player to build the same comparison yourself, that is much more expensive for the same answer. Only call get_zone_breakdown afterward if the coach then asks to drill into one specific player's full zone grid.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     // KAIROS fixes batch, Fix 2 (second fixes batch). Writes directly
     // (games.logging_mode, same as create_single_game's reasoning for
     // skipping the propose/confirm pattern) -- switching modes mid-game

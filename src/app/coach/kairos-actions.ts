@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { computeBattingLines, computePitchingLines, formatAvg } from "@/lib/stats";
 import { computeBatterLinesVsPitcher, teamAvgAgainst } from "@/lib/opponent-scouting";
 import { recordAgainstOpponent, formatRecord } from "@/lib/opponent-history";
-import { computeZoneKairosProfile, type ZoneKairosLine } from "@/lib/heat-map";
+import { computeZoneKairosProfile, type ZoneKairosLine, type ZoneKairosPitch } from "@/lib/heat-map";
 import { KAIROS_TOOLS } from "@/lib/kairos/tools";
 import type { Database, GameType, LoggingMode } from "@/lib/supabase/types";
 
@@ -269,6 +269,30 @@ batters for him -- and nothing you didn't get from the tool; don't infer
 a "weakness" or "strength" for a pitcher from his batting zone data or
 vice versa, they're separate roles even for a two-way player.
 
+For ANY pull / opposite-field / spray question -- "who pulls the ball",
+"does X go the other way", "spray tendencies" -- call get_spray_tendencies.
+It reads batted-ball landing spots (field_x/field_y), a completely
+different thing from get_zone_breakdown's pitch-location data (zone_x/
+zone_y); never answer a spray question from zone data, and never answer a
+zone question from spray data. A switch hitter or a player with no
+recorded batting hand comes back with no pull/opposite label (raw field
+thirds only) -- report that honestly instead of guessing which side they
+pulled toward.
+
+For a "who's best/worst at X" or any multi-player comparison question,
+call get_team_zone_summary ONCE -- it already covers every hitter's
+fastball rate and zone line in one pass. Do not call get_zone_breakdown
+or get_spray_tendencies separately for each player you want to compare;
+that answers the same question at far higher cost for no better an
+answer. Only reach for the per-player tools afterward, if the coach asks
+to drill into one specific player's full breakdown.
+
+Every one of these tools' confidence labels ("low"/"medium"/"high") exists
+so you don't have to guess how much to trust a number -- state plainly,
+in the same sentence, whenever you're citing a "low" confidence sample
+(e.g. "only 3 balls in play there, too early to call a tendency") rather
+than presenting it as a settled fact.
+
 Keep responses concise. Use real numbers from the data. Be specific, not
 generic. A coach doesn't want "Carlos is a good hitter" -- they want "Carlos
 is batting .412 with 3 HR in the last 5 games."`;
@@ -435,6 +459,38 @@ async function executeQueryStats(supabase: SupabaseClient, teamId: string, input
   return { splitNote, direction, minAbToQualify: LEADER_MIN_AB, leaders: ranked, playersWithNoAtBats: zeroAbPlayers };
 }
 
+// Spray-tool batch: a real bug found while testing get_team_zone_summary
+// against the demo team's ~800 team-wide hitting at-bats -- a single
+// `.in("at_bat_id", atBatIds)` call with that many ids pushes the request
+// URL past what PostgREST/the proxy in front of it accepts, and it comes
+// back a flat "Bad Request", not an error either call site here used to
+// check for. The result read as "zero pitches for everyone," a
+// plausible-looking but wrong answer, not a crash -- exactly the kind of
+// mistake this app's own "never guess" rule exists to prevent, so this
+// had to be fixed at the source rather than caught by a confidence label.
+// Chunking the id list and concatenating keeps every request's URL
+// comfortably sized; get_zone_breakdown's own team-wide (no player_name)
+// query has the same ~800-id shape and used the same unchecked pattern,
+// so both now share this one fix.
+const AT_BAT_ID_CHUNK_SIZE = 150;
+
+async function fetchPitchesForAtBats(supabase: SupabaseClient, atBatIds: string[]): Promise<ZoneKairosPitch[]> {
+  if (atBatIds.length === 0) return [];
+  const chunks: string[][] = [];
+  for (let i = 0; i < atBatIds.length; i += AT_BAT_ID_CHUNK_SIZE) {
+    chunks.push(atBatIds.slice(i, i + AT_BAT_ID_CHUNK_SIZE));
+  }
+  const results = await Promise.all(
+    chunks.map((chunk) => supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", chunk))
+  );
+  const rows: ZoneKairosPitch[] = [];
+  for (const r of results) {
+    if (r.error) throw new Error(`Failed to fetch pitches: ${r.error.message}`);
+    rows.push(...(r.data ?? []));
+  }
+  return rows;
+}
+
 interface ZoneBreakdownInput {
   player_name?: string;
   role?: "batter" | "pitcher";
@@ -528,10 +584,7 @@ async function executeGetZoneBreakdown(supabase: SupabaseClient, teamId: string,
   const atBatRows = atBats ?? [];
   const atBatIds = atBatRows.map((ab) => ab.id);
 
-  const { data: pitchRows } = atBatIds.length
-    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", atBatIds)
-    : { data: [] };
-  const pitches = pitchRows ?? [];
+  const pitches = await fetchPitchesForAtBats(supabase, atBatIds);
 
   const zoneLines = computeZoneKairosProfile(atBatRows, pitches);
 
@@ -582,6 +635,218 @@ async function executeGetZoneBreakdown(supabase: SupabaseClient, teamId: string,
         ? "Zero pitches with location data for this scope -- only Full Mode (pitch-by-pitch) games capture pitch location. This is a real result, not a missing feature: either every game in scope was logged in Quick Mode, or this player/team hasn't played yet."
         : null,
   };
+}
+
+interface SprayTendenciesInput {
+  player_name?: string;
+}
+
+// Spray-tool batch: same low/medium/high shape as zoneSampleConfidence
+// above, but its own thresholds and its own constants -- "enough balls in
+// play to trust a pull/oppo split" isn't the same question as "enough
+// pitches in one strike-zone cell," so reusing one set of numbers for both
+// would have been a coincidence dressed up as a shared rule, not a real
+// invariant.
+const SPRAY_HIGH_CONFIDENCE_DOTS = 15;
+const SPRAY_MEDIUM_CONFIDENCE_DOTS = 5;
+
+function spraySampleConfidence(ballsInPlay: number): "low" | "medium" | "high" {
+  if (ballsInPlay >= SPRAY_HIGH_CONFIDENCE_DOTS) return "high";
+  if (ballsInPlay >= SPRAY_MEDIUM_CONFIDENCE_DOTS) return "medium";
+  return "low";
+}
+
+// Spray-tool batch: buckets field_x into left/middle/right thirds of the
+// field image -- the exact same raw field_x/field_y values and the exact
+// same 0-100-left-to-right axis the spray chart itself plots
+// (player-spray-chart.tsx draws `cx={d.x}` directly onto field-2d.png, no
+// calibration transform on the dot position itself), so this tool's
+// numbers and what a coach sees on the spray chart can never disagree.
+// 100/3 thirds chosen independently of heat-map.ts's own THIRDS constant
+// (which buckets a completely different axis -- strike-zone pitch
+// location, not outfield landing spot); the two just happen to both be
+// natural 3-way splits.
+const FIELD_THIRD = 100 / 3;
+
+function fieldThird(x: number): "left" | "middle" | "right" {
+  if (x < FIELD_THIRD) return "left";
+  if (x < 2 * FIELD_THIRD) return "middle";
+  return "right";
+}
+
+// Same geometry this app's demo-data generator and CLAUDE.md's own spray-
+// chart note both document: field_x is 0-100 left-to-right across
+// field-2d.png, home plate near (50, 92) -- so a right-handed batter (who
+// stands on the left side of the plate as drawn, facing the pitcher) pulls
+// the ball to the LEFT side of that image (low field_x), and a lefty pulls
+// to the RIGHT (high field_x). Switch hitters and anyone with no recorded
+// batting_hand get a raw thirds breakdown with no pull/oppo label at all,
+// rather than guessing a side -- same spirit as hbpEligible's own
+// unknown-hand fallback on the operator screen.
+async function executeGetSprayTendencies(supabase: SupabaseClient, teamId: string, input: SprayTendenciesInput) {
+  const { data: games } = await supabase.from("games").select("id").eq("team_id", teamId);
+  const gameIds = (games ?? []).map((g) => g.id);
+
+  let playerFilter: { id: string; name: string } | null = null;
+  if (input.player_name) {
+    const { data: player } = await supabase.from("players").select("id, name").eq("team_id", teamId).ilike("name", input.player_name).maybeSingle();
+    if (!player) return { error: `No player named "${input.player_name}" found on this roster.` };
+    playerFilter = player;
+  }
+
+  if (gameIds.length === 0) {
+    return { scope: playerFilter ? "player" : "team", player: playerFilter?.name ?? null, hitters: [], note: "No games logged for this team yet." };
+  }
+
+  const { data: players } = await supabase.from("players").select("id, name, batting_hand").eq("team_id", teamId);
+  const playerById = new Map((players ?? []).map((p) => [p.id, p]));
+
+  // "Use only games that have dots" -- a saved field_x/field_y, which both
+  // Quick and Full Mode capture on any ball in play (it's an at-bat-level
+  // field, unrelated to pitch-by-pitch detail), so this deliberately
+  // doesn't filter by logging_mode at all.
+  let dotsQuery = supabase
+    .from("at_bats")
+    .select("player_id, field_x, field_y")
+    .eq("mode", "hitting")
+    .in("game_id", gameIds)
+    .not("confirmed_at", "is", null)
+    .not("field_x", "is", null)
+    .not("field_y", "is", null);
+  if (playerFilter) dotsQuery = dotsQuery.eq("player_id", playerFilter.id);
+  const { data: dots } = await dotsQuery;
+
+  const countsByPlayer = new Map<string, { left: number; middle: number; right: number }>();
+  for (const d of dots ?? []) {
+    if (!d.player_id || d.field_x === null) continue;
+    const bucket = countsByPlayer.get(d.player_id) ?? { left: 0, middle: 0, right: 0 };
+    bucket[fieldThird(d.field_x)] += 1;
+    countsByPlayer.set(d.player_id, bucket);
+  }
+
+  const hitters = Array.from(countsByPlayer.entries())
+    .map(([playerId, counts]) => {
+      const player = playerById.get(playerId);
+      const total = counts.left + counts.middle + counts.right;
+      const pct = (n: number) => Math.round((n / total) * 100);
+      const hand = player?.batting_hand ?? null;
+      let pulledPct: number | null = null;
+      let middlePct: number | null = null;
+      let oppoPct: number | null = null;
+      let note: string | undefined;
+      if (hand === "R") {
+        pulledPct = pct(counts.left);
+        middlePct = pct(counts.middle);
+        oppoPct = pct(counts.right);
+      } else if (hand === "L") {
+        pulledPct = pct(counts.right);
+        middlePct = pct(counts.middle);
+        oppoPct = pct(counts.left);
+      } else {
+        note =
+          hand === "S"
+            ? "Switch hitter -- which side they bat from varies by at-bat, so pull/opposite-field can't be labeled from one fixed handedness. Raw field thirds shown instead."
+            : "Batting hand not recorded for this player -- pull/opposite-field can't be labeled. Raw field thirds shown instead.";
+      }
+      return {
+        player: player?.name ?? "Unknown",
+        battingHand: hand,
+        ballsInPlay: total,
+        leftThirdPct: pct(counts.left),
+        middleThirdPct: pct(counts.middle),
+        rightThirdPct: pct(counts.right),
+        pulledPct,
+        middlePct,
+        oppoPct,
+        sampleConfidence: spraySampleConfidence(total),
+        note,
+      };
+    })
+    .sort((a, b) => b.ballsInPlay - a.ballsInPlay)
+    .slice(0, 20);
+
+  return {
+    scope: playerFilter ? "player" : "team",
+    player: playerFilter?.name ?? null,
+    hitters,
+    note:
+      hitters.length === 0
+        ? playerFilter
+          ? `${playerFilter.name} has no balls in play with a saved landing spot yet.`
+          : "No balls in play with a saved landing spot yet for this scope."
+        : null,
+  };
+}
+
+// Team-comparison batch: ONE pass over the team's at-bats/pitches (not one
+// query per hitter) builds every hitter's fastball-vs-zone line at once --
+// this is the tool the system prompt now points "who's best/worst at X"
+// questions at specifically so the model stops calling get_zone_breakdown
+// once per player to answer a team-comparison question (confirmed live:
+// that pattern alone cost ~22,000 tokens for a 3-hitter comparison before
+// this tool existed). Reuses computeZoneKairosProfile and the same
+// zoneBadness ranking get_zone_breakdown already uses, so a hitter's
+// weakest/strongest zone here always matches what get_zone_breakdown would
+// say about them individually.
+const TEAM_ZONE_SUMMARY_MAX_ROWS = 20;
+
+async function executeGetTeamZoneSummary(supabase: SupabaseClient, teamId: string) {
+  const { data: games } = await supabase.from("games").select("id").eq("team_id", teamId);
+  const gameIds = (games ?? []).map((g) => g.id);
+  if (gameIds.length === 0) return { hitters: [], note: "No games logged for this team yet." };
+
+  const { data: players } = await supabase.from("players").select("id, name").eq("team_id", teamId);
+  const playerNameById = new Map((players ?? []).map((p) => [p.id, p.name]));
+
+  const { data: atBats } = await supabase.from("at_bats").select("id, player_id, result").eq("mode", "hitting").in("game_id", gameIds).not("confirmed_at", "is", null);
+  const atBatRows = atBats ?? [];
+  const atBatIds = atBatRows.map((ab) => ab.id);
+  const pitches = await fetchPitchesForAtBats(supabase, atBatIds);
+
+  const atBatIdToPlayer = new Map(atBatRows.filter((ab) => ab.player_id).map((ab) => [ab.id, ab.player_id as string]));
+  const atBatsByPlayer = new Map<string, typeof atBatRows>();
+  for (const ab of atBatRows) {
+    if (!ab.player_id) continue;
+    const arr = atBatsByPlayer.get(ab.player_id) ?? [];
+    arr.push(ab);
+    atBatsByPlayer.set(ab.player_id, arr);
+  }
+  const pitchesByPlayer = new Map<string, typeof pitches>();
+  for (const p of pitches) {
+    const playerId = atBatIdToPlayer.get(p.at_bat_id);
+    if (!playerId) continue;
+    const arr = pitchesByPlayer.get(playerId) ?? [];
+    arr.push(p);
+    pitchesByPlayer.set(playerId, arr);
+  }
+
+  const hitters = Array.from(atBatsByPlayer.entries())
+    .map(([playerId, abs]) => {
+      const playerPitches = pitchesByPlayer.get(playerId) ?? [];
+      const zoneLines = computeZoneKairosProfile(abs, playerPitches);
+
+      const fastballPitches = playerPitches.filter((p) => p.pitch_type === "fastball");
+      const fastballSwings = fastballPitches.filter((p) => p.swing === true);
+      const fastballWhiffs = fastballSwings.filter((p) => p.outcome === "strike" || p.outcome === "foul_tip");
+
+      const gradable = zoneLines.filter((z) => z.avg !== null);
+      const sorted = [...gradable].sort((a, b) => zoneBadness(b) - zoneBadness(a));
+      const weakest = sorted[0] ?? null;
+      const strongest = sorted[sorted.length - 1] ?? null;
+
+      return {
+        player: playerNameById.get(playerId) ?? "Unknown",
+        ab: abs.filter((ab) => ab.result !== null).length,
+        fastballSeen: fastballPitches.length,
+        fastballWhiffRatePct: fastballSwings.length > 0 ? Math.round((fastballWhiffs.length / fastballSwings.length) * 100) : null,
+        weakestZone: weakest ? { zone: weakest.zoneLabel, avg: formatAvg(weakest.avg ?? 0), ab: weakest.ab } : null,
+        strongestZone: strongest ? { zone: strongest.zoneLabel, avg: formatAvg(strongest.avg ?? 0), ab: strongest.ab } : null,
+      };
+    })
+    .sort((a, b) => b.ab - a.ab)
+    .slice(0, TEAM_ZONE_SUMMARY_MAX_ROWS);
+
+  return { hitters, note: hitters.length === 0 ? "No confirmed hitting at-bats logged yet." : null };
 }
 
 async function executeSuggestLineup(supabase: SupabaseClient, teamId: string, input: { pitcher_hand_filter?: "left" | "right" }) {
@@ -781,6 +1046,10 @@ export async function askKairos(history: KairosMessage[], message: string, testO
       return executeQueryStats(supabase, teamId, toolUse.input as QueryStatsInput);
     } else if (toolUse.name === "get_zone_breakdown") {
       return executeGetZoneBreakdown(supabase, teamId, toolUse.input as ZoneBreakdownInput);
+    } else if (toolUse.name === "get_spray_tendencies") {
+      return executeGetSprayTendencies(supabase, teamId, toolUse.input as SprayTendenciesInput);
+    } else if (toolUse.name === "get_team_zone_summary") {
+      return executeGetTeamZoneSummary(supabase, teamId);
     } else if (toolUse.name === "suggest_lineup") {
       return executeSuggestLineup(supabase, teamId, toolUse.input as { pitcher_hand_filter?: "left" | "right" });
     } else if (toolUse.name === "create_single_game") {
