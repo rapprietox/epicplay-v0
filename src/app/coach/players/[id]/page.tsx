@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import type { FieldCalibrationPoints } from "@/lib/supabase/types";
+import type { Database, FieldCalibrationPoints } from "@/lib/supabase/types";
 import { PlayerBreakdownClient } from "./player-breakdown-client";
 import { buildZoneInsightInput, getPlayerZoneInsights, buildPitcherZoneInsightInput, getPitcherZoneInsights } from "./insights";
+import { fetchInChunks } from "@/lib/supabase/safe-fetch";
 
 export default async function PlayerBreakdownPage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -73,9 +74,28 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
   // Whiff-rate/pitch-location maps batch: "swing" added to the select --
   // needed to tell a swinging strike/foul_tip (a real whiff) apart from
   // a called strike, which the pre-existing columns alone can't do.
-  const { data: pitches } = allAtBatIds.length
-    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", allAtBatIds)
-    : { data: [] };
+  //
+  // Data-reliability batch: this player's own at-bats (hitting + pitching
+  // combined, across every game) can run into the hundreds over a season
+  // or two -- audited as one of the real `.in("at_bat_id", ids)` sites
+  // that was neither chunked nor checked for an error. fetchInChunks
+  // fixes both; pitchesLoadError (not an empty array) is what tells
+  // PlayerBreakdownClient this was a failure, not a real "no pitches yet".
+  type PitchRow = Pick<Database["public"]["Tables"]["pitches"]["Row"], "at_bat_id" | "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome" | "swing">;
+  let pitches: PitchRow[] = [];
+  let pitchesLoadError = false;
+  try {
+    pitches = await fetchInChunks<PitchRow>(
+      supabase,
+      "pitches",
+      "at_bat_id",
+      allAtBatIds,
+      "at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing"
+    );
+  } catch (err) {
+    console.error(`[coach/players/${params.id}] pitches fetch failed`, err);
+    pitchesLoadError = true;
+  }
 
   // Whiff-rate/pitch-location maps batch: the "Key Insights" block is
   // generated server-side, from the FULL (unfiltered) dataset -- it does
@@ -118,7 +138,8 @@ export default async function PlayerBreakdownPage({ params }: { params: { id: st
           battingAtBats={battingAtBats ?? []}
           pitchingAtBats={pitchingAtBats ?? []}
           stolenBases={stolenBases ?? []}
-          pitches={pitches ?? []}
+          pitches={pitches}
+          pitchesLoadError={pitchesLoadError}
           fieldCalibration={fieldCalibration}
           insights={insights}
           pitcherInsights={pitcherInsights}

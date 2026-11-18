@@ -4,8 +4,10 @@ import { createClient } from "@/lib/supabase/server";
 import { zoneIndexFromCoords } from "@/lib/heat-map";
 import { computePitchArsenal, computeBatterLinesVsPitcher, computeBatterLinesByPitchType, teamAvgAgainst } from "@/lib/opponent-scouting";
 import { formatAvg } from "@/lib/stats";
-import type { AtBatResult, PitchType } from "@/lib/supabase/types";
+import type { AtBatResult, PitchOutcome, PitchType } from "@/lib/supabase/types";
 import { PitcherHeatmap } from "../../players/[id]/pitcher-heatmap";
+import { fetchInChunks } from "@/lib/supabase/safe-fetch";
+import { DataLoadError } from "@/components/data-load-error";
 
 export default async function OpponentScoutingPage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -39,9 +41,31 @@ export default async function OpponentScoutingPage({ params }: { params: { id: s
     : { data: [] };
 
   const atBatIds = (atBats ?? []).map((ab) => ab.id);
-  const { data: pitches } = atBatIds.length
-    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome").in("at_bat_id", atBatIds)
-    : { data: [] };
+  // Data-reliability batch: chunked + checked -- at-bats against one
+  // opponent can run into the hundreds across a multi-season rivalry, the
+  // same audited risk as the coach-side player breakdown page.
+  interface OpponentPitchRow {
+    at_bat_id: string;
+    pitch_number: number;
+    pitch_type: PitchType | null;
+    zone_x: number | null;
+    zone_y: number | null;
+    outcome: PitchOutcome;
+  }
+  let pitches: OpponentPitchRow[] = [];
+  let pitchesLoadError = false;
+  try {
+    pitches = await fetchInChunks<OpponentPitchRow>(
+      supabase,
+      "pitches",
+      "at_bat_id",
+      atBatIds,
+      "at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome"
+    );
+  } catch (err) {
+    console.error(`[coach/opponents/${params.id}] pitches fetch failed`, err);
+    pitchesLoadError = true;
+  }
 
   const lastPitchByAtBat = new Map<string, { zoneIndex: number | null; pitchType: PitchType | null }>();
   for (const ab of atBats ?? []) {
@@ -105,14 +129,16 @@ export default async function OpponentScoutingPage({ params }: { params: { id: s
       </header>
 
       <div className="mx-auto mt-6 flex max-w-3xl flex-col gap-6">
-        {pitcherProfiles.length === 0 && (
+        {pitchesLoadError && <DataLoadError label="Couldn't load pitch data for this opponent. Try again." />}
+
+        {!pitchesLoadError && pitcherProfiles.length === 0 && (
           <p className="rounded-md border border-border bg-surface p-5 text-sm text-foreground/50">
             No pitches logged against a known opponent pitcher yet. On the operator screen (hitting mode), tap the pitcher readout in
             the top bar to identify who&apos;s pitching for them.
           </p>
         )}
 
-        {pitcherProfiles.map((p) => (
+        {!pitchesLoadError && pitcherProfiles.map((p) => (
           <section key={p.pitcherId} className="glossy rounded-lg border border-border bg-surface p-5">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="font-heading text-xl font-bold text-white">

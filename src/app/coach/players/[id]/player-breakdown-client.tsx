@@ -22,6 +22,7 @@ import { PitcherExtendedStats } from "./pitcher-extended-stats";
 import { ZoneAnalyticsRow } from "./zone-analytics-row";
 import { KeyInsights } from "./key-insights";
 import { computeEpsForPlayer, epsTier, EPS_TIER_LABEL } from "@/lib/eps";
+import { DataLoadError } from "@/components/data-load-error";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
 type Game = Database["public"]["Tables"]["games"]["Row"];
@@ -50,6 +51,7 @@ export function PlayerBreakdownClient({
   pitchingAtBats,
   stolenBases,
   pitches,
+  pitchesLoadError = false,
   fieldCalibration,
   insights,
   pitcherInsights,
@@ -61,6 +63,12 @@ export function PlayerBreakdownClient({
   pitchingAtBats: AtBat[];
   stolenBases: StolenBase[];
   pitches: Pitch[];
+  // Data-reliability batch: true only when the page's chunked pitches
+  // fetch threw (not when it legitimately found zero rows) -- lets this
+  // component show "couldn't load" instead of silently rendering every
+  // pitch-dependent panel below as if this player genuinely had no
+  // Full Mode data.
+  pitchesLoadError?: boolean;
   fieldCalibration: FieldCalibrationPoints | null;
   insights: string[];
   pitcherInsights: string[];
@@ -369,20 +377,26 @@ export function PlayerBreakdownClient({
         )}
       </section>
 
-      <StrikeZoneHeatmap battingAtBats={battingZoneAtBats} pitchingAtBats={pitchingZoneAtBats} hasPitchingData={pitchingZoneAtBats.length > 0} />
-
-      {batterPitches.length > 0 && (
+      {pitchesLoadError ? (
+        <DataLoadError label="Couldn't load pitch data for the heat maps. Try again." />
+      ) : (
         <>
-          <ZoneAnalyticsRow battingAvgLines={battingAvgZoneLines} whiffPitches={batterPitches} locationPitches={batterPitches} />
-          <KeyInsights insights={insights} reliability={battingReliability} />
+          <StrikeZoneHeatmap battingAtBats={battingZoneAtBats} pitchingAtBats={pitchingZoneAtBats} hasPitchingData={pitchingZoneAtBats.length > 0} />
+
+          {batterPitches.length > 0 && (
+            <>
+              <ZoneAnalyticsRow battingAvgLines={battingAvgZoneLines} whiffPitches={batterPitches} locationPitches={batterPitches} />
+              <KeyInsights insights={insights} reliability={battingReliability} />
+            </>
+          )}
         </>
       )}
 
       <PlayerSprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
 
-      {pitchingZoneAtBats.length > 0 && <PitcherHeatmap atBats={pitcherAtBatsByType} pitches={pitcherPitches} />}
+      {!pitchesLoadError && pitchingZoneAtBats.length > 0 && <PitcherHeatmap atBats={pitcherAtBatsByType} pitches={pitcherPitches} />}
 
-      {pitcherPitches.length > 0 && (
+      {!pitchesLoadError && pitcherPitches.length > 0 && (
         <>
           <ZoneAnalyticsRow
             battingAvgLines={pitchingAvgZoneLines}
@@ -394,11 +408,11 @@ export function PlayerBreakdownClient({
         </>
       )}
 
-      {battingZoneAtBats.length > 0 && (
+      {!pitchesLoadError && battingZoneAtBats.length > 0 && (
         <HitterExtendedStats countAtBats={hitterCountAtBats} pitchTypeAtBats={hitterPitchTypeAtBats} pitches={batterPitches} />
       )}
 
-      {pitchingZoneAtBats.length > 0 && (
+      {!pitchesLoadError && pitchingZoneAtBats.length > 0 && (
         <PitcherExtendedStats countAtBats={pitcherCountAtBats} pitches={pitcherPitches} atBatCount={filteredPitchingAtBats.length} />
       )}
     </>

@@ -4,7 +4,8 @@ import { computeBattingLines, computePitchingLines } from "@/lib/stats";
 import { computeZoneBattingLines, zoneIndexFromCoords, resultCategory } from "@/lib/heat-map";
 import { finalCountForAtBat, computePressureSplits } from "@/lib/count-stats";
 import { daysUntil } from "@/lib/dates";
-import type { AtBatResult, FieldCalibrationPoints, GameType, PitchType } from "@/lib/supabase/types";
+import type { AtBatResult, Database, FieldCalibrationPoints, GameType, PitchType } from "@/lib/supabase/types";
+import { fetchInChunks, fetchAllRows } from "@/lib/supabase/safe-fetch";
 import { getPlayerZoneInsights, buildZoneInsightInput } from "@/app/coach/players/[id]/insights";
 import { getPregameMessage } from "./insights";
 import { getOrCreateInitialAssessment } from "./kairos-actions";
@@ -81,9 +82,17 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   const pitchingLine = computePitchingLines(pitchingAtBats ?? [], allGames).get(player.id);
 
   const { data: teamPlayers } = await supabase.from("players").select("*").eq("team_id", profile.team_id);
-  const { data: teamAtBats } = gameIds.length
-    ? await supabase.from("at_bats").select("*").in("game_id", gameIds).not("confirmed_at", "is", null)
-    : { data: [] };
+  // Data-reliability batch: same unpaginated-`select("*")` shape as the
+  // coach dashboard's own team-wide at_bats fetch, which was confirmed
+  // silently truncating at PostgREST's 1000-row default once this team's
+  // confirmed at_bats passed that count -- this is the exact same query
+  // (team-wide, not just this player's own), so it had the exact same bug
+  // for the Team section a player sees on their own Clubhouse page.
+  const teamAtBats = gameIds.length
+    ? await fetchAllRows<Database["public"]["Tables"]["at_bats"]["Row"]>(supabase, "at_bats", "*", (q) =>
+        q.in("game_id", gameIds).not("confirmed_at", "is", null)
+      )
+    : [];
   const { data: teamStolenBases } = gameIds.length ? await supabase.from("stolen_bases").select("*").in("game_id", gameIds) : { data: [] };
   // Hitting-table batch: widened from "caught_stealing only" to every
   // event row, carrying scorer_player_id/runs_scored too -- TeamSection's
@@ -104,10 +113,21 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
     ? await supabase.from("game_events").select("event_type, player_id, game_id").eq("player_id", player.id).in("game_id", gameIds).eq("event_type", "caught_stealing")
     : { data: [] };
 
-  const { data: pitches } = atBatIds.length
-    ? await supabase.from("pitches").select("at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing").in("at_bat_id", atBatIds)
-    : { data: [] };
-  const batterPitches = pitches ?? [];
+  type PitchRow = Pick<Database["public"]["Tables"]["pitches"]["Row"], "at_bat_id" | "pitch_number" | "pitch_type" | "zone_x" | "zone_y" | "outcome" | "swing">;
+  let batterPitches: PitchRow[] = [];
+  let pitchesLoadError = false;
+  try {
+    batterPitches = await fetchInChunks<PitchRow>(
+      supabase,
+      "pitches",
+      "at_bat_id",
+      atBatIds,
+      "at_bat_id, pitch_number, pitch_type, zone_x, zone_y, outcome, swing"
+    );
+  } catch (err) {
+    console.error(`[player/clubhouse] pitches fetch failed for player ${player.id}`, err);
+    pitchesLoadError = true;
+  }
 
   const { data: fieldCalibrationRow } = await supabase
     .from("field_calibration")
@@ -178,7 +198,22 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
   // actually unlocked -- an unlocked player is the only one who'll ever
   // see it, so there's no reason to spend an Anthropic call (or wait on
   // one) for a locked player.
-  const kairosAssessment = player.clubhouse_unlocked ? await getOrCreateInitialAssessment() : "";
+  //
+  // Data-reliability batch: getOrCreateInitialAssessment() now fetches its
+  // own pitches via the same throwing fetchInChunks as everything else in
+  // this file -- wrapped here (not left to crash the whole page) since
+  // this runs unguarded during SSR, unlike RegenerateAssessmentButton's
+  // own call to the same underlying fetch, which already has its own
+  // try/catch and a visible retry affordance.
+  let kairosAssessment = "";
+  if (player.clubhouse_unlocked) {
+    try {
+      kairosAssessment = await getOrCreateInitialAssessment();
+    } catch (err) {
+      console.error(`[player/clubhouse] initial assessment fetch failed for player ${player.id}`, err);
+      kairosAssessment = "Couldn't load this player's AI assessment right now. Try reloading the page.";
+    }
+  }
 
   // Games this player actually appeared in, most recent first -- "game
   // history" is personal ("their line"), so a game they didn't bat in
@@ -298,6 +333,7 @@ export default async function ClubhousePage({ searchParams }: { searchParams: { 
           battingAvgZoneLines={battingAvgZoneLines}
           battingZoneAtBats={battingZoneAtBats}
           pitches={batterPitches}
+          pitchesLoadError={pitchesLoadError}
           insights={insights}
           sprayDots={sprayDots}
           playerGames={playerGames.map((g) => ({ id: g.id, gameDate: g.game_date, opponentName: g.opponent_name }))}

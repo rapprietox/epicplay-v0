@@ -208,5 +208,18 @@ export const KAIROS_TOOLS: Anthropic.Tool[] = [
       },
       required: ["game_id", "new_mode"],
     },
+    // Data-reliability batch: a cache_control breakpoint on the LAST tool
+    // in the array caches the whole array up to and including it --
+    // KAIROS_TOOLS never changes at runtime (it's a module-level
+    // constant), so this one breakpoint is reusable across every call,
+    // every question, every coach, every team, indefinitely. Measured
+    // live: tools + system together are ~6,400 of the ~14,000 input
+    // tokens a tool-calling question costs, and that whole block gets
+    // resent (and re-billed at full price) a second time within the same
+    // exchange, since askKairos's second call has to replay the first
+    // call's entire context -- this is the single biggest, lowest-risk
+    // win available (see askKairos's own comment for the system-prompt
+    // half of this fix).
+    cache_control: { type: "ephemeral" },
   },
 ];

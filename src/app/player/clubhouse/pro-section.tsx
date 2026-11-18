@@ -25,6 +25,7 @@ import { HotColdStreak } from "./pro/hot-cold-streak";
 import { HeadToHead } from "./pro/head-to-head";
 import { SeasonTrendChart, type TrendPoint } from "./pro/season-trend-chart";
 import { Milestones } from "./pro/milestones";
+import { DataLoadError } from "@/components/data-load-error";
 
 interface ZonePitch {
   swing: boolean | null;
@@ -49,6 +50,7 @@ export function ProSection({
   battingAvgZoneLines,
   battingZoneAtBats,
   pitches,
+  pitchesLoadError = false,
   insights,
   sprayDots,
   playerGames,
@@ -75,6 +77,9 @@ export function ProSection({
   battingAvgZoneLines: ZoneBattingLine[];
   battingZoneAtBats: (AtBatWithZone & { gameType: GameType })[];
   pitches: ZonePitch[];
+  // Data-reliability batch: true only when the page's own chunked pitches
+  // fetch threw, not when this player genuinely has zero pitches logged.
+  pitchesLoadError?: boolean;
   insights: string[];
   sprayDots: (SprayDot & { gameType: GameType; gameId: string })[];
   playerGames: { id: string; gameDate: string; opponentName: string }[];
@@ -151,11 +156,17 @@ export function ProSection({
 
   return (
     <>
-      <StrikeZoneHeatmap battingAtBats={battingZoneAtBats} pitchingAtBats={[]} hasPitchingData={false} />
+      {pitchesLoadError ? (
+        <DataLoadError label="Couldn't load pitch data for the heat maps. Try again." />
+      ) : (
+        <>
+          <StrikeZoneHeatmap battingAtBats={battingZoneAtBats} pitchingAtBats={[]} hasPitchingData={false} />
 
-      <ZoneAnalyticsRow battingAvgLines={battingAvgZoneLines} whiffPitches={pitches} locationPitches={pitches} perspective="batter" />
+          <ZoneAnalyticsRow battingAvgLines={battingAvgZoneLines} whiffPitches={pitches} locationPitches={pitches} perspective="batter" />
 
-      <KeyInsights insights={insights} />
+          <KeyInsights insights={insights} />
+        </>
+      )}
 
       <PlayerSprayChart dots={sprayDots} fieldCalibration={fieldCalibration} />
 
@@ -167,7 +178,9 @@ export function ProSection({
         </div>
       </section>
 
-      <HitterExtendedStats countAtBats={hitterCountAtBats} pitchTypeAtBats={hitterPitchTypeAtBats} pitches={pitches} />
+      {!pitchesLoadError && (
+        <HitterExtendedStats countAtBats={hitterCountAtBats} pitchTypeAtBats={hitterPitchTypeAtBats} pitches={pitches} />
+      )}
 
       <SituationalStats rows={situationalRows} />
 
