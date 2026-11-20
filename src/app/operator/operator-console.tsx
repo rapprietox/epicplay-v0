@@ -792,9 +792,20 @@ export function OperatorConsole({
     }
     return map;
   }, [liveLineup]);
+  // Vacant-slot batch: a player who's ever been subbed out (substitutedOutIds,
+  // defined above) stays permanently ineligible per this app's no-re-entry
+  // rule -- but their lineup row's own status still goes to "reserve" when
+  // they come off (see confirmChainSubstitution), which made them show up
+  // back on the bench here too. Excluded explicitly so the chain modal
+  // can't drag -- or assign a vacant batting slot to -- a player who already left.
   const benchPlayerIds = useMemo(
-    () => new Set(liveLineup.filter((l) => l.status === "reserve" || l.status === "late_arrival").map((l) => l.player_id)),
-    [liveLineup]
+    () =>
+      new Set(
+        liveLineup
+          .filter((l) => (l.status === "reserve" || l.status === "late_arrival") && !substitutedOutIds.has(l.player_id))
+          .map((l) => l.player_id)
+      ),
+    [liveLineup, substitutedOutIds]
   );
 
   // Feature 1 (fielding-play logging batch): which fielder position the
@@ -1680,6 +1691,7 @@ export function OperatorConsole({
         inning: state.inning,
         inningHalf: state.inningHalf,
         chainNote: result.chainNote,
+        battingOrderAssignments: result.battingOrderAssignments,
       });
 
       // Success: re-read the lineup from the database and replace the
@@ -4088,6 +4100,7 @@ export function OperatorConsole({
           players={players}
           currentDefense={currentDefense}
           benchPlayerIds={benchPlayerIds}
+          lineup={liveLineup}
           fieldPositionsCalibration={fieldPositionsCalibration}
           inning={state.inning}
           outs={state.outs}

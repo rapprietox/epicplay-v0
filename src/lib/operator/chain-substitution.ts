@@ -30,6 +30,13 @@ export interface ChainSubstitutionWriteDecision {
   incomingBattingOrder: number | null;
 }
 
+// Shared between the outgoing-player branch below and the no-outgoing-
+// player branch (resolveIncomingBattingOrderWithoutOutgoing) -- both
+// refuse to write a null batting_order onto a row about to become
+// status='starting', for the exact same reason, so they share the exact
+// same message rather than two copies that could drift apart.
+export const NO_BATTING_ORDER_ERROR = "Cannot complete this substitution: no batting order could be determined for the incoming player.";
+
 // Decides what confirmChainSubstitution should do once it has looked up
 // (a) whether a substitutions row already exists for this exact
 // (game_id, player_out_id, player_in_id) pair, and (b) the outgoing and
@@ -61,7 +68,29 @@ export function decideChainSubstitutionWrite(input: {
     // scorebook's chain walk. Neither the outgoing player's slot nor
     // the incoming player's own existing slot has a usable value, so
     // refuse instead of guessing.
-    throw new Error("Cannot complete this substitution: no batting order could be determined for the incoming player.");
+    throw new Error(NO_BATTING_ORDER_ERROR);
   }
   return { skip: false, incomingBattingOrder };
+}
+
+// Vacant-slot batch: the no-outgoing-player branch of confirmChainSubstitution
+// (a player entering a position nobody was displaced from, e.g. a new
+// pitcher taking over a previously-uncovered spot) never ran the check
+// above at all -- decideChainSubstitutionWrite is only called when
+// outgoingPlayerId is set, so incomingBattingOrder stayed null with
+// nothing to catch it. This is that same refusal, for that branch:
+// prefer whatever slot the confirm panel's vacant-slot picker assigned
+// to the incoming player (assignedBattingOrder), fall back to a batting
+// order the incoming player might already hold in their own lineup row
+// (a re-entry edge case), and refuse -- never write null -- if neither
+// exists.
+export function resolveIncomingBattingOrderWithoutOutgoing(input: {
+  assignedBattingOrder: number | null;
+  incomingOwnBattingOrder: number | null;
+}): number {
+  const incomingBattingOrder = input.assignedBattingOrder ?? input.incomingOwnBattingOrder ?? null;
+  if (incomingBattingOrder === null) {
+    throw new Error(NO_BATTING_ORDER_ERROR);
+  }
+  return incomingBattingOrder;
 }

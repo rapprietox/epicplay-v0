@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Database, PlayerPositionCalibration, SubReason } from "@/lib/supabase/types";
 
 type Player = Database["public"]["Tables"]["players"]["Row"];
+type LineupRow = Database["public"]["Tables"]["lineup"]["Row"];
 
 const REASONS: { value: SubReason; label: string }[] = [
   { value: "tactical", label: "Tactical" },
@@ -15,6 +16,7 @@ const REASONS: { value: SubReason; label: string }[] = [
 ];
 
 const DEFENSIVE_POSITIONS = ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"] as const;
+const BATTING_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 
 export interface ChainResult {
   incomingPlayerId: string;
@@ -23,6 +25,23 @@ export interface ChainResult {
   positionMoves: { playerId: string; position: string }[];
   reason: SubReason;
   chainNote: string;
+  // Vacant-slot batch: set only when the outgoingPlayerId-null branch
+  // below found a batting slot (1-9) with no one in it -- see
+  // computeVacantBattingSlots.
+  battingOrderAssignments?: { playerId: string; battingOrder: number }[];
+}
+
+// Vacant-slot batch (bug fix): a chain that ends with outgoingPlayerId
+// null (the last mover landed on a position nobody was displaced from)
+// never frees up a batting slot for the incoming player to inherit --
+// per confirmChainSubstitution's own prior behavior, that left the
+// incoming player's batting_order null, i.e. a permanently empty slot
+// and a blank current-batter card the moment it came up. Only relevant
+// in that exact branch: when there IS an outgoing player, the incoming
+// player inherits their slot server-side and no vacancy is introduced.
+export function computeVacantBattingSlots(lineup: Pick<LineupRow, "status" | "batting_order">[]): number[] {
+  const occupied = new Set(lineup.filter((l) => l.status === "starting" && l.batting_order !== null).map((l) => l.batting_order));
+  return BATTING_SLOTS.filter((n) => !occupied.has(n));
 }
 
 // Feature 2 (lineup-status batch): the full chain state machine. Only
@@ -60,6 +79,7 @@ export function ChainSubstitutionModal({
   players,
   currentDefense,
   benchPlayerIds,
+  lineup,
   fieldPositionsCalibration,
   inning,
   outs,
@@ -75,6 +95,10 @@ export function ChainSubstitutionModal({
   // ChainResult for the parent to persist and apply.
   currentDefense: Record<string, string | null>;
   benchPlayerIds: Set<string>;
+  // Vacant-slot batch: the live lineup (not just the bench subset), so
+  // the finalizing confirm panel can check whether any of batting slots
+  // 1-9 would be left with nobody in them -- see computeVacantBattingSlots.
+  lineup: Pick<LineupRow, "player_id" | "status" | "batting_order">[];
   fieldPositionsCalibration: PlayerPositionCalibration | null;
   inning: number;
   outs: number;
@@ -87,6 +111,13 @@ export function ChainSubstitutionModal({
   const [reason, setReason] = useState<SubReason>("tactical");
   const [dragOverPosition, setDragOverPosition] = useState<string | null>(null);
   const [draggingBenchId, setDraggingBenchId] = useState<string | null>(null);
+  // Vacant-slot batch: which eligible bench player the operator picked
+  // for each vacant batting slot this chain would otherwise leave
+  // empty -- keyed by slot number, reset whenever a chain is cancelled
+  // or confirmed. Only ever populated when outgoingPlayerId is null;
+  // see vacantSlots below.
+  const [battingSlotPicks, setBattingSlotPicks] = useState<Record<number, string>>({});
+  const benchPlayers = players.filter((p) => benchPlayerIds.has(p.id));
 
   function playerName(playerId: string | null): string {
     if (!playerId) return "—";
@@ -98,7 +129,23 @@ export function ChainSubstitutionModal({
     setChain(null);
     setFinalizing(null);
     setDragOverPosition(null);
+    setBattingSlotPicks({});
   }
+
+  // Vacant-slot batch: only the no-outgoing-player branch can introduce
+  // a new vacancy (see confirmChainSubstitution) -- when there IS an
+  // outgoing player, the incoming player inherits their slot server-side
+  // and no picker is needed.
+  const vacantSlots = useMemo(() => {
+    if (!finalizing || finalizing.outgoingPlayerId) return [];
+    return computeVacantBattingSlots(lineup);
+  }, [finalizing, lineup]);
+  // Per slot, every bench player not already picked for a DIFFERENT
+  // vacant slot in this same confirm step -- almost always just the
+  // incoming player (still "bench" in lineup data until this write
+  // lands), but the picker allows any eligible player per spec.
+  const eligibleForSlot = (slot: number) => benchPlayers.filter((p) => !Object.entries(battingSlotPicks).some(([s, id]) => Number(s) !== slot && id === p.id));
+  const allVacantSlotsAssigned = vacantSlots.every((slot) => battingSlotPicks[slot]);
 
   // The chain-in-progress preview: currentDefense overlaid with whatever
   // this chain has committed so far, purely for display -- nothing here
@@ -186,6 +233,7 @@ export function ChainSubstitutionModal({
 
   function confirmFinal() {
     if (!finalizing) return;
+    if (!allVacantSlotsAssigned) return; // belt-and-suspenders; the button is also disabled
     const incomingName = playerName(finalizing.incomingPlayerId);
     const parts = [`${incomingName} → ${finalizing.entryPosition} position.`];
     for (const m of finalizing.positionMoves) {
@@ -194,13 +242,17 @@ export function ChainSubstitutionModal({
     if (finalizing.outgoingPlayerId) {
       parts.push(`${playerName(finalizing.outgoingPlayerId)} → bench.`);
     }
+    for (const slot of vacantSlots) {
+      parts.push(`${playerName(battingSlotPicks[slot])} → batting slot ${slot}.`);
+    }
     const reasonLabel = REASONS.find((r) => r.value === reason)?.label ?? reason;
     parts.push(`Reason: ${reasonLabel}. Inning ${inning}, ${outs} out${outs === 1 ? "" : "s"}.`);
-    onResolved({ ...finalizing, reason, chainNote: parts.join(" ") });
+    const battingOrderAssignments = vacantSlots.map((slot) => ({ playerId: battingSlotPicks[slot], battingOrder: slot }));
+    onResolved({ ...finalizing, reason, chainNote: parts.join(" "), battingOrderAssignments });
     setFinalizing(null);
+    setBattingSlotPicks({});
   }
 
-  const benchPlayers = players.filter((p) => benchPlayerIds.has(p.id));
   const inChainMode = chain !== null || finalizing !== null;
   const positionLocations = fieldPositionsCalibration;
 
@@ -371,10 +423,43 @@ export function ChainSubstitutionModal({
                   ))}
                 </select>
               </label>
+
+              {/* Vacant-slot batch: this chain's own entryPosition has no
+                  outgoing player to inherit a batting slot from, so
+                  require the operator to say explicitly who bats in
+                  whichever slot(s) that leaves empty, rather than
+                  silently writing a null batting order (the bug this
+                  fixes). */}
+              {vacantSlots.map((slot) => (
+                <label key={slot} className="mt-3 flex flex-col gap-1 text-xs text-accent-amber">
+                  Who bats in slot {slot}?
+                  <select
+                    value={battingSlotPicks[slot] ?? ""}
+                    onChange={(e) => setBattingSlotPicks((picks) => ({ ...picks, [slot]: e.target.value }))}
+                    className="rounded-md border border-accent-amber/50 bg-background px-3 py-2 text-sm text-white"
+                  >
+                    <option value="" disabled>
+                      Select a player
+                    </option>
+                    {eligibleForSlot(slot).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        #{p.jersey_number ?? "—"} {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+              {vacantSlots.length > 0 && !allVacantSlotsAssigned && (
+                <p className="mt-2 text-[11px] text-accent-amber">
+                  This move leaves {vacantSlots.length === 1 ? "a batting slot" : "batting slots"} empty -- pick who bats there before confirming.
+                </p>
+              )}
+
               <button
                 type="button"
                 onClick={confirmFinal}
-                className="mt-3 w-full min-h-[44px] rounded-md bg-accent-primary px-4 text-sm font-semibold text-white"
+                disabled={!allVacantSlotsAssigned}
+                className="mt-3 w-full min-h-[44px] rounded-md bg-accent-primary px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Confirm
               </button>

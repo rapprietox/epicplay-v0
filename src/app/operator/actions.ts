@@ -19,7 +19,7 @@ import type {
 import { atBatAccuracyRatio } from "@/lib/pitch-accuracy";
 import { RESULT_IS_OUT } from "@/lib/operator/types";
 import { nextBattingOrderPosition } from "@/lib/operator/batting-order";
-import { assertGameIsActive, decideChainSubstitutionWrite } from "@/lib/operator/chain-substitution";
+import { assertGameIsActive, decideChainSubstitutionWrite, resolveIncomingBattingOrderWithoutOutgoing } from "@/lib/operator/chain-substitution";
 import { parseVoiceCommand, type VoiceCommand } from "@/lib/anthropic";
 import { generatePostGameAnalysis } from "@/lib/post-game-analysis";
 
@@ -902,6 +902,15 @@ export interface ChainSubstitutionInput {
   // since the structured `substitutions` row can only ever represent one
   // in/out pair, not an arbitrary-length chain.
   chainNote: string;
+  // Vacant-slot batch: set only when the confirm panel's "Who bats in
+  // slot N?" picker fired -- i.e. outgoingPlayerId is null and the chain
+  // would otherwise leave one or more of batting slots 1-9 unclaimed.
+  // Each entry assigns one eligible bench player (almost always, but not
+  // necessarily, the incoming player) to the numbered slot they'll bat
+  // in. See resolveIncomingBattingOrderWithoutOutgoing below for how the
+  // incoming player's own entry (if any) is used, and the loop near the
+  // end of this function for how any OTHER player's entry is applied.
+  battingOrderAssignments?: { playerId: string; battingOrder: number }[];
 }
 
 export async function confirmChainSubstitution(gameId: string, input: ChainSubstitutionInput) {
@@ -938,6 +947,34 @@ export async function confirmChainSubstitution(gameId: string, input: ChainSubst
       return;
     }
     incomingBattingOrder = decision.incomingBattingOrder;
+  } else {
+    // Bug fix (vacant-slot batch): this branch used to be skipped
+    // entirely -- incomingBattingOrder stayed at its initial null, and
+    // the "starting" row below got written with no batting order,
+    // leaving a batting slot permanently empty and the current-batter
+    // card blank whenever that slot came up. Now mirrors the
+    // outgoing-player branch's own refusal: take whatever the confirm
+    // panel's vacant-slot picker assigned this player (if the chain
+    // actually needed one), fall back to a batting order the incoming
+    // player might already hold, and throw instead of writing null if
+    // neither exists.
+    const assignedToIncoming =
+      input.battingOrderAssignments?.find((a) => a.playerId === input.incomingPlayerId)?.battingOrder ?? null;
+    let incomingOwnBattingOrder: number | null = null;
+    if (assignedToIncoming === null) {
+      const { data: incomingRow, error: incomingLookupError } = await supabase
+        .from("lineup")
+        .select("batting_order")
+        .eq("game_id", gameId)
+        .eq("player_id", input.incomingPlayerId)
+        .maybeSingle();
+      if (incomingLookupError) throw new Error(incomingLookupError.message);
+      incomingOwnBattingOrder = incomingRow?.batting_order ?? null;
+    }
+    incomingBattingOrder = resolveIncomingBattingOrderWithoutOutgoing({
+      assignedBattingOrder: assignedToIncoming,
+      incomingOwnBattingOrder,
+    });
   }
 
   // Loud-substitutions batch: every lineup update below now chains
@@ -998,6 +1035,26 @@ export async function confirmChainSubstitution(gameId: string, input: ChainSubst
     if (moveError) throw new Error(moveError.message);
     if (!moveUpdated || moveUpdated.length === 0) {
       throw new Error("Cannot complete this substitution: no lineup row found for a repositioned player.");
+    }
+  }
+
+  // Vacant-slot batch: a battingOrderAssignments entry for anyone OTHER
+  // than the incoming player (the picker lets the operator hand a
+  // vacant slot to a different eligible bench player instead) is its
+  // own plain write -- incomingBattingOrder above already covers the
+  // incoming player's own entry, so skip it here to avoid writing it
+  // twice.
+  for (const assignment of input.battingOrderAssignments ?? []) {
+    if (assignment.playerId === input.incomingPlayerId) continue;
+    const { data: assignedUpdated, error: assignError } = await supabase
+      .from("lineup")
+      .update({ batting_order: assignment.battingOrder })
+      .eq("game_id", gameId)
+      .eq("player_id", assignment.playerId)
+      .select("id");
+    if (assignError) throw new Error(assignError.message);
+    if (!assignedUpdated || assignedUpdated.length === 0) {
+      throw new Error("Cannot complete this substitution: no lineup row found for a batting-slot assignment.");
     }
   }
 
