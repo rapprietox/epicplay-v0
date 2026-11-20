@@ -37,12 +37,24 @@ export function LaunchLeadForm({
   variant,
   formId,
   source,
+  submitLabel,
+  pendingLabel,
+  successMessage,
 }: {
   variant: "compact" | "section";
   formId?: string;
   // Tour-page batch: lets a non-launch-page caller tag its leads
   // ("tour") instead of the default "launch" -- see actions.ts.
   source?: string;
+  // Founding-Access copy batch: lets the tour page's own section swap
+  // the submit button's wording without changing it for the other two
+  // callers (Hero, LeadCapture), which keep the defaults below.
+  submitLabel?: string;
+  pendingLabel?: string;
+  // Same reasoning as submitLabel: the default success line says "Free
+  // until Dec 31, 2026," which the tour's Founding Access section no
+  // longer offers -- override it there only, leave Hero/LeadCapture as-is.
+  successMessage?: string;
 }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +103,7 @@ export function LaunchLeadForm({
     return (
       <div className={variant === "compact" ? "lead-success-block lead-success-block-compact" : "lead-success-block"}>
         <p className={variant === "compact" ? "lead-success lead-success-compact" : "lead-success"}>
-          You&apos;re in. Free until Dec 31, 2026. Watch for our WhatsApp message.
+          {successMessage ?? "You're in. Free until Dec 31, 2026. Watch for our WhatsApp message."}
         </p>
         {/* "If someone picks Softball, let them finish and show..." --
             scoped to exactly 'softball', not 'both': the request names
@@ -202,7 +214,7 @@ export function LaunchLeadForm({
       {error && <p className="lead-error">{error}</p>}
 
       <button type="submit" disabled={isPending} className="btn-primary lead-submit">
-        {isPending ? "Joining…" : "Join the founding list →"}
+        {isPending ? pendingLabel ?? "Joining…" : submitLabel ?? "Join the founding list →"}
       </button>
     </form>
   );

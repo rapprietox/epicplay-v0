@@ -287,14 +287,21 @@ export const TOUR_SECTIONS: TourSection[] = [
     content: (
       <div className="tour-founding">
         <div className="tour-body">
-          <p className="tour-lede">Everything on this tour, free, for every team that joins before the end of the year.</p>
-          <p>No credit card. No trial clock. Just a name and an email, and you&apos;re in.</p>
+          <p className="tour-lede">Try it on your own team: your first 2 games are on us.</p>
+          <p>Then lock in the founding price: $199 for a full 180-day season pass, for your whole roster. Limited to the first 20 teams. After that it&apos;s $249.</p>
+          <p>No card needed to start. Just a name and an email.</p>
         </div>
         <div className="tour-price-card">
-          <div className="tour-price">Free</div>
-          <div className="tour-price-note">Until Dec 31, 2026</div>
+          <div className="tour-price">Founding price: $199</div>
           <div style={{ marginTop: 16 }}>
-            <LaunchLeadForm variant="section" formId="tour-lead-form" source="tour" />
+            <LaunchLeadForm
+              variant="section"
+              formId="tour-lead-form"
+              source="tour"
+              submitLabel="Reserve my founding spot →"
+              pendingLabel="Reserving…"
+              successMessage="You're in. Watch for our WhatsApp message about your first 2 games and locking in the $199 founding price."
+            />
           </div>
         </div>
       </div>
