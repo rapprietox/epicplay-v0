@@ -94,7 +94,10 @@ export function narrateStolenBase(runnerName: string): string {
 }
 
 export function narrateSubstitution(inName: string, outName: string): string {
-  return `${inName} replaces ${outName}.`;
+  // outName can itself end in "." (an abbreviated/suffixed name), which
+  // used to produce a stray ".." -- append the sentence-ending period
+  // only when outName doesn't already supply one.
+  return `${inName} replaces ${outName}${outName.endsWith(".") ? "" : "."}`;
 }
 
 // "Run scores" -- the request's own fixed template, repeated once per
